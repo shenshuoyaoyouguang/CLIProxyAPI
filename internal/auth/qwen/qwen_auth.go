@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,19 @@ const (
 	QwenOAuthScope = "openid profile email model.completion"
 	// QwenOAuthGrantType specifies the grant type for the device code flow.
 	QwenOAuthGrantType = "urn:ietf:params:oauth:grant-type:device_code"
+
+	qwenDefaultPollInterval = 5 * time.Second
+	qwenMaxPollInterval     = 30 * time.Second
+	qwenSlowDownStep        = 2 * time.Second
+	qwenMaxRetryBackoff     = 10 * time.Second
+	qwenErrorBodyPreviewMax = 512
+)
+
+var (
+	errQwenAuthorizationPending = errors.New("qwen: authorization_pending")
+	errQwenSlowDown             = errors.New("qwen: slow_down")
+	errQwenExpiredToken         = errors.New("qwen: expired_token")
+	errQwenAccessDenied         = errors.New("qwen: access_denied")
 )
 
 // QwenTokenData represents the OAuth credentials, including access and refresh tokens.
@@ -145,11 +159,7 @@ func (qa *QwenAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Qw
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errorData map[string]interface{}
-		if err = json.Unmarshal(body, &errorData); err == nil {
-			return nil, fmt.Errorf("token refresh failed: %v - %v", errorData["error"], errorData["error_description"])
-		}
-		return nil, fmt.Errorf("token refresh failed: %s", string(body))
+		return nil, fmt.Errorf("token refresh failed (status %d): %s", resp.StatusCode, formatQwenOAuthError(body))
 	}
 
 	var tokenData QwenTokenResponse
@@ -204,7 +214,7 @@ func (qa *QwenAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceFlow, error)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("device authorization failed: %d %s. Response: %s", resp.StatusCode, resp.Status, string(body))
+		return nil, fmt.Errorf("device authorization failed (status %d): %s", resp.StatusCode, formatQwenOAuthError(body))
 	}
 
 	var result DeviceFlow
@@ -224,90 +234,224 @@ func (qa *QwenAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceFlow, error)
 }
 
 // PollForToken polls the token endpoint with the device code to obtain an access token.
-func (qa *QwenAuth) PollForToken(deviceCode, codeVerifier string) (*QwenTokenData, error) {
-	pollInterval := 5 * time.Second
-	maxAttempts := 60 // 5 minutes max
-
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		data := url.Values{}
-		data.Set("grant_type", QwenOAuthGrantType)
-		data.Set("client_id", QwenOAuthClientID)
-		data.Set("device_code", deviceCode)
-		data.Set("code_verifier", codeVerifier)
-
-		resp, err := http.PostForm(QwenOAuthTokenEndpoint, data)
-		if err != nil {
-			fmt.Printf("Polling attempt %d/%d failed: %v\n", attempt+1, maxAttempts, err)
-			time.Sleep(pollInterval)
-			continue
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			fmt.Printf("Polling attempt %d/%d failed: %v\n", attempt+1, maxAttempts, err)
-			time.Sleep(pollInterval)
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			// Parse the response as JSON to check for OAuth RFC 8628 standard errors
-			var errorData map[string]interface{}
-			if err = json.Unmarshal(body, &errorData); err == nil {
-				// According to OAuth RFC 8628, handle standard polling responses
-				if resp.StatusCode == http.StatusBadRequest {
-					errorType, _ := errorData["error"].(string)
-					switch errorType {
-					case "authorization_pending":
-						// User has not yet approved the authorization request. Continue polling.
-						fmt.Printf("Polling attempt %d/%d...\n\n", attempt+1, maxAttempts)
-						time.Sleep(pollInterval)
-						continue
-					case "slow_down":
-						// Client is polling too frequently. Increase poll interval.
-						pollInterval = time.Duration(float64(pollInterval) * 1.5)
-						if pollInterval > 10*time.Second {
-							pollInterval = 10 * time.Second
-						}
-						fmt.Printf("Server requested to slow down, increasing poll interval to %v\n\n", pollInterval)
-						time.Sleep(pollInterval)
-						continue
-					case "expired_token":
-						return nil, fmt.Errorf("device code expired. Please restart the authentication process")
-					case "access_denied":
-						return nil, fmt.Errorf("authorization denied by user. Please restart the authentication process")
-					}
-				}
-
-				// For other errors, return with proper error information
-				errorType, _ := errorData["error"].(string)
-				errorDesc, _ := errorData["error_description"].(string)
-				return nil, fmt.Errorf("device token poll failed: %s - %s", errorType, errorDesc)
-			}
-
-			// If JSON parsing fails, fall back to text response
-			return nil, fmt.Errorf("device token poll failed: %d %s. Response: %s", resp.StatusCode, resp.Status, string(body))
-		}
-		// log.Debugf("%s", string(body))
-		// Success - parse token data
-		var response QwenTokenResponse
-		if err = json.Unmarshal(body, &response); err != nil {
-			return nil, fmt.Errorf("failed to parse token response: %w", err)
-		}
-
-		// Convert to QwenTokenData format and save
-		tokenData := &QwenTokenData{
-			AccessToken:  response.AccessToken,
-			RefreshToken: response.RefreshToken,
-			TokenType:    response.TokenType,
-			ResourceURL:  response.ResourceURL,
-			Expire:       time.Now().Add(time.Duration(response.ExpiresIn) * time.Second).Format(time.RFC3339),
-		}
-
-		return tokenData, nil
+// intervalSeconds and expiresInSeconds should come from the device code response.
+func (qa *QwenAuth) PollForToken(ctx context.Context, deviceCode, codeVerifier string, intervalSeconds, expiresInSeconds int) (*QwenTokenData, error) {
+	if strings.TrimSpace(deviceCode) == "" {
+		return nil, fmt.Errorf("qwen: device_code is required")
+	}
+	if strings.TrimSpace(codeVerifier) == "" {
+		return nil, fmt.Errorf("qwen: code_verifier is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	return nil, fmt.Errorf("authentication timeout. Please restart the authentication process")
+	pollInterval := qwenDefaultPollInterval
+	if intervalSeconds > 0 {
+		pollInterval = time.Duration(intervalSeconds) * time.Second
+	}
+	if pollInterval < time.Second {
+		pollInterval = time.Second
+	}
+	currentInterval := pollInterval
+
+	pollCtx := ctx
+	cancel := func() {}
+	if expiresInSeconds > 0 {
+		pollWindow := time.Duration(expiresInSeconds) * time.Second
+		if deadline, hasDeadline := ctx.Deadline(); !hasDeadline || time.Until(deadline) > pollWindow {
+			pollCtx, cancel = context.WithTimeout(ctx, pollWindow)
+		}
+	}
+	defer cancel()
+
+	for {
+		tokenData, err := qa.pollTokenOnce(pollCtx, deviceCode, codeVerifier)
+		if err == nil {
+			return tokenData, nil
+		}
+
+		switch {
+		case errors.Is(err, errQwenAuthorizationPending):
+			// keep polling with current interval
+		case errors.Is(err, errQwenSlowDown):
+			currentInterval += qwenSlowDownStep
+			if currentInterval > qwenMaxPollInterval {
+				currentInterval = qwenMaxPollInterval
+			}
+		case errors.Is(err, errQwenExpiredToken):
+			return nil, fmt.Errorf("qwen: device code expired, restart authentication: %w", err)
+		case errors.Is(err, errQwenAccessDenied):
+			return nil, fmt.Errorf("qwen: authorization denied by user: %w", err)
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			if errors.Is(err, context.DeadlineExceeded) {
+				log.WithError(err).Warn("qwen: device flow polling exceeded context deadline")
+			}
+			return nil, qwenContextError(err)
+		default:
+			return nil, err
+		}
+
+		if err = waitForNextQwenPoll(pollCtx, currentInterval); err != nil {
+			return nil, qwenContextError(err)
+		}
+	}
+}
+
+func (qa *QwenAuth) pollTokenOnce(ctx context.Context, deviceCode, codeVerifier string) (*QwenTokenData, error) {
+	data := url.Values{}
+	data.Set("grant_type", QwenOAuthGrantType)
+	data.Set("client_id", QwenOAuthClientID)
+	data.Set("device_code", deviceCode)
+	data.Set("code_verifier", codeVerifier)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, QwenOAuthTokenEndpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("qwen: failed to create poll request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := qa.httpClient.Do(req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("qwen: poll request failed: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("qwen: failed to read poll response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errorData map[string]interface{}
+		if err = json.Unmarshal(body, &errorData); err == nil {
+			errorType, _ := errorData["error"].(string)
+			errorDesc, _ := errorData["error_description"].(string)
+			return nil, mapQwenPollingError(errorType, errorDesc)
+		}
+		return nil, fmt.Errorf("qwen: device token poll failed (status %d): %s", resp.StatusCode, trimQwenErrorPreview(body))
+	}
+
+	var response QwenTokenResponse
+	if err = json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("qwen: failed to parse token response: %w", err)
+	}
+
+	if strings.TrimSpace(response.AccessToken) == "" {
+		return nil, fmt.Errorf("qwen: empty access token in response")
+	}
+
+	return &QwenTokenData{
+		AccessToken:  response.AccessToken,
+		RefreshToken: response.RefreshToken,
+		TokenType:    response.TokenType,
+		ResourceURL:  response.ResourceURL,
+		Expire:       time.Now().Add(time.Duration(response.ExpiresIn) * time.Second).Format(time.RFC3339),
+	}, nil
+}
+
+func mapQwenPollingError(errorType, errorDescription string) error {
+	description := strings.TrimSpace(errorDescription)
+
+	switch errorType {
+	case "authorization_pending":
+		if description == "" {
+			return errQwenAuthorizationPending
+		}
+		return fmt.Errorf("%w: %s", errQwenAuthorizationPending, description)
+	case "slow_down":
+		if description == "" {
+			return errQwenSlowDown
+		}
+		return fmt.Errorf("%w: %s", errQwenSlowDown, description)
+	case "expired_token":
+		if description == "" {
+			return errQwenExpiredToken
+		}
+		return fmt.Errorf("%w: %s", errQwenExpiredToken, description)
+	case "access_denied":
+		if description == "" {
+			return errQwenAccessDenied
+		}
+		return fmt.Errorf("%w: %s", errQwenAccessDenied, description)
+	default:
+		if strings.TrimSpace(errorType) == "" {
+			errorType = "unknown_error"
+		}
+		return fmt.Errorf("qwen: device token poll failed: %s - %s", errorType, description)
+	}
+}
+
+func waitForNextQwenPoll(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func qwenContextError(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("qwen: polling cancelled: %w", err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("qwen: polling timeout: %w", err)
+	default:
+		return fmt.Errorf("qwen: polling interrupted: %w", err)
+	}
+}
+
+func formatQwenOAuthError(body []byte) string {
+	var errorData struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.Unmarshal(body, &errorData); err == nil {
+		errType := strings.TrimSpace(errorData.Error)
+		errDesc := strings.TrimSpace(errorData.ErrorDescription)
+		switch {
+		case errType != "" && errDesc != "":
+			return fmt.Sprintf("%s - %s", errType, errDesc)
+		case errType != "":
+			return errType
+		case errDesc != "":
+			return errDesc
+		}
+	}
+	return trimQwenErrorPreview(body)
+}
+
+func trimQwenErrorPreview(body []byte) string {
+	preview := strings.TrimSpace(string(body))
+	if preview == "" {
+		return "empty response body"
+	}
+	if len(preview) <= qwenErrorBodyPreviewMax {
+		return preview
+	}
+	return fmt.Sprintf("%s...(truncated)", preview[:qwenErrorBodyPreviewMax])
+}
+
+func qwenRetryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return 0
+	}
+	delay := time.Duration(attempt) * time.Second
+	if delay > qwenMaxRetryBackoff {
+		return qwenMaxRetryBackoff
+	}
+	return delay
 }
 
 // RefreshTokensWithRetry attempts to refresh tokens with a specified number of retries upon failure.
@@ -316,11 +460,12 @@ func (o *QwenAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken stri
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
-			// Wait before retry
+			delay := qwenRetryDelay(attempt)
+			log.Debugf("qwen: waiting %s before retry attempt %d", delay, attempt+1)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(delay):
 			}
 		}
 

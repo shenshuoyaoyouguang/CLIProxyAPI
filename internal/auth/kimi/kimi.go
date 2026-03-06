@@ -5,6 +5,7 @@ package kimi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,10 +34,21 @@ const (
 	KimiAPIBaseURL = "https://api.kimi.com/coding"
 	// defaultPollInterval is the default interval for polling token endpoint.
 	defaultPollInterval = 5 * time.Second
+	// maxPollInterval is the upper bound when server asks client to slow down.
+	maxPollInterval = 30 * time.Second
+	// slowDownStep is the interval increment applied after slow_down responses.
+	slowDownStep = 2 * time.Second
 	// maxPollDuration is the maximum time to wait for user authorization.
 	maxPollDuration = 15 * time.Minute
 	// refreshThresholdSeconds is when to refresh token before expiry (5 minutes).
 	refreshThresholdSeconds = 300
+)
+
+var (
+	errKimiAuthorizationPending = errors.New("kimi: authorization_pending")
+	errKimiSlowDown             = errors.New("kimi: slow_down")
+	errKimiExpiredToken         = errors.New("kimi: expired_token")
+	errKimiAccessDenied         = errors.New("kimi: access_denied")
 )
 
 // KimiAuth handles Kimi authentication flow.
@@ -206,11 +218,18 @@ func (c *DeviceFlowClient) PollForToken(ctx context.Context, deviceCode *DeviceC
 	if deviceCode == nil {
 		return nil, fmt.Errorf("kimi: device code is nil")
 	}
+	if strings.TrimSpace(deviceCode.DeviceCode) == "" {
+		return nil, fmt.Errorf("kimi: device code is empty")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	interval := time.Duration(deviceCode.Interval) * time.Second
 	if interval < defaultPollInterval {
 		interval = defaultPollInterval
 	}
+	currentInterval := interval
 
 	deadline := time.Now().Add(maxPollDuration)
 	if deviceCode.ExpiresIn > 0 {
@@ -220,33 +239,42 @@ func (c *DeviceFlowClient) PollForToken(ctx context.Context, deviceCode *DeviceC
 		}
 	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("kimi: context cancelled: %w", ctx.Err())
-		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return nil, fmt.Errorf("kimi: device code expired")
-			}
+		if err := waitForNextKimiPoll(ctx, currentInterval); err != nil {
+			return nil, fmt.Errorf("kimi: context cancelled: %w", err)
+		}
 
-			token, pollErr, shouldContinue := c.exchangeDeviceCode(ctx, deviceCode.DeviceCode)
-			if token != nil {
-				return token, nil
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("kimi: device code expired: %w", errKimiExpiredToken)
+		}
+
+		token, pollErr := c.exchangeDeviceCode(ctx, deviceCode.DeviceCode)
+		if pollErr == nil {
+			return token, nil
+		}
+
+		switch {
+		case errors.Is(pollErr, errKimiAuthorizationPending):
+			// Keep current interval.
+		case errors.Is(pollErr, errKimiSlowDown):
+			currentInterval += slowDownStep
+			if currentInterval > maxPollInterval {
+				currentInterval = maxPollInterval
 			}
-			if !shouldContinue {
-				return nil, pollErr
-			}
-			// Continue polling
+		case errors.Is(pollErr, errKimiExpiredToken):
+			return nil, fmt.Errorf("kimi: device code expired: %w", pollErr)
+		case errors.Is(pollErr, errKimiAccessDenied):
+			return nil, fmt.Errorf("kimi: access denied by user: %w", pollErr)
+		case errors.Is(pollErr, context.Canceled), errors.Is(pollErr, context.DeadlineExceeded):
+			return nil, fmt.Errorf("kimi: context cancelled: %w", pollErr)
+		default:
+			return nil, pollErr
 		}
 	}
 }
 
 // exchangeDeviceCode attempts to exchange the device code for an access token.
-// Returns (token, error, shouldContinue).
-func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode string) (*KimiTokenData, error, bool) {
+func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode string) (*KimiTokenData, error) {
 	data := url.Values{}
 	data.Set("client_id", kimiClientID)
 	data.Set("device_code", deviceCode)
@@ -254,7 +282,7 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kimiTokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("kimi: failed to create token request: %w", err), false
+		return nil, fmt.Errorf("kimi: failed to create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
@@ -264,7 +292,7 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("kimi: token request failed: %w", err), false
+		return nil, fmt.Errorf("kimi: token request failed: %w", err)
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -274,7 +302,7 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("kimi: failed to read token response: %w", err), false
+		return nil, fmt.Errorf("kimi: failed to read token response: %w", err)
 	}
 
 	// Parse response - Kimi returns 200 for both success and pending states
@@ -289,26 +317,38 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 	}
 
 	if err = json.Unmarshal(bodyBytes, &oauthResp); err != nil {
-		return nil, fmt.Errorf("kimi: failed to parse token response: %w", err), false
+		return nil, fmt.Errorf("kimi: failed to parse token response: %w", err)
 	}
 
 	if oauthResp.Error != "" {
 		switch oauthResp.Error {
 		case "authorization_pending":
-			return nil, nil, true // Continue polling
+			if strings.TrimSpace(oauthResp.ErrorDescription) == "" {
+				return nil, errKimiAuthorizationPending
+			}
+			return nil, fmt.Errorf("%w: %s", errKimiAuthorizationPending, oauthResp.ErrorDescription)
 		case "slow_down":
-			return nil, nil, true // Continue polling (with increased interval handled by caller)
+			if strings.TrimSpace(oauthResp.ErrorDescription) == "" {
+				return nil, errKimiSlowDown
+			}
+			return nil, fmt.Errorf("%w: %s", errKimiSlowDown, oauthResp.ErrorDescription)
 		case "expired_token":
-			return nil, fmt.Errorf("kimi: device code expired"), false
+			if strings.TrimSpace(oauthResp.ErrorDescription) == "" {
+				return nil, errKimiExpiredToken
+			}
+			return nil, fmt.Errorf("%w: %s", errKimiExpiredToken, oauthResp.ErrorDescription)
 		case "access_denied":
-			return nil, fmt.Errorf("kimi: access denied by user"), false
+			if strings.TrimSpace(oauthResp.ErrorDescription) == "" {
+				return nil, errKimiAccessDenied
+			}
+			return nil, fmt.Errorf("%w: %s", errKimiAccessDenied, oauthResp.ErrorDescription)
 		default:
-			return nil, fmt.Errorf("kimi: OAuth error: %s - %s", oauthResp.Error, oauthResp.ErrorDescription), false
+			return nil, fmt.Errorf("kimi: OAuth error: %s - %s", oauthResp.Error, oauthResp.ErrorDescription)
 		}
 	}
 
 	if oauthResp.AccessToken == "" {
-		return nil, fmt.Errorf("kimi: empty access token in response"), false
+		return nil, fmt.Errorf("kimi: empty access token in response")
 	}
 
 	var expiresAt int64
@@ -322,7 +362,19 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 		TokenType:    oauthResp.TokenType,
 		ExpiresAt:    expiresAt,
 		Scope:        oauthResp.Scope,
-	}, nil, false
+	}, nil
+}
+
+func waitForNextKimiPoll(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // RefreshToken exchanges a refresh token for a new access token.

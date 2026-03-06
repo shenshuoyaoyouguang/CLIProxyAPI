@@ -22,6 +22,10 @@ import (
 )
 
 func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string, forceAuthRefresh bool) {
+	if w.stopped.Load() {
+		log.Debugf("watcher stopped, skipping client reload")
+		return
+	}
 	log.Debugf("starting full client load process")
 
 	w.clientsMutex.RLock()
@@ -104,7 +108,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 
 	if w.reloadCallback != nil {
 		log.Debugf("triggering server update callback before auth refresh")
-		w.reloadCallback(cfg)
+		w.callReloadCallback(cfg)
 	}
 
 	w.refreshAuthState(forceAuthRefresh)
@@ -121,6 +125,20 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 }
 
 func (w *Watcher) addOrUpdateClient(path string) {
+	info, errStat := os.Stat(path)
+	if errStat != nil {
+		log.Errorf("failed to stat auth file %s: %v", filepath.Base(path), errStat)
+		return
+	}
+	if info.IsDir() {
+		log.Debugf("ignoring directory as auth file: %s", filepath.Base(path))
+		return
+	}
+	if info.Size() > maxAuthFileSize {
+		log.Warnf("skipping oversized auth file %s: size=%d limit=%d", filepath.Base(path), info.Size(), maxAuthFileSize)
+		return
+	}
+
 	data, errRead := os.ReadFile(path)
 	if errRead != nil {
 		log.Errorf("failed to read auth file %s: %v", filepath.Base(path), errRead)
@@ -128,6 +146,10 @@ func (w *Watcher) addOrUpdateClient(path string) {
 	}
 	if len(data) == 0 {
 		log.Debugf("ignoring empty auth file: %s", filepath.Base(path))
+		return
+	}
+	if int64(len(data)) > maxAuthFileSize {
+		log.Warnf("skipping oversized auth file %s: size=%d limit=%d", filepath.Base(path), len(data), maxAuthFileSize)
 		return
 	}
 
@@ -333,7 +355,7 @@ func (w *Watcher) triggerServerUpdate(cfg *config.Config) {
 		}
 		w.serverUpdatePend = false
 		w.serverUpdateMu.Unlock()
-		w.reloadCallback(cfg)
+		w.callReloadCallback(cfg)
 		return
 	}
 
@@ -374,7 +396,7 @@ func (w *Watcher) triggerServerUpdate(cfg *config.Config) {
 
 		w.serverUpdateLast = time.Now()
 		w.serverUpdateMu.Unlock()
-		w.reloadCallback(latestCfg)
+		w.callReloadCallback(latestCfg)
 	})
 	w.serverUpdateTimer = timer
 	w.serverUpdateMu.Unlock()

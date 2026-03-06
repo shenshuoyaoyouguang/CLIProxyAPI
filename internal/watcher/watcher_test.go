@@ -416,6 +416,35 @@ func TestAddOrUpdateClientTriggersReloadAndHash(t *testing.T) {
 	}
 }
 
+func TestAddOrUpdateClientSkipsOversizedAuthFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	authFile := filepath.Join(tmpDir, "oversized.json")
+	oversized := []byte(`{"type":"demo","token":"` + strings.Repeat("x", int(maxAuthFileSize)+1) + `"}`)
+	if err := os.WriteFile(authFile, oversized, 0o644); err != nil {
+		t.Fatalf("failed to write oversized auth file: %v", err)
+	}
+
+	var reloads int32
+	w := &Watcher{
+		authDir:        tmpDir,
+		lastAuthHashes: make(map[string]string),
+		reloadCallback: func(*config.Config) {
+			atomic.AddInt32(&reloads, 1)
+		},
+	}
+	w.SetConfig(&config.Config{AuthDir: tmpDir})
+
+	w.addOrUpdateClient(authFile)
+
+	if got := atomic.LoadInt32(&reloads); got != 0 {
+		t.Fatalf("expected oversized auth file to skip reload callback, got %d", got)
+	}
+	normalized := w.normalizeAuthPath(authFile)
+	if _, ok := w.lastAuthHashes[normalized]; ok {
+		t.Fatalf("expected oversized auth file hash not to be cached for %s", normalized)
+	}
+}
+
 func TestRemoveClientRemovesHash(t *testing.T) {
 	tmpDir := t.TempDir()
 	authFile := filepath.Join(tmpDir, "sample.json")
@@ -478,6 +507,85 @@ func TestTriggerServerUpdateCancelsPendingTimerOnImmediate(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 	if got := atomic.LoadInt32(&reloads); got != 1 {
 		t.Fatalf("expected pending timer to be cancelled, got %d reloads", got)
+	}
+}
+
+func TestCallReloadCallbackUsesConfigSnapshot(t *testing.T) {
+	cfg := &config.Config{Port: 18080, AuthDir: t.TempDir()}
+	var gotPort int
+
+	w := &Watcher{
+		reloadCallback: func(c *config.Config) {
+			gotPort = c.Port
+			c.Port = 19090
+		},
+	}
+
+	w.callReloadCallback(cfg)
+
+	if gotPort != 18080 {
+		t.Fatalf("expected callback to receive original port, got %d", gotPort)
+	}
+	if cfg.Port != 18080 {
+		t.Fatalf("expected original config to remain unchanged, got %d", cfg.Port)
+	}
+}
+
+func TestStopWaitsForInFlightReloadCallback(t *testing.T) {
+	fsw, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("failed to create fsnotify watcher: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	w := &Watcher{
+		watcher: fsw,
+		reloadCallback: func(*config.Config) {
+			close(started)
+			<-release
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		w.callReloadCallback(&config.Config{AuthDir: t.TempDir()})
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("reload callback did not start")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		if errStop := w.Stop(); errStop != nil {
+			t.Errorf("stop failed: %v", errStop)
+		}
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned before in-flight callback completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("callback did not complete after release")
+	}
+
+	select {
+	case <-stopDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Stop did not return after callback completion")
 	}
 }
 
@@ -595,6 +703,24 @@ func TestReloadClientsLogsConfigDiffs(t *testing.T) {
 func TestReloadClientsHandlesNilConfig(t *testing.T) {
 	w := &Watcher{}
 	w.reloadClients(true, nil, false)
+}
+
+func TestReloadClientsSkipsCallbackWhenStopped(t *testing.T) {
+	tmpDir := t.TempDir()
+	var reloads int32
+	w := &Watcher{
+		authDir:        tmpDir,
+		config:         &config.Config{AuthDir: tmpDir},
+		lastAuthHashes: make(map[string]string),
+		reloadCallback: func(*config.Config) { atomic.AddInt32(&reloads, 1) },
+	}
+	w.stopped.Store(true)
+
+	w.reloadClients(false, nil, false)
+
+	if got := atomic.LoadInt32(&reloads); got != 0 {
+		t.Fatalf("expected stopped watcher to skip reload callback, got %d", got)
+	}
 }
 
 func TestReloadClientsFiltersProvidersWithNilCurrentAuths(t *testing.T) {
@@ -837,6 +963,44 @@ func TestHandleEventIgnoresUnrelatedFiles(t *testing.T) {
 	w.handleEvent(fsnotify.Event{Name: filepath.Join(tmpDir, "note.txt"), Op: fsnotify.Write})
 	if atomic.LoadInt32(&reloads) != 0 {
 		t.Fatalf("expected no reloads for unrelated file, got %d", reloads)
+	}
+}
+
+func TestHandleEventAuthDirPrefixCollisionIgnored(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	authSiblingDir := filepath.Join(tmpDir, "auth2")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+	if err := os.MkdirAll(authSiblingDir, 0o755); err != nil {
+		t.Fatalf("failed to create sibling auth dir: %v", err)
+	}
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("auth_dir: "+authDir+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+	authFileOutsideAuthDir := filepath.Join(authSiblingDir, "outside.json")
+	if err := os.WriteFile(authFileOutsideAuthDir, []byte(`{"type":"demo","api_key":"k"}`), 0o644); err != nil {
+		t.Fatalf("failed to write sibling auth file: %v", err)
+	}
+
+	var reloads int32
+	w := &Watcher{
+		authDir:        authDir,
+		configPath:     configPath,
+		lastAuthHashes: make(map[string]string),
+		reloadCallback: func(*config.Config) { atomic.AddInt32(&reloads, 1) },
+	}
+	w.SetConfig(&config.Config{AuthDir: authDir})
+
+	w.handleEvent(fsnotify.Event{Name: authFileOutsideAuthDir, Op: fsnotify.Write})
+
+	if got := atomic.LoadInt32(&reloads); got != 0 {
+		t.Fatalf("expected auth dir prefix collision to be ignored, got %d reloads", got)
+	}
+	if len(w.lastAuthHashes) != 0 {
+		t.Fatalf("expected no auth hash cache updates for sibling auth dir event, got %d entries", len(w.lastAuthHashes))
 	}
 }
 

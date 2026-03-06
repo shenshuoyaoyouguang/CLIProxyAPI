@@ -55,6 +55,8 @@ type Watcher struct {
 	pendingUpdates    map[string]AuthUpdate
 	pendingOrder      []string
 	dispatchCancel    context.CancelFunc
+	callbackMu       sync.Mutex
+	callbackWG       sync.WaitGroup
 	storePersister    storePersister
 	mirroredAuthDir   string
 	oldConfigYaml     []byte
@@ -83,6 +85,7 @@ const (
 	configReloadDebounce     = 150 * time.Millisecond
 	authRemoveDebounceWindow = 1 * time.Second
 	serverUpdateDebounce     = 1 * time.Second
+	maxAuthFileSize    int64 = 10 << 20 // 10 MiB
 )
 
 // NewWatcher creates a new file watcher instance
@@ -121,11 +124,49 @@ func (w *Watcher) Start(ctx context.Context) error {
 
 // Stop stops the file watcher
 func (w *Watcher) Stop() error {
+	w.callbackMu.Lock()
 	w.stopped.Store(true)
+	w.callbackMu.Unlock()
 	w.stopDispatch()
 	w.stopConfigReloadTimer()
 	w.stopServerUpdateTimer()
+	w.callbackWG.Wait()
 	return w.watcher.Close()
+}
+
+func (w *Watcher) callReloadCallback(cfg *config.Config) {
+	if w == nil || w.reloadCallback == nil || cfg == nil {
+		return
+	}
+	w.callbackMu.Lock()
+	if w.stopped.Load() {
+		w.callbackMu.Unlock()
+		return
+	}
+	w.callbackWG.Add(1)
+	w.callbackMu.Unlock()
+	defer w.callbackWG.Done()
+
+	if w.stopped.Load() {
+		return
+	}
+	w.reloadCallback(cloneConfig(cfg))
+}
+
+func cloneConfig(cfg *config.Config) *config.Config {
+	if cfg == nil {
+		return nil
+	}
+	fallback := *cfg
+	data, errMarshal := yaml.Marshal(cfg)
+	if errMarshal != nil {
+		return &fallback
+	}
+	var cloned config.Config
+	if errUnmarshal := yaml.Unmarshal(data, &cloned); errUnmarshal != nil {
+		return &fallback
+	}
+	return &cloned
 }
 
 // SetConfig updates the current configuration
