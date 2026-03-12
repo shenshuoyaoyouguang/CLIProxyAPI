@@ -93,6 +93,24 @@ func TestNewServer_CreatesAccessManagerWhenNil(t *testing.T) {
 		t.Fatalf("expected authorized request to succeed, got %d body=%s", authorized.Code, authorized.Body.String())
 	}
 }
+
+func TestEventLoggingBatchRoute_ReturnsNoContent(t *testing.T) {
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/event_logging/batch", strings.NewReader(`{"events":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.Len() != 0 {
+		t.Fatalf("expected empty response body, got %q", rr.Body.String())
+	}
+}
+
 func TestAmpProviderModelRoutes(t *testing.T) {
 	testCases := []struct {
 		name         string
@@ -255,4 +273,3 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		}
 	}
 }
-

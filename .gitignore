@@ -42,6 +42,7 @@ GEMINI.md
 .agents/*
 .opencode/*
 .omc/*
+.omx/*
 .idea/*
 .bmad/*
 _bmad/*

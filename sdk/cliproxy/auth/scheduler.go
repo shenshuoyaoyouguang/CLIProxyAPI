@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
@@ -124,7 +125,7 @@ func (s *authScheduler) setSelector(selector Selector) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
+	s.lock("set_selector")
 	defer s.mu.Unlock()
 	s.strategy = selectorStrategy(selector)
 	clear(s.mixedCursors)
@@ -135,7 +136,7 @@ func (s *authScheduler) rebuild(auths []*Auth) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
+	s.lock("rebuild")
 	defer s.mu.Unlock()
 	s.providers = make(map[string]*providerScheduler)
 	s.authProviders = make(map[string]string)
@@ -151,9 +152,23 @@ func (s *authScheduler) upsertAuth(auth *Auth) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
+	s.lock("upsert_auth")
 	defer s.mu.Unlock()
 	s.upsertAuthLocked(auth, time.Now())
+}
+
+func (s *authScheduler) upsertAuthResult(auth *Auth, model string) {
+	if s == nil {
+		return
+	}
+	modelKey := canonicalModelKey(model)
+	if modelKey == "" {
+		s.upsertAuth(auth)
+		return
+	}
+	s.lock("upsert_auth_result")
+	defer s.mu.Unlock()
+	s.upsertAuthResultLocked(auth, time.Now(), modelKey)
 }
 
 // removeAuth deletes one auth from every scheduler shard that references it.
@@ -165,7 +180,7 @@ func (s *authScheduler) removeAuth(authID string) {
 	if authID == "" {
 		return
 	}
-	s.mu.Lock()
+	s.lock("remove_auth")
 	defer s.mu.Unlock()
 	s.removeAuthLocked(authID)
 }
@@ -180,7 +195,7 @@ func (s *authScheduler) pickSingle(ctx context.Context, provider, model string, 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	preferWebsocket := cliproxyexecutor.DownstreamWebsocket(ctx) && providerKey == "codex" && pinnedAuthID == ""
 
-	s.mu.Lock()
+	s.lock("pick_single")
 	defer s.mu.Unlock()
 	providerState := s.providers[providerKey]
 	if providerState == nil {
@@ -222,7 +237,7 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	modelKey := canonicalModelKey(model)
 
-	s.mu.Lock()
+	s.lock("pick_mixed")
 	defer s.mu.Unlock()
 	if pinnedAuthID != "" {
 		providerKey := s.authProviders[pinnedAuthID]
@@ -312,6 +327,15 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 		return picked, providerKey, nil
 	}
 	return nil, "", s.mixedUnavailableErrorLocked(normalized, model, tried)
+}
+
+func (s *authScheduler) lock(path string) {
+	if s == nil {
+		return
+	}
+	start := time.Now()
+	s.mu.Lock()
+	observability.ObserveSchedulerLockWait(path, time.Since(start))
 }
 
 // mixedUnavailableErrorLocked synthesizes the mixed-provider cooldown or unavailable error.
@@ -412,6 +436,26 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 	s.ensureProviderLocked(providerKey).upsertAuthLocked(meta, now)
 }
 
+func (s *authScheduler) upsertAuthResultLocked(auth *Auth, now time.Time, modelKey string) {
+	if auth == nil {
+		return
+	}
+	authID := strings.TrimSpace(auth.ID)
+	providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
+	if authID == "" || providerKey == "" || auth.Disabled {
+		s.removeAuthLocked(authID)
+		return
+	}
+	if previousProvider := s.authProviders[authID]; previousProvider != "" && previousProvider != providerKey {
+		if previousState := s.providers[previousProvider]; previousState != nil {
+			previousState.removeAuthLocked(authID)
+		}
+	}
+	meta := buildScheduledAuthMeta(auth)
+	s.authProviders[authID] = providerKey
+	s.ensureProviderLocked(providerKey).upsertAuthResultLocked(meta, now, modelKey)
+}
+
 // removeAuthLocked removes one auth from the scheduler while the scheduler mutex is held.
 func (s *authScheduler) removeAuthLocked(authID string) {
 	if authID == "" {
@@ -507,6 +551,24 @@ func (p *providerScheduler) upsertAuthLocked(meta *scheduledAuthMeta, now time.T
 			continue
 		}
 		if !meta.supportsModel(modelKey) {
+			shard.removeEntryLocked(meta.auth.ID)
+			continue
+		}
+		shard.upsertEntryLocked(meta, now)
+	}
+}
+
+func (p *providerScheduler) upsertAuthResultLocked(meta *scheduledAuthMeta, now time.Time, modelKey string) {
+	if p == nil || meta == nil || meta.auth == nil {
+		return
+	}
+	p.auths[meta.auth.ID] = meta
+	for _, shardKey := range []string{canonicalModelKey(modelKey), ""} {
+		shard := p.modelShards[shardKey]
+		if shard == nil {
+			continue
+		}
+		if !meta.supportsModel(shardKey) {
 			shard.removeEntryLocked(meta.auth.ID)
 			continue
 		}

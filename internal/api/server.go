@@ -331,6 +331,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	// Some upstream-compatible clients send telemetry batches to this endpoint.
+	// Accept and ignore them so analytics noise does not break the main workflow.
+	s.engine.POST("/api/event_logging/batch", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)

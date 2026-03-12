@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -163,6 +164,8 @@ type Manager struct {
 	// Auto refresh state
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
+	refreshSchedule  map[string]time.Time
+	refreshNextAt    time.Time
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -182,6 +185,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		providerOffsets:  make(map[string]int),
 		modelPoolOffsets: make(map[string]int),
 		refreshSemaphore: make(chan struct{}, refreshMaxConcurrency),
+		refreshSchedule:  make(map[string]time.Time),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -814,6 +818,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	authClone := auth.Clone()
 	m.mu.Lock()
 	m.auths[auth.ID] = authClone
+	m.updateRefreshScheduleLocked(authClone, time.Now())
 	m.mu.Unlock()
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	if m.scheduler != nil {
@@ -842,6 +847,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.EnsureIndex()
 	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
+	m.updateRefreshScheduleLocked(authClone, time.Now())
 	m.mu.Unlock()
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	if m.scheduler != nil {
@@ -872,6 +878,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		auth.EnsureIndex()
 		m.auths[auth.ID] = auth.Clone()
 	}
+	m.rebuildRefreshScheduleLocked(time.Now())
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {
 		cfg = &internalconfig.Config{}
@@ -1703,12 +1710,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
 	}
 	m.mu.Unlock()
 	if m.scheduler != nil && authSnapshot != nil {
-		m.scheduler.upsertAuth(authSnapshot)
+		if result.Model != "" {
+			m.scheduler.upsertAuthResult(authSnapshot, result.Model)
+		} else {
+			m.scheduler.upsertAuth(authSnapshot)
+		}
+	}
+	if authSnapshot != nil {
+		_ = m.persist(ctx, authSnapshot)
 	}
 
 	if clearModelQuota && result.Model != "" {
@@ -2349,6 +2362,7 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 	if interval <= 0 {
 		interval = refreshCheckInterval
 	}
+	observability.SetRefreshConcurrency(refreshMaxConcurrency)
 	if m.refreshCancel != nil {
 		m.refreshCancel()
 		m.refreshCancel = nil
@@ -2379,25 +2393,49 @@ func (m *Manager) StopAutoRefresh() {
 }
 
 func (m *Manager) checkRefreshes(ctx context.Context) {
-	// log.Debugf("checking refreshes")
 	now := time.Now()
-	snapshot := m.snapshotAuths()
-	for _, a := range snapshot {
-		typ, _ := a.AccountInfo()
-		if typ != "api_key" {
-			if !m.shouldRefresh(a, now) {
-				continue
-			}
-			log.Debugf("checking refresh for %s, %s, %s", a.Provider, a.ID, typ)
-
-			if exec := m.executorFor(a.Provider); exec == nil {
-				continue
-			}
-			if !m.markRefreshPending(a.ID, now) {
-				continue
-			}
-			go m.refreshAuthWithLimit(ctx, a.ID)
+	dueAuthIDs := m.dueRefreshAuthIDs(now)
+	observability.SetRefreshDueSize(len(dueAuthIDs))
+	for _, authID := range dueAuthIDs {
+		m.mu.RLock()
+		current := m.auths[authID]
+		var snapshot *Auth
+		if current != nil {
+			snapshot = current.Clone()
 		}
+		m.mu.RUnlock()
+		if snapshot == nil {
+			m.mu.Lock()
+			m.removeRefreshScheduleLocked(authID)
+			m.mu.Unlock()
+			continue
+		}
+		typ, _ := snapshot.AccountInfo()
+		if typ == "api_key" || !m.shouldRefresh(snapshot, now) {
+			m.mu.Lock()
+			if current := m.auths[authID]; current != nil {
+				m.updateRefreshScheduleLocked(current, now)
+			} else {
+				m.removeRefreshScheduleLocked(authID)
+			}
+			m.mu.Unlock()
+			continue
+		}
+		log.Debugf("checking refresh for %s, %s, %s", snapshot.Provider, snapshot.ID, typ)
+		if exec := m.executorFor(snapshot.Provider); exec == nil {
+			m.mu.Lock()
+			if current := m.auths[authID]; current != nil {
+				m.updateRefreshScheduleLocked(current, now)
+			} else {
+				m.removeRefreshScheduleLocked(authID)
+			}
+			m.mu.Unlock()
+			continue
+		}
+		if !m.markRefreshPending(snapshot.ID, now) {
+			continue
+		}
+		go m.refreshAuthWithLimit(ctx, snapshot.ID)
 	}
 }
 
@@ -2408,7 +2446,11 @@ func (m *Manager) refreshAuthWithLimit(ctx context.Context, id string) {
 	}
 	select {
 	case m.refreshSemaphore <- struct{}{}:
-		defer func() { <-m.refreshSemaphore }()
+		observability.SetRefreshInFlight(len(m.refreshSemaphore))
+		defer func() {
+			<-m.refreshSemaphore
+			observability.SetRefreshInFlight(len(m.refreshSemaphore))
+		}()
 	case <-ctx.Done():
 		return
 	}
@@ -2641,6 +2683,7 @@ func (m *Manager) markRefreshPending(id string, now time.Time) bool {
 		return false
 	}
 	auth.NextRefreshAfter = now.Add(refreshPendingBackoff)
+	m.updateRefreshScheduleLocked(auth, now)
 	m.auths[id] = auth
 	return true
 }
@@ -2656,7 +2699,13 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 		exec = m.executors[auth.Provider]
 	}
 	m.mu.RUnlock()
-	if auth == nil || exec == nil {
+	if auth == nil {
+		m.mu.Lock()
+		m.removeRefreshScheduleLocked(id)
+		m.mu.Unlock()
+		return
+	}
+	if exec == nil {
 		return
 	}
 	cloned := auth.Clone()
@@ -2672,10 +2721,13 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 		if current := m.auths[id]; current != nil {
 			current.NextRefreshAfter = now.Add(refreshFailureBackoff)
 			current.LastError = &Error{Message: err.Error()}
+			m.updateRefreshScheduleLocked(current, now)
 			m.auths[id] = current
 			if m.scheduler != nil {
 				m.scheduler.upsertAuth(current.Clone())
 			}
+		} else {
+			m.removeRefreshScheduleLocked(id)
 		}
 		m.mu.Unlock()
 		return
@@ -2692,13 +2744,209 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	updated.NextRefreshAfter = time.Time{}
 	updated.LastError = nil
 	updated.UpdatedAt = now
-	_, _ = m.Update(ctx, updated)
+	if _, errUpdate := m.Update(ctx, updated); errUpdate != nil {
+		log.WithError(errUpdate).WithFields(log.Fields{
+			"provider": updated.Provider,
+			"auth_id":  updated.ID,
+		}).Warn("auth manager: failed to persist refreshed credential")
+	}
 }
 
 func (m *Manager) executorFor(provider string) ProviderExecutor {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.executors[provider]
+}
+
+func (m *Manager) dueRefreshAuthIDs(now time.Time) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dueRefreshAuthIDsLocked(now)
+}
+
+func (m *Manager) dueRefreshAuthIDsLocked(now time.Time) []string {
+	if m == nil {
+		return nil
+	}
+	if len(m.refreshSchedule) == 0 {
+		m.refreshNextAt = time.Time{}
+		observability.SetRefreshQueueSize(0)
+		return nil
+	}
+	if !m.refreshNextAt.IsZero() && now.Before(m.refreshNextAt) {
+		observability.SetRefreshQueueSize(len(m.refreshSchedule))
+		return nil
+	}
+	authIDs := make([]string, 0)
+	nextAt := time.Time{}
+	for authID, dueAt := range m.refreshSchedule {
+		if dueAt.IsZero() {
+			delete(m.refreshSchedule, authID)
+			continue
+		}
+		if !dueAt.After(now) {
+			authIDs = append(authIDs, authID)
+			continue
+		}
+		if nextAt.IsZero() || dueAt.Before(nextAt) {
+			nextAt = dueAt
+		}
+	}
+	if len(authIDs) > 0 {
+		m.refreshNextAt = now
+		observability.SetRefreshQueueSize(len(m.refreshSchedule))
+		return authIDs
+	}
+	m.refreshNextAt = nextAt
+	observability.SetRefreshQueueSize(len(m.refreshSchedule))
+	return authIDs
+}
+
+func (m *Manager) rebuildRefreshScheduleLocked(now time.Time) {
+	if m == nil {
+		return
+	}
+	m.refreshSchedule = make(map[string]time.Time, len(m.auths))
+	m.refreshNextAt = time.Time{}
+	for _, auth := range m.auths {
+		if auth == nil {
+			continue
+		}
+		dueAt, ok := m.refreshDueAt(auth, now)
+		if !ok {
+			continue
+		}
+		m.refreshSchedule[auth.ID] = dueAt
+		if m.refreshNextAt.IsZero() || dueAt.Before(m.refreshNextAt) {
+			m.refreshNextAt = dueAt
+		}
+	}
+	observability.SetRefreshQueueSize(len(m.refreshSchedule))
+}
+
+func (m *Manager) updateRefreshScheduleLocked(auth *Auth, now time.Time) {
+	if m == nil || auth == nil || strings.TrimSpace(auth.ID) == "" {
+		return
+	}
+	if m.refreshSchedule == nil {
+		m.refreshSchedule = make(map[string]time.Time)
+	}
+	dueAt, ok := m.refreshDueAt(auth, now)
+	if !ok {
+		m.removeRefreshScheduleLocked(auth.ID)
+		return
+	}
+	previousDueAt, hadPrevious := m.refreshSchedule[auth.ID]
+	m.refreshSchedule[auth.ID] = dueAt
+	if m.refreshNextAt.IsZero() || dueAt.Before(m.refreshNextAt) {
+		m.refreshNextAt = dueAt
+		return
+	}
+	if hadPrevious && previousDueAt.Equal(m.refreshNextAt) && !dueAt.Equal(previousDueAt) {
+		m.recomputeRefreshNextAtLocked()
+	}
+	observability.SetRefreshQueueSize(len(m.refreshSchedule))
+}
+
+func (m *Manager) removeRefreshScheduleLocked(authID string) {
+	if m == nil || authID == "" || len(m.refreshSchedule) == 0 {
+		return
+	}
+	delete(m.refreshSchedule, authID)
+	if len(m.refreshSchedule) == 0 {
+		m.refreshNextAt = time.Time{}
+		observability.SetRefreshQueueSize(0)
+		return
+	}
+	m.recomputeRefreshNextAtLocked()
+	observability.SetRefreshQueueSize(len(m.refreshSchedule))
+}
+
+func (m *Manager) recomputeRefreshNextAtLocked() {
+	m.refreshNextAt = time.Time{}
+	for _, dueAt := range m.refreshSchedule {
+		if dueAt.IsZero() {
+			continue
+		}
+		if m.refreshNextAt.IsZero() || dueAt.Before(m.refreshNextAt) {
+			m.refreshNextAt = dueAt
+		}
+	}
+}
+
+func (m *Manager) refreshDueAt(auth *Auth, now time.Time) (time.Time, bool) {
+	if auth == nil || auth.Disabled {
+		return time.Time{}, false
+	}
+	accountType, _ := auth.AccountInfo()
+	if accountType == "api_key" {
+		return time.Time{}, false
+	}
+	if !auth.NextRefreshAfter.IsZero() && auth.NextRefreshAfter.After(now) {
+		return auth.NextRefreshAfter, true
+	}
+	if evaluator, ok := auth.Runtime.(RefreshEvaluator); ok && evaluator != nil {
+		if evaluator.ShouldRefresh(now, auth) {
+			return now, true
+		}
+		return now.Add(refreshCheckInterval), true
+	}
+
+	lastRefresh := auth.LastRefreshedAt
+	if lastRefresh.IsZero() {
+		if ts, ok := authLastRefreshTimestamp(auth); ok {
+			lastRefresh = ts
+		}
+	}
+	expiry, hasExpiry := auth.ExpirationTime()
+
+	if interval := authPreferredInterval(auth); interval > 0 {
+		if hasExpiry && !expiry.IsZero() {
+			dueAt := expiry.Add(-interval)
+			if dueAt.Before(now) {
+				return now, true
+			}
+			return dueAt, true
+		}
+		if lastRefresh.IsZero() {
+			return now, true
+		}
+		dueAt := lastRefresh.Add(interval)
+		if dueAt.Before(now) {
+			return now, true
+		}
+		return dueAt, true
+	}
+
+	provider := strings.ToLower(auth.Provider)
+	lead := ProviderRefreshLead(provider, auth.Runtime)
+	if lead == nil {
+		return time.Time{}, false
+	}
+	if *lead <= 0 {
+		if hasExpiry && !expiry.IsZero() {
+			if expiry.Before(now) {
+				return now, true
+			}
+			return expiry, true
+		}
+		return time.Time{}, false
+	}
+	if hasExpiry && !expiry.IsZero() {
+		dueAt := expiry.Add(-*lead)
+		if dueAt.Before(now) {
+			return now, true
+		}
+		return dueAt, true
+	}
+	if !lastRefresh.IsZero() {
+		dueAt := lastRefresh.Add(*lead)
+		if dueAt.Before(now) {
+			return now, true
+		}
+		return dueAt, true
+	}
+	return now, true
 }
 
 // roundTripperContextKey is an unexported context key type to avoid collisions.
