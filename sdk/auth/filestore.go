@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
+	kimiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -244,6 +246,7 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		Status:           status,
 		Disabled:         disabled,
 		Attributes:       map[string]string{"path": path},
+		Storage:          storageFromMetadata(provider, metadata),
 		Metadata:         metadata,
 		CreatedAt:        info.ModTime(),
 		UpdatedAt:        info.ModTime(),
@@ -254,6 +257,33 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		auth.Attributes["email"] = email
 	}
 	return auth, nil
+}
+
+func storageFromMetadata(provider string, metadata map[string]any) baseauth.TokenStorage {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "kimi":
+		return &kimiauth.KimiTokenStorage{
+			AccessToken:  stringValue(metadata, "access_token"),
+			RefreshToken: stringValue(metadata, "refresh_token"),
+			TokenType:    stringValue(metadata, "token_type"),
+			Scope:        stringValue(metadata, "scope"),
+			DeviceID:     stringValue(metadata, "device_id"),
+			Expired:      stringValue(metadata, "expired"),
+			Type:         "kimi",
+		}
+	default:
+		return nil
+	}
+}
+
+func stringValue(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	if v, ok := metadata[key].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
 }
 
 func (s *FileTokenStore) idFor(path, baseDir string) string {

@@ -42,9 +42,7 @@ func (e *KimiExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 		return nil
 	}
 	token := kimiCreds(auth)
-	if strings.TrimSpace(token) != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	applyKimiHeadersWithAuth(req, token, false, auth)
 	return nil
 }
 
@@ -67,10 +65,6 @@ func (e *KimiExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 // Execute performs a non-streaming chat completion request to Kimi.
 func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	from := opts.SourceFormat
-	if from.String() == "claude" {
-		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-		return e.ClaudeExecutor.Execute(ctx, auth, req, opts)
-	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
@@ -107,7 +101,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, err
 	}
 
-	url := kimiauth.KimiAPIBaseURL + "/v1/chat/completions"
+	url := strings.TrimSuffix(kimiBaseURL(auth), "/") + "/v1/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return resp, err
@@ -168,10 +162,6 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 // ExecuteStream performs a streaming chat completion request to Kimi.
 func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	from := opts.SourceFormat
-	if from.String() == "claude" {
-		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-		return e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
-	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	token := kimiCreds(auth)
@@ -211,7 +201,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, err
 	}
 
-	url := kimiauth.KimiAPIBaseURL + "/v1/chat/completions"
+	url := strings.TrimSuffix(kimiBaseURL(auth), "/") + "/v1/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -271,17 +261,21 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			}
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param)
 			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+				if !sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}) {
+					return
+				}
 			}
 		}
 		doneChunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param)
 		for i := range doneChunks {
-			out <- cliproxyexecutor.StreamChunk{Payload: []byte(doneChunks[i])}
+			if !sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: []byte(doneChunks[i])}) {
+				return
+			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			recordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			_ = sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errScan})
 		}
 		// Ensure we record the request if no usage chunk was ever seen
 		reporter.ensurePublished(ctx)
@@ -291,8 +285,30 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 // CountTokens estimates token count for Kimi requests.
 func (e *KimiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-	return e.ClaudeExecutor.CountTokens(ctx, auth, req, opts)
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("openai")
+	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	if err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
+
+	enc, err := tokenizerForModel(baseModel)
+	if err != nil {
+		return cliproxyexecutor.Response{}, fmt.Errorf("kimi executor: tokenizer init failed: %w", err)
+	}
+
+	count, err := countOpenAIChatTokens(enc, translated)
+	if err != nil {
+		return cliproxyexecutor.Response{}, fmt.Errorf("kimi executor: token counting failed: %w", err)
+	}
+
+	usageJSON := buildOpenAIUsageJSON(count)
+	translatedUsage := sdktranslator.TranslateTokenCount(ctx, to, from, count, usageJSON)
+	return cliproxyexecutor.Response{Payload: []byte(translatedUsage)}, nil
 }
 
 func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {
@@ -457,7 +473,12 @@ func (e *KimiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		return auth, nil
 	}
 
-	client := kimiauth.NewDeviceFlowClientWithDeviceID(e.cfg, resolveKimiDeviceID(auth))
+	deviceID := resolveKimiDeviceID(auth)
+	if deviceID == "" {
+		log.WithField("auth_id", auth.ID).Warn("kimi executor: refreshing credential without device_id; upstream may reject the token")
+	}
+
+	client := kimiauth.NewDeviceFlowClientWithDeviceID(e.cfg, deviceID)
 	td, err := client.RefreshToken(ctx, refreshToken)
 	if err != nil {
 		return nil, err
@@ -472,10 +493,22 @@ func (e *KimiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	if td.ExpiresAt > 0 {
 		exp := time.Unix(td.ExpiresAt, 0).UTC().Format(time.RFC3339)
 		auth.Metadata["expired"] = exp
+	} else {
+		delete(auth.Metadata, "expired")
 	}
 	auth.Metadata["type"] = "kimi"
 	now := time.Now().Format(time.RFC3339)
 	auth.Metadata["last_refresh"] = now
+	if td.TokenType != "" {
+		auth.Metadata["token_type"] = td.TokenType
+	}
+	if td.Scope != "" {
+		auth.Metadata["scope"] = td.Scope
+	}
+	if deviceID != "" {
+		setKimiDeviceID(auth, deviceID)
+	}
+	syncKimiStorage(auth)
 	return auth, nil
 }
 
@@ -529,12 +562,84 @@ func resolveKimiDeviceIDFromStorage(auth *cliproxyauth.Auth) string {
 	return strings.TrimSpace(storage.DeviceID)
 }
 
+func setKimiDeviceID(auth *cliproxyauth.Auth, deviceID string) {
+	deviceID = strings.TrimSpace(deviceID)
+	if auth == nil || deviceID == "" {
+		return
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata["device_id"] = deviceID
+
+	storage, ok := auth.Storage.(*kimiauth.KimiTokenStorage)
+	if ok && storage != nil {
+		storage.DeviceID = deviceID
+	}
+}
+
+func syncKimiStorage(auth *cliproxyauth.Auth) {
+	if auth == nil || strings.TrimSpace(auth.Provider) != "kimi" {
+		return
+	}
+
+	storage, ok := auth.Storage.(*kimiauth.KimiTokenStorage)
+	if !ok || storage == nil {
+		storage = &kimiauth.KimiTokenStorage{Type: "kimi"}
+		auth.Storage = storage
+	}
+
+	if auth.Metadata == nil {
+		return
+	}
+
+	if v, ok := auth.Metadata["access_token"].(string); ok {
+		storage.AccessToken = strings.TrimSpace(v)
+	}
+	if v, ok := auth.Metadata["refresh_token"].(string); ok {
+		storage.RefreshToken = strings.TrimSpace(v)
+	}
+	if v, ok := auth.Metadata["token_type"].(string); ok {
+		storage.TokenType = strings.TrimSpace(v)
+	}
+	if v, ok := auth.Metadata["scope"].(string); ok {
+		storage.Scope = strings.TrimSpace(v)
+	}
+	if v, ok := auth.Metadata["expired"].(string); ok {
+		storage.Expired = strings.TrimSpace(v)
+	} else {
+		storage.Expired = ""
+	}
+	if v, ok := auth.Metadata["device_id"].(string); ok {
+		storage.DeviceID = strings.TrimSpace(v)
+	}
+	if storage.Type == "" {
+		storage.Type = "kimi"
+	}
+}
+
 func resolveKimiDeviceID(auth *cliproxyauth.Auth) string {
-	deviceID := resolveKimiDeviceIDFromAuth(auth)
-	if deviceID != "" {
+	authDeviceID := resolveKimiDeviceIDFromAuth(auth)
+	storageDeviceID := resolveKimiDeviceIDFromStorage(auth)
+
+	switch {
+	case authDeviceID != "":
+		if storageDeviceID != "" && !strings.EqualFold(authDeviceID, storageDeviceID) {
+			log.WithField("auth_id", auth.ID).Warn("kimi executor: auth metadata device_id differs from storage; using metadata value")
+		}
+		setKimiDeviceID(auth, authDeviceID)
+		return authDeviceID
+	case storageDeviceID != "":
+		setKimiDeviceID(auth, storageDeviceID)
+		return storageDeviceID
+	default:
+		deviceID := strings.TrimSpace(getKimiDeviceID())
+		if deviceID != "" {
+			setKimiDeviceID(auth, deviceID)
+		}
 		return deviceID
 	}
-	return resolveKimiDeviceIDFromStorage(auth)
 }
 
 func applyKimiHeadersWithAuth(r *http.Request, token string, stream bool, auth *cliproxyauth.Auth) {
@@ -607,6 +712,15 @@ func kimiCreds(a *cliproxyauth.Auth) (token string) {
 		}
 	}
 	return ""
+}
+
+func kimiBaseURL(a *cliproxyauth.Auth) string {
+	if a != nil && a.Attributes != nil {
+		if v := strings.TrimSpace(a.Attributes["base_url"]); v != "" {
+			return v
+		}
+	}
+	return kimiauth.KimiAPIBaseURL
 }
 
 // stripKimiPrefix removes the "kimi-" prefix from model names for the upstream API.

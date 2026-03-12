@@ -6,6 +6,7 @@ package kimi
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
@@ -65,11 +66,11 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		if config.Level == "" {
 			return body, nil
 		}
-		effort = string(config.Level)
+		effort = clampKimiEffort(string(config.Level), modelInfo)
 	case thinking.ModeNone:
 		// Respect clamped fallback level for models that cannot disable thinking.
 		if config.Level != "" && config.Level != thinking.LevelNone {
-			effort = string(config.Level)
+			effort = clampKimiEffort(string(config.Level), modelInfo)
 			break
 		}
 		// Kimi requires explicit disabled thinking object.
@@ -80,10 +81,9 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		if !ok {
 			return body, nil
 		}
-		effort = level
+		effort = clampKimiEffort(level, modelInfo)
 	case thinking.ModeAuto:
-		// Auto mode maps to "auto" effort
-		effort = string(thinking.LevelAuto)
+		effort = clampKimiEffort(string(thinking.LevelHigh), modelInfo)
 	default:
 		return body, nil
 	}
@@ -92,6 +92,63 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		return body, nil
 	}
 	return applyReasoningEffort(body, effort)
+}
+
+var kimiThinkingOrder = []string{
+	string(thinking.LevelMinimal),
+	string(thinking.LevelLow),
+	string(thinking.LevelMedium),
+	string(thinking.LevelHigh),
+	string(thinking.LevelXHigh),
+	string(thinking.LevelMax),
+}
+
+func clampKimiEffort(effort string, modelInfo *registry.ModelInfo) string {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "" || modelInfo == nil || modelInfo.Thinking == nil || len(modelInfo.Thinking.Levels) == 0 {
+		return effort
+	}
+	for _, supported := range modelInfo.Thinking.Levels {
+		if strings.EqualFold(strings.TrimSpace(supported), effort) {
+			return effort
+		}
+	}
+
+	targetIdx := kimiThinkingIndex(effort)
+	if targetIdx == -1 {
+		return effort
+	}
+
+	bestSupported := effort
+	bestIdx := -1
+	bestDist := len(kimiThinkingOrder) + 1
+	for _, supported := range modelInfo.Thinking.Levels {
+		idx := kimiThinkingIndex(strings.TrimSpace(supported))
+		if idx == -1 {
+			continue
+		}
+		dist := idx - targetIdx
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist < bestDist || (dist == bestDist && idx < bestIdx) {
+			bestDist = dist
+			bestIdx = idx
+			bestSupported = kimiThinkingOrder[idx]
+		}
+	}
+
+	return bestSupported
+}
+
+func kimiThinkingIndex(level string) int {
+	level = strings.ToLower(strings.TrimSpace(level))
+	for idx := range kimiThinkingOrder {
+		if kimiThinkingOrder[idx] == level {
+			return idx
+		}
+	}
+	return -1
 }
 
 // applyCompatibleKimi applies thinking config for user-defined Kimi models.
@@ -115,7 +172,7 @@ func applyCompatibleKimi(body []byte, config thinking.ThinkingConfig) ([]byte, e
 			effort = string(config.Level)
 		}
 	case thinking.ModeAuto:
-		effort = string(thinking.LevelAuto)
+		effort = string(thinking.LevelHigh)
 	case thinking.ModeBudget:
 		// Convert budget to level
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)

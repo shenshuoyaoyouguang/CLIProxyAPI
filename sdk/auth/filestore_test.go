@@ -1,6 +1,12 @@
 package auth
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	kimiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
+)
 
 func TestExtractAccessToken(t *testing.T) {
 	t.Parallel()
@@ -76,5 +82,50 @@ func TestExtractAccessToken(t *testing.T) {
 				t.Errorf("extractAccessToken() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestReadAuthFile_HydratesKimiStorage(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kimi.json")
+	raw := `{
+		"type":"kimi",
+		"access_token":"access-1",
+		"refresh_token":"refresh-1",
+		"token_type":"Bearer",
+		"scope":"user",
+		"device_id":"device-1",
+		"expired":"2026-03-10T10:00:00Z"
+	}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	store := NewFileTokenStore()
+	auth, err := store.readAuthFile(path, dir)
+	if err != nil {
+		t.Fatalf("readAuthFile() error = %v", err)
+	}
+	if auth == nil {
+		t.Fatalf("readAuthFile() returned nil auth")
+	}
+
+	storage, ok := auth.Storage.(*kimiauth.KimiTokenStorage)
+	if !ok || storage == nil {
+		t.Fatalf("expected KimiTokenStorage, got %T", auth.Storage)
+	}
+	if storage.AccessToken != "access-1" {
+		t.Fatalf("storage.AccessToken = %q, want %q", storage.AccessToken, "access-1")
+	}
+	if storage.RefreshToken != "refresh-1" {
+		t.Fatalf("storage.RefreshToken = %q, want %q", storage.RefreshToken, "refresh-1")
+	}
+	if storage.DeviceID != "device-1" {
+		t.Fatalf("storage.DeviceID = %q, want %q", storage.DeviceID, "device-1")
+	}
+	if storage.Type != "kimi" {
+		t.Fatalf("storage.Type = %q, want %q", storage.Type, "kimi")
 	}
 }

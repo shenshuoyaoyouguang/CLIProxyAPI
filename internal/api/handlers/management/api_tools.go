@@ -8,10 +8,15 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	kimiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -185,6 +190,10 @@ func (h *Handler) APICall(c *gin.Context) {
 	if hostOverride != "" {
 		req.Host = hostOverride
 	}
+	if errPrepare := h.prepareAPICallRequest(c.Request.Context(), auth, req); errPrepare != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errPrepare.Error()})
+		return
+	}
 
 	httpClient := &http.Client{
 		Timeout: defaultAPICallTimeout,
@@ -207,6 +216,16 @@ func (h *Handler) APICall(c *gin.Context) {
 	if errReadAll != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		log.WithFields(log.Fields{
+			"auth_id":         authID(auth),
+			"provider":        authProvider(auth),
+			"method":          method,
+			"url":             sanitizedURLForLog(parsedURL),
+			"upstream_status": resp.StatusCode,
+			"response_bytes":  len(respBody),
+		}).Warn("management api-call upstream returned non-2xx")
 	}
 
 	c.JSON(http.StatusOK, apiCallResponse{
@@ -258,12 +277,38 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth) 
 		token, errToken := h.refreshGeminiOAuthAccessToken(ctx, auth)
 		return token, errToken
 	}
+	if provider == "kimi" {
+		token, errToken := h.refreshKimiOAuthAccessToken(ctx, auth)
+		return token, errToken
+	}
 	if provider == "antigravity" {
 		token, errToken := h.refreshAntigravityOAuthAccessToken(ctx, auth)
 		return token, errToken
 	}
 
 	return tokenValueForAuth(auth), nil
+}
+
+func (h *Handler) prepareAPICallRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) error {
+	if auth == nil || req == nil {
+		return nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+	case "kimi":
+		token, err := h.resolveTokenForAuth(ctx, auth)
+		if err != nil {
+			return fmt.Errorf("auth token refresh failed")
+		}
+		if strings.TrimSpace(req.Header.Get("Authorization")) == "" && token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if errApply := h.applyKimiAPICallHeaders(ctx, auth, req); errApply != nil {
+			return errApply
+		}
+	}
+
+	return nil
 }
 
 func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
@@ -334,6 +379,84 @@ func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *corea
 		updater(fields)
 	}
 	return strings.TrimSpace(currentToken.AccessToken), nil
+}
+
+func (h *Handler) refreshKimiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if auth == nil {
+		return "", nil
+	}
+
+	current := strings.TrimSpace(tokenValueFromMetadata(auth.Metadata))
+	if current != "" && !authNeedsRefresh(auth, 30*time.Second) {
+		return current, nil
+	}
+
+	refreshToken := stringValue(auth.Metadata, "refresh_token")
+	if refreshToken == "" {
+		return current, nil
+	}
+
+	deviceID, source := resolveKimiDeviceIDForManagement(auth)
+	if deviceID == "" {
+		return "", fmt.Errorf("kimi device_id missing")
+	}
+	cfgForRefresh := kimiRefreshConfigForAuth(h.cfg, auth)
+	client := kimiauth.NewDeviceFlowClientWithDeviceID(cfgForRefresh, deviceID)
+	tokenData, errRefresh := client.RefreshToken(ctx, refreshToken)
+	if errRefresh != nil {
+		return "", errRefresh
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	now := time.Now().UTC()
+	auth.Metadata["access_token"] = strings.TrimSpace(tokenData.AccessToken)
+	if strings.TrimSpace(tokenData.RefreshToken) != "" {
+		auth.Metadata["refresh_token"] = strings.TrimSpace(tokenData.RefreshToken)
+	}
+	if strings.TrimSpace(tokenData.TokenType) != "" {
+		auth.Metadata["token_type"] = strings.TrimSpace(tokenData.TokenType)
+	}
+	if strings.TrimSpace(tokenData.Scope) != "" {
+		auth.Metadata["scope"] = strings.TrimSpace(tokenData.Scope)
+	}
+	if tokenData.ExpiresAt > 0 {
+		auth.Metadata["expired"] = time.Unix(tokenData.ExpiresAt, 0).UTC().Format(time.RFC3339)
+	} else {
+		delete(auth.Metadata, "expired")
+	}
+	if deviceID != "" && source != kimiDeviceIDSourceLocal {
+		auth.Metadata["device_id"] = deviceID
+		if storage, ok := auth.Storage.(*kimiauth.KimiTokenStorage); ok && storage != nil {
+			storage.DeviceID = deviceID
+			storage.AccessToken = strings.TrimSpace(tokenData.AccessToken)
+			if strings.TrimSpace(tokenData.RefreshToken) != "" {
+				storage.RefreshToken = strings.TrimSpace(tokenData.RefreshToken)
+			}
+			storage.TokenType = strings.TrimSpace(tokenData.TokenType)
+			storage.Scope = strings.TrimSpace(tokenData.Scope)
+			if tokenData.ExpiresAt > 0 {
+				storage.Expired = time.Unix(tokenData.ExpiresAt, 0).UTC().Format(time.RFC3339)
+			} else {
+				storage.Expired = ""
+			}
+		}
+	}
+	auth.Metadata["type"] = "kimi"
+
+	if h != nil && h.authManager != nil {
+		auth.LastRefreshedAt = now
+		auth.UpdatedAt = now
+		if _, errUpdate := h.authManager.Update(ctx, auth); errUpdate != nil {
+			log.WithError(errUpdate).WithField("auth_id", auth.ID).Warn("management api-call: failed to persist refreshed kimi token")
+		}
+	}
+
+	return strings.TrimSpace(tokenData.AccessToken), nil
 }
 
 func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
@@ -454,6 +577,17 @@ func antigravityTokenNeedsRefresh(metadata map[string]any) bool {
 		return !exp.After(time.Now().Add(skew))
 	}
 	return true
+}
+
+func authNeedsRefresh(auth *coreauth.Auth, skew time.Duration) bool {
+	if auth == nil {
+		return true
+	}
+	expiry, ok := auth.ExpirationTime()
+	if !ok {
+		return false
+	}
+	return !expiry.After(time.Now().Add(skew))
 }
 
 func int64Value(raw any) int64 {
@@ -611,6 +745,148 @@ func tokenValueFromMetadata(metadata map[string]any) string {
 		return strings.TrimSpace(v)
 	}
 	return ""
+}
+
+func (h *Handler) applyKimiAPICallHeaders(ctx context.Context, auth *coreauth.Auth, req *http.Request) error {
+	if req == nil {
+		return nil
+	}
+
+	if strings.TrimSpace(req.Header.Get("User-Agent")) == "" {
+		req.Header.Set("User-Agent", "KimiCLI/1.10.6")
+	}
+	if strings.TrimSpace(req.Header.Get("X-Msh-Platform")) == "" {
+		req.Header.Set("X-Msh-Platform", "kimi_cli")
+	}
+	if strings.TrimSpace(req.Header.Get("X-Msh-Version")) == "" {
+		req.Header.Set("X-Msh-Version", "1.10.6")
+	}
+	if strings.TrimSpace(req.Header.Get("X-Msh-Device-Name")) == "" {
+		req.Header.Set("X-Msh-Device-Name", kimiDeviceName())
+	}
+	if strings.TrimSpace(req.Header.Get("X-Msh-Device-Model")) == "" {
+		req.Header.Set("X-Msh-Device-Model", kimiDeviceModel())
+	}
+
+	deviceID, source := resolveKimiDeviceIDForManagement(auth)
+	if deviceID == "" {
+		log.WithField("auth_id", auth.ID).Warn("management api-call: kimi auth missing device_id; upstream may reject the request")
+		return nil
+	}
+	req.Header.Set("X-Msh-Device-Id", deviceID)
+
+	if auth != nil && source == kimiDeviceIDSourceLocal {
+		log.WithField("auth_id", auth.ID).Warn("management api-call: using local kimi device_id fallback without persisting it")
+	}
+
+	return nil
+}
+
+func authID(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	return strings.TrimSpace(auth.ID)
+}
+
+func authProvider(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	return strings.TrimSpace(auth.Provider)
+}
+
+func sanitizedURLForLog(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	copyURL := *u
+	copyURL.User = nil
+	copyURL.RawQuery = ""
+	copyURL.ForceQuery = false
+	return copyURL.String()
+}
+
+type kimiDeviceIDSource string
+
+const (
+	kimiDeviceIDSourceNone    kimiDeviceIDSource = ""
+	kimiDeviceIDSourceAuth    kimiDeviceIDSource = "auth"
+	kimiDeviceIDSourceStorage kimiDeviceIDSource = "storage"
+	kimiDeviceIDSourceLocal   kimiDeviceIDSource = "local"
+)
+
+func resolveKimiDeviceIDForManagement(auth *coreauth.Auth) (string, kimiDeviceIDSource) {
+	if auth != nil {
+		if deviceID := strings.TrimSpace(stringValue(auth.Metadata, "device_id")); deviceID != "" {
+			return deviceID, kimiDeviceIDSourceAuth
+		}
+		if storage, ok := auth.Storage.(*kimiauth.KimiTokenStorage); ok && storage != nil {
+			if deviceID := strings.TrimSpace(storage.DeviceID); deviceID != "" {
+				return deviceID, kimiDeviceIDSourceStorage
+			}
+		}
+	}
+	if deviceID := localKimiDeviceID(); deviceID != "" {
+		return deviceID, kimiDeviceIDSourceLocal
+	}
+	return "", kimiDeviceIDSourceNone
+}
+
+func localKimiDeviceID() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	var kimiShareDir string
+	switch runtime.GOOS {
+	case "darwin":
+		kimiShareDir = filepath.Join(homeDir, "Library", "Application Support", "kimi")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(homeDir, "AppData", "Roaming")
+		}
+		kimiShareDir = filepath.Join(appData, "kimi")
+	default:
+		kimiShareDir = filepath.Join(homeDir, ".local", "share", "kimi")
+	}
+
+	deviceIDPath := filepath.Join(kimiShareDir, "device_id")
+	data, err := os.ReadFile(deviceIDPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func kimiDeviceName() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return hostname
+}
+
+func kimiDeviceModel() string {
+	return fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH)
+}
+
+func kimiRefreshConfigForAuth(cfg *config.Config, auth *coreauth.Auth) *config.Config {
+	if cfg == nil {
+		if auth == nil || strings.TrimSpace(auth.ProxyURL) == "" {
+			return nil
+		}
+		return &config.Config{SDKConfig: config.SDKConfig{ProxyURL: strings.TrimSpace(auth.ProxyURL)}}
+	}
+	if auth == nil || strings.TrimSpace(auth.ProxyURL) == "" {
+		return cfg
+	}
+	cloned := *cfg
+	cloned.SDKConfig = cfg.SDKConfig
+	cloned.SDKConfig.ProxyURL = strings.TrimSpace(auth.ProxyURL)
+	return &cloned
 }
 
 func (h *Handler) authByIndex(authIndex string) *coreauth.Auth {
