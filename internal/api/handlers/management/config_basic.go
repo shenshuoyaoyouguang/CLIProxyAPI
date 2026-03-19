@@ -129,11 +129,6 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": err.Error()})
 		return
 	}
-	if parsed.LogsMaxTotalSizeMB > config.MaxLogsMaxTotalSizeMB {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "logs-max-total-size-mb exceeds allowed maximum"})
-		return
-	}
-
 	snapshot, err := h.runtimeSnapshot()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "config snapshot failed", "message": err.Error()})
@@ -162,14 +157,24 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		_ = os.Remove(tempFile)
 	}()
 
-	if _, err = config.LoadConfigOptional(tempFile, false); err != nil {
+	validatedCfg, err := config.LoadConfigOptional(tempFile, false)
+	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
+		return
+	}
+	if err := config.SaveConfigPreserveComments(tempFile, validatedCfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": err.Error()})
+		return
+	}
+	normalizedBody, err := os.ReadFile(tempFile)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
 		return
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if err := WriteConfig(snapshot.configFilePath, body); err != nil {
+	if err := WriteConfig(snapshot.configFilePath, normalizedBody); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})
 		return
 	}

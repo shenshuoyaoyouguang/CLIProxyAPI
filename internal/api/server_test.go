@@ -285,3 +285,34 @@ func TestOAuthCallbackRoute_UsesSessionAuthDir(t *testing.T) {
 		t.Fatalf("expected no callback file in config auth dir, stat err: %v", err)
 	}
 }
+
+func TestOAuthCallbackRoute_ReturnsErrorWhenCallbackFileWriteFails(t *testing.T) {
+	server := newTestServer(t)
+
+	blockedAuthDir := filepath.Join(t.TempDir(), "blocked-auth-dir")
+	if err := os.WriteFile(blockedAuthDir, []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("failed to create blocking auth path: %v", err)
+	}
+
+	state := "codex-route-write-failure"
+	managementHandlers.RegisterOAuthSession(state, "codex", blockedAuthDir)
+
+	req := httptest.NewRequest(http.MethodGet, "/codex/callback?state="+state+"&code=route-code", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusInternalServerError, rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "Authentication successful") {
+		t.Fatalf("expected failure response, got %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Authentication failed") {
+		t.Fatalf("expected failure response body, got %s", rr.Body.String())
+	}
+
+	sessionPath := filepath.Join(blockedAuthDir, ".oauth-codex-"+state+".oauth")
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("expected no callback file when write fails, stat err: %v", err)
+	}
+}
