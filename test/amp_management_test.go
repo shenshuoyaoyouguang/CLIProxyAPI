@@ -404,8 +404,8 @@ func TestDeleteAmpModelMappings_Specific(t *testing.T) {
 	}
 }
 
-// TestDeleteAmpModelMappings_All verifies DELETE with empty body removes all mappings.
-func TestDeleteAmpModelMappings_All(t *testing.T) {
+// TestDeleteAmpModelMappings_EmptyBody verifies DELETE with empty body is rejected and does not clear mappings.
+func TestDeleteAmpModelMappings_EmptyBody(t *testing.T) {
 	h, _ := newAmpTestHandler(t)
 	r := setupAmpRouter(h)
 
@@ -413,8 +413,128 @@ func TestDeleteAmpModelMappings_All(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v0/management/ampcode/model-mappings", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	var resp map[string][]config.AmpModelMapping
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if len(resp["model-mappings"]) != 1 {
+		t.Fatalf("expected original mappings to remain, got %d", len(resp["model-mappings"]))
+	}
+}
+
+// TestDeleteAmpModelMappings_InvalidJSON verifies invalid JSON is rejected and does not clear mappings.
+func TestDeleteAmpModelMappings_InvalidJSON(t *testing.T) {
+	h, _ := newAmpTestHandler(t)
+	r := setupAmpRouter(h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v0/management/ampcode/model-mappings", bytes.NewBufferString("{bad json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v0/management/ampcode/model-mappings", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	var resp map[string][]config.AmpModelMapping
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if len(resp["model-mappings"]) != 1 {
+		t.Fatalf("expected original mappings to remain, got %d", len(resp["model-mappings"]))
+	}
+}
+
+// TestDeleteAmpModelMappings_MissingValue verifies missing value is rejected and does not clear mappings.
+func TestDeleteAmpModelMappings_MissingValue(t *testing.T) {
+	h, _ := newAmpTestHandler(t)
+	r := setupAmpRouter(h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v0/management/ampcode/model-mappings", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v0/management/ampcode/model-mappings", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	var resp map[string][]config.AmpModelMapping
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if len(resp["model-mappings"]) != 1 {
+		t.Fatalf("expected original mappings to remain, got %d", len(resp["model-mappings"]))
+	}
+}
+
+// TestDeleteAmpModelMappings_NullValue verifies null value is rejected and does not clear mappings.
+func TestDeleteAmpModelMappings_NullValue(t *testing.T) {
+	h, _ := newAmpTestHandler(t)
+	r := setupAmpRouter(h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v0/management/ampcode/model-mappings", bytes.NewBufferString(`{"value":null}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v0/management/ampcode/model-mappings", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	var resp map[string][]config.AmpModelMapping
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if len(resp["model-mappings"]) != 1 {
+		t.Fatalf("expected original mappings to remain, got %d", len(resp["model-mappings"]))
+	}
+}
+
+// TestDeleteAmpModelMappings_EmptyArrayClearsAll verifies an explicit empty array clears all mappings.
+func TestDeleteAmpModelMappings_EmptyArrayClearsAll(t *testing.T) {
+	h, _ := newAmpTestHandler(t)
+	r := setupAmpRouter(h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v0/management/ampcode/model-mappings", bytes.NewBufferString(`{"value":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v0/management/ampcode/model-mappings", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	var resp map[string][]config.AmpModelMapping
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if len(resp["model-mappings"]) != 0 {
+		t.Fatalf("expected mappings to be cleared, got %d", len(resp["model-mappings"]))
 	}
 }
 
