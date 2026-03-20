@@ -996,6 +996,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
+	pruneAmpCodeGeneratedKeys(original.Content[0], generated.Content[0])
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
 	mergeMappingPreserve(original.Content[0], generated.Content[0])
@@ -1636,6 +1637,26 @@ func pruneMissingMapKeys(dstMap, srcMap *yaml.Node) {
 		}
 		i += 2
 	}
+}
+
+func pruneAmpCodeGeneratedKeys(dstRoot, srcRoot *yaml.Node) {
+	if dstRoot == nil || srcRoot == nil || dstRoot.Kind != yaml.MappingNode || srcRoot.Kind != yaml.MappingNode {
+		return
+	}
+	dstIdx := findMapKeyIndex(dstRoot, "ampcode")
+	if dstIdx < 0 || dstIdx+1 >= len(dstRoot.Content) {
+		return
+	}
+	srcIdx := findMapKeyIndex(srcRoot, "ampcode")
+	if srcIdx < 0 || srcIdx+1 >= len(srcRoot.Content) {
+		return
+	}
+	dstAmp := dstRoot.Content[dstIdx+1]
+	srcAmp := srcRoot.Content[srcIdx+1]
+	if dstAmp == nil || srcAmp == nil || dstAmp.Kind != yaml.MappingNode || srcAmp.Kind != yaml.MappingNode {
+		return
+	}
+	pruneMissingMapKeys(dstAmp, srcAmp)
 }
 
 // normalizeCollectionNodeStyles forces YAML collections to use block notation, keeping

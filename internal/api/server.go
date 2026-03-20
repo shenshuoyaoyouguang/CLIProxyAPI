@@ -165,6 +165,8 @@ type Server struct {
 	// management handler
 	mgmt *managementHandlers.Handler
 
+	updateClientsMu sync.Mutex
+
 	// ampModule is the Amp routing module for model mapping hot-reload
 	ampModule *ampmodule.AmpModule
 
@@ -285,6 +287,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.postAuthHook != nil {
 		s.mgmt.SetPostAuthHook(optionState.postAuthHook)
 	}
+	s.mgmt.SetRuntimeApplier(func(nextCfg *config.Config) error {
+		s.UpdateClients(nextCfg)
+		return nil
+	})
 	s.localPassword = optionState.localPassword
 
 	// Setup routes
@@ -857,6 +863,9 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
 func (s *Server) UpdateClients(cfg *config.Config) {
+	s.updateClientsMu.Lock()
+	defer s.updateClientsMu.Unlock()
+
 	// Reconstruct old config from YAML snapshot to avoid reference sharing issues
 	var oldCfg *config.Config
 	if len(s.oldConfigYaml) > 0 {

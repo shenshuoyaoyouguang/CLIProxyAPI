@@ -316,3 +316,131 @@ func TestOAuthCallbackRoute_ReturnsErrorWhenCallbackFileWriteFails(t *testing.T)
 		t.Fatalf("expected no callback file when write fails, stat err: %v", err)
 	}
 }
+
+func TestManagementPutWebsocketAuth_AppliesCommittedConfigAndUpdatesRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("MANAGEMENT_PASSWORD", "local-secret")
+
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("api-keys:\n  - test-key\nws-auth: false\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{APIKeys: []string{"test-key"}},
+		AuthDir:   authDir,
+	}
+	server := NewServer(cfg, auth.NewManager(nil, nil, nil), nil, configPath, WithLocalManagementPassword("local-secret"))
+	server.AttachWebsocketRoute("/live-ws", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	beforeReq := httptest.NewRequest(http.MethodGet, "/live-ws", nil)
+	beforeReq.RemoteAddr = "127.0.0.1:12345"
+	beforeResp := httptest.NewRecorder()
+	server.engine.ServeHTTP(beforeResp, beforeReq)
+	if beforeResp.Code != http.StatusNoContent {
+		t.Fatalf("expected websocket route to be open before ws-auth update, got %d body=%s", beforeResp.Code, beforeResp.Body.String())
+	}
+
+	mgmtReq := httptest.NewRequest(http.MethodPut, "/v0/management/ws-auth", strings.NewReader(`{"value":true}`))
+	mgmtReq.RemoteAddr = "127.0.0.1:12345"
+	mgmtReq.Header.Set("Authorization", "Bearer local-secret")
+	mgmtReq.Header.Set("Content-Type", "application/json")
+	mgmtResp := httptest.NewRecorder()
+	server.engine.ServeHTTP(mgmtResp, mgmtReq)
+	if mgmtResp.Code != http.StatusOK {
+		t.Fatalf("expected management update to succeed, got %d body=%s", mgmtResp.Code, mgmtResp.Body.String())
+	}
+
+	if server.cfg == nil || !server.cfg.WebsocketAuth {
+		t.Fatalf("expected server config to reflect committed ws-auth update, got %+v", server.cfg)
+	}
+
+	persisted, err := proxyconfig.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("failed to load persisted config: %v", err)
+	}
+	if !persisted.WebsocketAuth {
+		t.Fatalf("expected persisted config to enable ws-auth, got %+v", persisted)
+	}
+
+	afterReq := httptest.NewRequest(http.MethodGet, "/live-ws", nil)
+	afterReq.RemoteAddr = "127.0.0.1:12345"
+	afterResp := httptest.NewRecorder()
+	server.engine.ServeHTTP(afterResp, afterReq)
+	if afterResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected websocket route to require auth after ws-auth update, got %d body=%s", afterResp.Code, afterResp.Body.String())
+	}
+
+	authorizedReq := httptest.NewRequest(http.MethodGet, "/live-ws", nil)
+	authorizedReq.RemoteAddr = "127.0.0.1:12345"
+	authorizedReq.Header.Set("Authorization", "Bearer test-key")
+	authorizedResp := httptest.NewRecorder()
+	server.engine.ServeHTTP(authorizedResp, authorizedReq)
+	if authorizedResp.Code != http.StatusNoContent {
+		t.Fatalf("expected authorized websocket route to succeed after ws-auth update, got %d body=%s", authorizedResp.Code, authorizedResp.Body.String())
+	}
+}
+
+func TestManagementPutConfigYAML_AppliesCommittedConfigAndEnablesRequestLogging(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("MANAGEMENT_PASSWORD", "local-secret")
+
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("api-keys:\n  - test-key\nrequest-log: false\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys:    []string{"test-key"},
+			RequestLog: false,
+		},
+		AuthDir: authDir,
+	}
+	server := NewServer(cfg, auth.NewManager(nil, nil, nil), nil, configPath, WithLocalManagementPassword("local-secret"))
+	if server.requestLogger == nil {
+		t.Fatal("expected request logger to be configured")
+	}
+	if server.requestLogger.IsEnabled() {
+		t.Fatal("expected request logger to start disabled")
+	}
+
+	mgmtReq := httptest.NewRequest(http.MethodPut, "/v0/management/config.yaml", strings.NewReader("api-keys:\n  - test-key\nrequest-log: true\n"))
+	mgmtReq.RemoteAddr = "127.0.0.1:12345"
+	mgmtReq.Header.Set("Authorization", "Bearer local-secret")
+	mgmtReq.Header.Set("Content-Type", "application/yaml")
+	mgmtResp := httptest.NewRecorder()
+	server.engine.ServeHTTP(mgmtResp, mgmtReq)
+	if mgmtResp.Code != http.StatusOK {
+		t.Fatalf("expected config.yaml update to succeed, got %d body=%s", mgmtResp.Code, mgmtResp.Body.String())
+	}
+
+	if server.cfg == nil || !server.cfg.RequestLog {
+		t.Fatalf("expected server config to reflect committed request-log update, got %+v", server.cfg)
+	}
+	if !server.requestLogger.IsEnabled() {
+		t.Fatal("expected request logger to be enabled after config.yaml update")
+	}
+
+	persisted, err := proxyconfig.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("failed to load persisted config: %v", err)
+	}
+	if !persisted.RequestLog {
+		t.Fatalf("expected persisted config to enable request-log, got %+v", persisted)
+	}
+}

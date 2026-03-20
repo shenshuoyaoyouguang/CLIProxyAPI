@@ -178,14 +178,18 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})
 		return
 	}
-	newCfg, err := config.LoadConfig(snapshot.configFilePath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": err.Error()})
+	if _, err := h.reloadCommittedConfig(snapshot); err != nil {
+		message := err.Error()
+		switch {
+		case strings.HasPrefix(message, "failed to reload config: "):
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": strings.TrimPrefix(message, "failed to reload config: ")})
+		case strings.HasPrefix(message, "failed to apply runtime config: "):
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "runtime_apply_failed", "message": strings.TrimPrefix(message, "failed to apply runtime config: ")})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": message})
+		}
 		return
 	}
-	h.stateMu.Lock()
-	h.cfg = newCfg
-	h.stateMu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
 }
 
