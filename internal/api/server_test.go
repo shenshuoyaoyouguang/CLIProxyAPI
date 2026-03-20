@@ -315,6 +315,19 @@ func TestOAuthCallbackRoute_ReturnsErrorWhenCallbackFileWriteFails(t *testing.T)
 	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
 		t.Fatalf("expected no callback file when write fails, stat err: %v", err)
 	}
+	if managementHandlers.IsOAuthSessionPending(state, "codex") {
+		t.Fatal("expected callback write failure to end pending oauth session")
+	}
+	provider, status, ok := managementHandlers.GetOAuthSession(state)
+	if !ok {
+		t.Fatal("expected oauth session to remain available with error status")
+	}
+	if provider != "codex" {
+		t.Fatalf("expected provider codex, got %q", provider)
+	}
+	if strings.TrimSpace(status) == "" {
+		t.Fatal("expected oauth session error status to be recorded")
+	}
 }
 
 func TestManagementPutWebsocketAuth_AppliesCommittedConfigAndUpdatesRoutes(t *testing.T) {

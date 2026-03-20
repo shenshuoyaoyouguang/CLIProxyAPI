@@ -46,6 +46,9 @@ const oauthCallbackFailureHTML = `<html><head><meta charset="utf-8"><title>Authe
 
 func writePendingOAuthCallbackFile(provider, state, code, errStr string) error {
 	_, err := managementHandlers.WriteOAuthCallbackFileForPendingSession(provider, state, code, errStr)
+	if err != nil {
+		managementHandlers.SetOAuthSessionError(state, strings.TrimSpace(errStr))
+	}
 	return err
 }
 
