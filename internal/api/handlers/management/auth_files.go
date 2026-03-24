@@ -596,8 +596,8 @@ func findAuthByName(manager *coreauth.Manager, name string, matchPath bool) *cor
 
 // Download single auth file by name
 func (h *Handler) DownloadAuthFile(c *gin.Context) {
-	name := c.Query("name")
-	if name == "" || strings.Contains(name, string(os.PathSeparator)) {
+	name := strings.TrimSpace(c.Query("name"))
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") {
 		c.JSON(400, gin.H{"error": "invalid name"})
 		return
 	}
@@ -610,7 +610,17 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "auth dir unavailable"})
 		return
 	}
-	full := filepath.Join(authDir, name)
+	dirAbs, errAbs := filepath.Abs(authDir)
+	if errAbs != nil {
+		c.JSON(500, gin.H{"error": fmt.Sprintf("failed to resolve auth dir: %v", errAbs)})
+		return
+	}
+	full := filepath.Clean(filepath.Join(dirAbs, name))
+	prefix := dirAbs + string(os.PathSeparator)
+	if !strings.HasPrefix(full, prefix) {
+		c.JSON(400, gin.H{"error": "invalid name"})
+		return
+	}
 	data, err := os.ReadFile(full)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -698,6 +708,10 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 
 // Delete auth files: single by name or all
 func (h *Handler) DeleteAuthFile(c *gin.Context) {
+	if h == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler not initialized"})
+		return
+	}
 	manager, err := h.authManagerSnapshot()
 	if err != nil || manager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
@@ -708,9 +722,19 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
+	authDir, err = util.ResolveAuthDir(strings.TrimSpace(authDir))
+	if err != nil || authDir == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+	dirAbs, errAbs := filepath.Abs(authDir)
+	if errAbs != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to resolve auth dir: %v", errAbs)})
+		return
+	}
 	ctx := c.Request.Context()
 	if all := c.Query("all"); all == "true" || all == "1" || all == "*" {
-		entries, err := os.ReadDir(authDir)
+		entries, err := os.ReadDir(dirAbs)
 		if err != nil {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read auth dir: %v", err)})
 			return
@@ -724,12 +748,7 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 			if !strings.HasSuffix(strings.ToLower(name), ".json") {
 				continue
 			}
-			full := filepath.Join(authDir, name)
-			if !filepath.IsAbs(full) {
-				if abs, errAbs := filepath.Abs(full); errAbs == nil {
-					full = abs
-				}
-			}
+			full := filepath.Clean(filepath.Join(dirAbs, name))
 			if err = os.Remove(full); err == nil {
 				if errDel := h.deleteTokenRecord(ctx, full); errDel != nil {
 					c.JSON(500, gin.H{"error": errDel.Error()})
@@ -742,24 +761,29 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "deleted": deleted})
 		return
 	}
-	name := c.Query("name")
-	if name == "" || strings.Contains(name, string(os.PathSeparator)) {
+	name := strings.TrimSpace(c.Query("name"))
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") {
 		c.JSON(400, gin.H{"error": "invalid name"})
 		return
 	}
 
-	targetPath := filepath.Join(authDir, filepath.Base(name))
+	targetPath := filepath.Clean(filepath.Join(dirAbs, filepath.Base(name)))
 	targetID := ""
 	if targetAuth := findAuthByName(manager, name, true); targetAuth != nil {
 		targetID = strings.TrimSpace(targetAuth.ID)
 		if path := strings.TrimSpace(authAttribute(targetAuth, "path")); path != "" {
-			targetPath = path
+			targetPath = filepath.Clean(path)
 		}
 	}
 	if !filepath.IsAbs(targetPath) {
 		if abs, errAbs := filepath.Abs(targetPath); errAbs == nil {
 			targetPath = abs
 		}
+	}
+	prefix := dirAbs + string(os.PathSeparator)
+	if !strings.HasPrefix(targetPath, prefix) {
+		c.JSON(400, gin.H{"error": "invalid name"})
+		return
 	}
 	if errRemove := os.Remove(targetPath); errRemove != nil {
 		if os.IsNotExist(errRemove) {
@@ -794,10 +818,25 @@ func (h *Handler) authIDForPath(path string) string {
 	if path == "" {
 		return ""
 	}
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		if abs, errAbs := filepath.Abs(path); errAbs == nil {
+			path = abs
+		}
+	}
 	id := path
 	if authDir, err := h.authDirSnapshot(); err == nil {
 		authDir = strings.TrimSpace(authDir)
+		if resolvedAuthDir, errResolve := util.ResolveAuthDir(authDir); errResolve == nil && resolvedAuthDir != "" {
+			authDir = resolvedAuthDir
+		}
 		if authDir != "" {
+			authDir = filepath.Clean(authDir)
+			if !filepath.IsAbs(authDir) {
+				if abs, errAbs := filepath.Abs(authDir); errAbs == nil {
+					authDir = abs
+				}
+			}
 			if rel, errRel := filepath.Rel(authDir, path); errRel == nil && rel != "" {
 				id = rel
 			}
