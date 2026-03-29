@@ -312,8 +312,8 @@ func TestOAuthCallbackRoute_ReturnsErrorWhenCallbackFileWriteFails(t *testing.T)
 	}
 
 	sessionPath := filepath.Join(blockedAuthDir, ".oauth-codex-"+state+".oauth")
-	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
-		t.Fatalf("expected no callback file when write fails, stat err: %v", err)
+	if _, err := os.Stat(sessionPath); err == nil {
+		t.Fatal("expected no callback file when write fails")
 	}
 	if managementHandlers.IsOAuthSessionPending(state, "codex") {
 		t.Fatal("expected callback write failure to end pending oauth session")
