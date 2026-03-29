@@ -4,6 +4,7 @@ package management
 
 import (
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,6 +29,26 @@ type attemptInfo struct {
 	lastActivity time.Time // track last activity for cleanup
 }
 
+type RuntimeApplier func(*config.Config) error
+
+type runtimeApplyError struct {
+	cause error
+}
+
+func (e *runtimeApplyError) Error() string {
+	if e == nil || e.cause == nil {
+		return "runtime apply failed"
+	}
+	return e.cause.Error()
+}
+
+func (e *runtimeApplyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
 // attemptCleanupInterval controls how often stale IP entries are purged
 const attemptCleanupInterval = 1 * time.Hour
 
@@ -50,6 +71,7 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	runtimeApplier      RuntimeApplier
 }
 
 type runtimeStateSnapshot struct {
@@ -63,6 +85,7 @@ type runtimeStateSnapshot struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	runtimeApplier      RuntimeApplier
 }
 
 type authDirProvider interface {
@@ -192,6 +215,13 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 	h.stateMu.Unlock()
 }
 
+// SetRuntimeApplier registers the synchronous runtime config apply callback.
+func (h *Handler) SetRuntimeApplier(applier RuntimeApplier) {
+	h.stateMu.Lock()
+	h.runtimeApplier = applier
+	h.stateMu.Unlock()
+}
+
 func cloneConfig(cfg *config.Config) (*config.Config, error) {
 	if cfg == nil {
 		return nil, nil
@@ -224,6 +254,7 @@ func (h *Handler) runtimeSnapshot() (*runtimeStateSnapshot, error) {
 		envSecret:           h.envSecret,
 		logDir:              h.logDir,
 		postAuthHook:        h.postAuthHook,
+		runtimeApplier:      h.runtimeApplier,
 	}
 	h.stateMu.RUnlock()
 	if snapshot.tokenStore == nil {
@@ -410,19 +441,54 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 	}
 }
 
-func (h *Handler) persistConfig(c *gin.Context, cfg *config.Config) bool {
-	if cfg == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "configuration unavailable"})
-		return false
+func (h *Handler) applyRuntimeConfig(snapshot *runtimeStateSnapshot, cfg *config.Config) error {
+	if snapshot == nil || snapshot.runtimeApplier == nil || cfg == nil {
+		return nil
 	}
-	// Preserve comments when writing
+	if err := snapshot.runtimeApplier(cfg); err != nil {
+		return &runtimeApplyError{cause: err}
+	}
+	return nil
+}
+
+func (h *Handler) reloadCommittedConfig(snapshot *runtimeStateSnapshot) (*config.Config, error) {
+	if snapshot == nil {
+		return nil, fmt.Errorf("failed to snapshot config: snapshot unavailable")
+	}
+	committedCfg, err := config.LoadConfig(snapshot.configFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload config: %w", err)
+	}
+	if err := h.applyRuntimeConfig(snapshot, committedCfg); err != nil {
+		var applyErr *runtimeApplyError
+		if errors.As(err, &applyErr) && applyErr != nil && applyErr.cause != nil {
+			err = applyErr.cause
+		}
+		return nil, fmt.Errorf("failed to apply runtime config: %w", err)
+	}
+	h.stateMu.Lock()
+	h.cfg = committedCfg
+	h.stateMu.Unlock()
+	return committedCfg, nil
+}
+
+func (h *Handler) commitConfig(cfg *config.Config) (*config.Config, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("configuration unavailable")
+	}
 	snapshot, err := h.runtimeSnapshot()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to snapshot config: %v", err)})
-		return false
+		return nil, fmt.Errorf("failed to snapshot config: %w", err)
 	}
 	if err := config.SaveConfigPreserveComments(snapshot.configFilePath, cfg); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+		return nil, fmt.Errorf("failed to save config: %w", err)
+	}
+	return h.reloadCommittedConfig(snapshot)
+}
+
+func (h *Handler) persistConfig(c *gin.Context, cfg *config.Config) bool {
+	if _, err := h.commitConfig(cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return false
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -462,13 +528,7 @@ func (h *Handler) applyConfigMutation(c *gin.Context, mutate func(*config.Config
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return false
 	}
-	if !h.persistConfig(c, nextCfg) {
-		return false
-	}
-	h.stateMu.Lock()
-	h.cfg = nextCfg
-	h.stateMu.Unlock()
-	return true
+	return h.persistConfig(c, nextCfg)
 }
 
 // Helper methods for simple types

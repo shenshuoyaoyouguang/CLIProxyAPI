@@ -121,7 +121,57 @@ func TestStateMiddleware_DoesNotDeadlockRegisterOAuthSession(t *testing.T) {
 	}
 }
 
-func TestPutConfigYAML_RejectsOversizedLogLimit(t *testing.T) {
+func TestApplyConfigMutation_AppliesPersistedConfigViaRuntimeApplier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("request-log: false\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	h := NewHandler(&config.Config{}, configPath, nil)
+	applied := 0
+	applierSawPersisted := false
+	h.SetRuntimeApplier(func(cfg *config.Config) error {
+		applied++
+		if cfg != nil && cfg.RequestLog {
+			persisted, err := os.ReadFile(configPath)
+			if err == nil && strings.Contains(string(persisted), "request-log: true") {
+				applierSawPersisted = true
+			}
+		}
+		return nil
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	if !h.applyConfigMutation(ctx, func(cfg *config.Config) error {
+		cfg.RequestLog = true
+		return nil
+	}) {
+		t.Fatalf("expected applyConfigMutation to succeed, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%s", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+	if applied != 1 {
+		t.Fatalf("expected runtime applier to be called once, got %d", applied)
+	}
+	if !applierSawPersisted {
+		t.Fatal("expected runtime applier to observe committed config on disk")
+	}
+
+	snapshot, err := h.runtimeSnapshot()
+	if err != nil {
+		t.Fatalf("runtime snapshot: %v", err)
+	}
+	if snapshot.cfg == nil || !snapshot.cfg.RequestLog {
+		t.Fatalf("expected runtime snapshot config to include request-log=true, got %+v", snapshot.cfg)
+	}
+}
+
+func TestPutConfigYAML_ClampsOversizedLogLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tmpDir := t.TempDir()
@@ -131,6 +181,21 @@ func TestPutConfigYAML_RejectsOversizedLogLimit(t *testing.T) {
 	}
 
 	h := NewHandler(&config.Config{}, configPath, nil)
+	applied := 0
+	applierSawClamped := false
+	applierSawPersisted := false
+	h.SetRuntimeApplier(func(cfg *config.Config) error {
+		applied++
+		if cfg != nil && cfg.LogsMaxTotalSizeMB == config.MaxLogsMaxTotalSizeMB {
+			applierSawClamped = true
+		}
+		persisted, err := os.ReadFile(configPath)
+		if err == nil && strings.Contains(string(persisted), "logs-max-total-size-mb: 1024") {
+			applierSawPersisted = true
+		}
+		return nil
+	})
+
 	r := gin.New()
 	r.PUT("/config.yaml", h.PutConfigYAML)
 
@@ -139,7 +204,82 @@ func TestPutConfigYAML_RejectsOversizedLogLimit(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest && w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected oversized config to be rejected, got %d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected oversized config to be clamped, got %d body=%s", w.Code, w.Body.String())
+	}
+	if applied != 1 {
+		t.Fatalf("expected runtime applier to be called once, got %d", applied)
+	}
+	if !applierSawClamped {
+		t.Fatal("expected runtime applier to receive clamped committed config")
+	}
+	if !applierSawPersisted {
+		t.Fatal("expected runtime applier to observe committed config on disk")
+	}
+
+	snapshot, err := h.runtimeSnapshot()
+	if err != nil {
+		t.Fatalf("runtime snapshot: %v", err)
+	}
+	if snapshot.cfg == nil {
+		t.Fatal("expected runtime snapshot config to be available")
+	}
+	if snapshot.cfg.LogsMaxTotalSizeMB != config.MaxLogsMaxTotalSizeMB {
+		t.Fatalf("expected logs-max-total-size-mb to be clamped to %d, got %d", config.MaxLogsMaxTotalSizeMB, snapshot.cfg.LogsMaxTotalSizeMB)
+	}
+
+	persisted, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	persistedText := string(persisted)
+	if strings.Contains(persistedText, "1048577") {
+		t.Fatalf("expected persisted config to remove oversized value, got %s", persistedText)
+	}
+	if !strings.Contains(persistedText, "logs-max-total-size-mb: 1024") {
+		t.Fatalf("expected persisted config to contain clamped value, got %s", persistedText)
+	}
+}
+
+func TestApplyConfigMutation_RuntimeApplierMayUpdateHandlerState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("request-log: false\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	h := NewHandler(&config.Config{}, configPath, nil)
+	done := make(chan struct{})
+	h.SetRuntimeApplier(func(cfg *config.Config) error {
+		h.SetConfig(cfg)
+		close(done)
+		return nil
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		if !h.applyConfigMutation(ctx, func(cfg *config.Config) error {
+			cfg.RequestLog = true
+			return nil
+		}) {
+			t.Errorf("expected applyConfigMutation to succeed, got %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime applier should be able to update handler state without deadlocking")
+	}
+
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("applyConfigMutation should finish after runtime applier updates handler state")
 	}
 }

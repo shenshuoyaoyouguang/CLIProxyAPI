@@ -15,7 +15,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
-func TestDeleteAuthFile_UsesAuthPathFromManager(t *testing.T) {
+func TestDeleteAuthFile_RejectsManagerPathOutsideAuthDir(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
 
@@ -67,11 +67,11 @@ func TestDeleteAuthFile_UsesAuthPathFromManager(t *testing.T) {
 	deleteCtx.Request = deleteReq
 	h.DeleteAuthFile(deleteCtx)
 
-	if deleteRec.Code != http.StatusOK {
-		t.Fatalf("expected delete status %d, got %d with body %s", http.StatusOK, deleteRec.Code, deleteRec.Body.String())
+	if deleteRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected delete status %d, got %d with body %s", http.StatusBadRequest, deleteRec.Code, deleteRec.Body.String())
 	}
-	if _, errStatReal := os.Stat(realPath); !os.IsNotExist(errStatReal) {
-		t.Fatalf("expected managed auth file to be removed, stat err: %v", errStatReal)
+	if _, errStatReal := os.Stat(realPath); errStatReal != nil {
+		t.Fatalf("expected external file to remain, stat err: %v", errStatReal)
 	}
 	if _, errStatShadow := os.Stat(shadowPath); errStatShadow != nil {
 		t.Fatalf("expected shadow auth file to remain, stat err: %v", errStatShadow)
@@ -94,8 +94,8 @@ func TestDeleteAuthFile_UsesAuthPathFromManager(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected files array, payload: %#v", listPayload)
 	}
-	if len(filesRaw) != 0 {
-		t.Fatalf("expected removed auth to be hidden from list, got %d entries", len(filesRaw))
+	if len(filesRaw) != 1 {
+		t.Fatalf("expected auth to remain listed, got %d entries", len(filesRaw))
 	}
 }
 
@@ -125,5 +125,32 @@ func TestDeleteAuthFile_FallbackToAuthDirPath(t *testing.T) {
 	}
 	if _, errStat := os.Stat(filePath); !os.IsNotExist(errStat) {
 		t.Fatalf("expected auth file to be removed from auth dir, stat err: %v", errStat)
+	}
+}
+
+func TestDownloadAuthFile_RejectsPathTraversal(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	tempDir := t.TempDir()
+	authDir := filepath.Join(tempDir, "auth")
+	if errMkdir := os.MkdirAll(authDir, 0o700); errMkdir != nil {
+		t.Fatalf("failed to create auth dir: %v", errMkdir)
+	}
+	secretPath := filepath.Join(tempDir, "secret.json")
+	if errWrite := os.WriteFile(secretPath, []byte(`{"secret":true}`), 0o600); errWrite != nil {
+		t.Fatalf("failed to write secret file: %v", errWrite)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, coreauth.NewManager(nil, nil, nil))
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/auth-files/download?name="+url.QueryEscape("../secret.json"), nil)
+
+	h.DownloadAuthFile(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusBadRequest, recorder.Code, recorder.Body.String())
 	}
 }

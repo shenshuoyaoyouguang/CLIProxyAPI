@@ -42,9 +42,14 @@ import (
 )
 
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
+const oauthCallbackFailureHTML = `<html><head><meta charset="utf-8"><title>Authentication failed</title></head><body><h1>Authentication failed</h1><p>Please return to the application and try again.</p></body></html>`
 
-func writePendingOAuthCallbackFile(provider, state, code, errStr string) {
-	_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(provider, state, code, errStr)
+func writePendingOAuthCallbackFile(provider, state, code, errStr string) error {
+	_, err := managementHandlers.WriteOAuthCallbackFileForPendingSession(provider, state, code, errStr)
+	if err != nil {
+		managementHandlers.SetOAuthSessionError(state, strings.TrimSpace(errStr))
+	}
+	return err
 }
 
 type serverOptionConfig struct {
@@ -162,6 +167,8 @@ type Server struct {
 
 	// management handler
 	mgmt *managementHandlers.Handler
+
+	updateClientsMu sync.Mutex
 
 	// ampModule is the Amp routing module for model mapping hot-reload
 	ampModule *ampmodule.AmpModule
@@ -283,6 +290,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.postAuthHook != nil {
 		s.mgmt.SetPostAuthHook(optionState.postAuthHook)
 	}
+	s.mgmt.SetRuntimeApplier(func(nextCfg *config.Config) error {
+		s.UpdateClients(nextCfg)
+		return nil
+	})
 	s.localPassword = optionState.localPassword
 
 	// Setup routes
@@ -375,7 +386,7 @@ func (s *Server) setupRoutes() {
 	// OAuth callback endpoints (reuse main server port)
 	// These endpoints receive provider redirects and persist
 	// the short-lived code/state for the waiting goroutine.
-	s.engine.GET("/anthropic/callback", func(c *gin.Context) {
+	renderOAuthCallback := func(c *gin.Context, provider string) {
 		code := c.Query("code")
 		state := c.Query("state")
 		errStr := c.Query("error")
@@ -383,66 +394,34 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			writePendingOAuthCallbackFile("anthropic", state, code, errStr)
+			if err := writePendingOAuthCallbackFile(provider, state, code, errStr); err != nil {
+				log.Errorf("persist %s oauth callback failed: %v", provider, err)
+				c.Header("Content-Type", "text/html; charset=utf-8")
+				c.String(http.StatusInternalServerError, oauthCallbackFailureHTML)
+				return
+			}
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
+	}
+	s.engine.GET("/anthropic/callback", func(c *gin.Context) {
+		renderOAuthCallback(c, "anthropic")
 	})
 
 	s.engine.GET("/codex/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			writePendingOAuthCallbackFile("codex", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
+		renderOAuthCallback(c, "codex")
 	})
 
 	s.engine.GET("/google/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			writePendingOAuthCallbackFile("gemini", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
+		renderOAuthCallback(c, "gemini")
 	})
 
 	s.engine.GET("/iflow/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			writePendingOAuthCallbackFile("iflow", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
+		renderOAuthCallback(c, "iflow")
 	})
 
 	s.engine.GET("/antigravity/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			writePendingOAuthCallbackFile("antigravity", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
+		renderOAuthCallback(c, "antigravity")
 	})
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
@@ -887,6 +866,9 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
 func (s *Server) UpdateClients(cfg *config.Config) {
+	s.updateClientsMu.Lock()
+	defer s.updateClientsMu.Unlock()
+
 	// Reconstruct old config from YAML snapshot to avoid reference sharing issues
 	var oldCfg *config.Config
 	if len(s.oldConfigYaml) > 0 {
