@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
@@ -117,6 +118,66 @@ func TestApplyQwenHeadersStreamUsesMinimalOfficialHeaderSet(t *testing.T) {
 	}
 	if got := req.Header.Get("X-DashScope-UserAgent"); got != expectedQwenUserAgent() {
 		t.Fatalf("X-DashScope-UserAgent = %q, want %q", got, expectedQwenUserAgent())
+	}
+}
+
+func TestWrapQwenError(t *testing.T) {
+	tests := []struct {
+		name               string
+		httpCode           int
+		body               []byte
+		wantCode           int
+		wantRetryAfterNil  bool
+		wantRetryAfterGT0  bool
+		wantRetryAfterMax  time.Duration
+	}{
+		{
+			name:              "403 quota uses next-day cooldown",
+			httpCode:          http.StatusForbidden,
+			body:              []byte(`{"error":{"code":"insufficient_quota","message":"You exceeded your current quota","type":"insufficient_quota"}}`),
+			wantCode:          http.StatusTooManyRequests,
+			wantRetryAfterNil: false,
+			wantRetryAfterGT0: true,
+			wantRetryAfterMax: 24 * time.Hour,
+		},
+		{
+			name:              "429 quota-like body uses normal backoff path",
+			httpCode:          http.StatusTooManyRequests,
+			body:              []byte(`{"error":{"code":"insufficient_quota","message":"You exceeded your current quota","type":"insufficient_quota"}}`),
+			wantCode:          http.StatusTooManyRequests,
+			wantRetryAfterNil: true,
+		},
+		{
+			name:              "429 generic rate limit uses normal backoff path",
+			httpCode:          http.StatusTooManyRequests,
+			body:              []byte(`{"error":{"code":"rate_limit_exceeded","message":"Too many requests","type":"rate_limit_exceeded"}}`),
+			wantCode:          http.StatusTooManyRequests,
+			wantRetryAfterNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errCode, retryAfter := wrapQwenError(context.Background(), tt.httpCode, tt.body)
+			if errCode != tt.wantCode {
+				t.Fatalf("errCode = %d, want %d", errCode, tt.wantCode)
+			}
+			if tt.wantRetryAfterNil {
+				if retryAfter != nil {
+					t.Fatalf("retryAfter = %v, want nil", *retryAfter)
+				}
+				return
+			}
+			if retryAfter == nil {
+				t.Fatal("expected retryAfter")
+			}
+			if tt.wantRetryAfterGT0 && *retryAfter <= 0 {
+				t.Fatalf("retryAfter = %v, want > 0", *retryAfter)
+			}
+			if tt.wantRetryAfterMax > 0 && *retryAfter > tt.wantRetryAfterMax {
+				t.Fatalf("retryAfter = %v, want <= %v", *retryAfter, tt.wantRetryAfterMax)
+			}
+		})
 	}
 }
 
