@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
 	"github.com/tidwall/gjson"
 )
 
@@ -21,7 +22,7 @@ func TestApplyPayloadConfigWithRoot_OverrideQueryPath(t *testing.T) {
 		},
 	}
 	input := []byte(`{"tools":[{"type":"function","name":"alpha"},{"type":"custom","name":"beta"},{"type":"custom","name":"gamma"}]}`)
-	out := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
+	out := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
 
 	if got := gjson.GetBytes(out, "tools.0.description"); got.Exists() {
 		t.Fatalf("tools.0.description should not exist, got %s", got.Raw)
@@ -48,7 +49,7 @@ func TestApplyPayloadConfigWithRoot_OverrideRawQueryPath(t *testing.T) {
 		},
 	}
 	input := []byte(`{"tools":[{"type":"function","name":"alpha"},{"type":"custom","name":"beta"}]}`)
-	out := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
+	out := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
 
 	if got := gjson.GetBytes(out, "tools.0.input_schema"); got.Exists() {
 		t.Fatalf("tools.0.input_schema should not exist, got %s", got.Raw)
@@ -73,7 +74,7 @@ func TestApplyPayloadConfigWithRoot_FilterQueryPath_RemovesMatchingElements(t *t
 		},
 	}
 	input := []byte(`{"tools":[{"type":"function","name":"alpha"},{"type":"custom","name":"beta"},{"type":"custom","name":"gamma"}]}`)
-	out := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
+	out := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
 
 	tools := gjson.GetBytes(out, "tools")
 	if !tools.Exists() || !tools.IsArray() {
@@ -100,7 +101,7 @@ func TestApplyPayloadConfigWithRoot_FilterQueryPath_RemovesNestedField(t *testin
 		},
 	}
 	input := []byte(`{"tools":[{"type":"custom","name":"beta","format":{"syntax":"lark"}},{"type":"function","name":"alpha","format":{"syntax":"json"}}]}`)
-	out := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
+	out := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
 
 	if got := gjson.GetBytes(out, "tools.0.format"); got.Exists() {
 		t.Fatalf("tools.0.format should be removed, got %s", got.Raw)
@@ -124,7 +125,7 @@ func TestApplyPayloadConfigWithRoot_OverrideNestedQueryPath(t *testing.T) {
 		},
 	}
 	input := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"a"},{"type":"text","text":"ok"}]},{"role":"user","content":[{"type":"tool_use","name":"b"}]}]}`)
-	out := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
+	out := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
 
 	if got := gjson.GetBytes(out, "messages.0.content.0.name").String(); got != "patched" {
 		t.Fatalf("messages.0.content.0.name = %q, want %q", got, "patched")
@@ -148,7 +149,7 @@ func TestApplyPayloadConfigWithRoot_OverrideNestedQueryExpressionPath(t *testing
 		},
 	}
 	input := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"a"},{"type":"text","text":"ok"}]},{"role":"assistant","content":[{"type":"text","text":"plain"}]}]}`)
-	out := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
+	out := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
 
 	if !gjson.GetBytes(out, "messages.0.tool_present").Bool() {
 		t.Fatalf("messages.0.tool_present = false, want true")
@@ -172,7 +173,7 @@ func TestApplyPayloadConfigWithRoot_OverrideRawNestedQueryPath(t *testing.T) {
 		},
 	}
 	input := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"a","input":{}},{"type":"text","text":"ok"}]},{"role":"assistant","content":[{"type":"tool_use","name":"b","input":{}}]}]}`)
-	out := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
+	out := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
 
 	if got := gjson.GetBytes(out, "messages.0.content.0.input.command").String(); got != "run" {
 		t.Fatalf("messages.0.content.0.input.command = %q, want %q", got, "run")
@@ -194,7 +195,7 @@ func TestApplyPayloadConfigWithRoot_FilterNestedQueryPath_RemovesMatchingNestedE
 		},
 	}
 	input := []byte(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"a"},{"type":"text","text":"ok"},{"type":"tool_use","name":"b"}]},{"role":"user","content":[{"type":"tool_use","name":"c"}]}]}`)
-	out := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
+	out := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
 
 	if got := gjson.GetBytes(out, "messages.0.content.#").Int(); got != 1 {
 		t.Fatalf("messages.0.content length = %d, want 1", got)
@@ -222,7 +223,7 @@ func TestApplyPayloadConfigWithRoot_InvalidQueryPath_NoOp(t *testing.T) {
 		},
 	}
 	input := []byte(`{"tools":[{"type":"custom","name":"beta"},{"type":"function","name":"alpha"}]}`)
-	out := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
+	out := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6", "claude", "", input, nil, "")
 
 	if string(out) != string(input) {
 		t.Fatalf("invalid query path should leave payload unchanged\ngot:  %s\nwant: %s", string(out), string(input))

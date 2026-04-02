@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	antigravityclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/antigravity/claude"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -402,7 +403,7 @@ func TestPrepareAntigravityRequestPayloads_LeavesDefaultSourceUnmodifiedByThinki
 				t.Fatalf("prepareAntigravityRequestPayloads error = %v", err)
 			}
 
-			got := applyPayloadConfigWithRoot(cfg, "claude-opus-4-6-thinking", "antigravity", "request", translated, originalTranslated, "")
+			got := helps.ApplyPayloadConfigWithRoot(cfg, "claude-opus-4-6-thinking", "antigravity", "request", translated, originalTranslated, "")
 
 			if gjson.GetBytes(originalTranslated, "request.generationConfig.thinkingConfig").Exists() {
 				t.Fatalf("originalTranslated should remain the raw translated source for defaults, body=%s", string(originalTranslated))
