@@ -24,6 +24,7 @@ import (
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -62,6 +63,10 @@ type claudePreparedBody struct {
 	extraBetas         []string
 	originalToolNames  map[string]string
 }
+
+// Anthropic-compatible upstreams may reject or even crash when Claude models
+// omit max_tokens. Prefer registered model metadata before using a fallback.
+const defaultModelMaxTokens = 1024
 
 func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor { return &ClaudeExecutor{cfg: cfg} }
 
@@ -145,6 +150,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
+	body = ensureModelMaxTokens(body, baseModel)
 	preparedBody, err := e.finalizeClaudeRequestBody(body, req.Model, from, to, baseModel, apiKey, auth, claudeBodyFinalizeOptions{
 		applyThinking:            false,
 		disableForcedToolChoice:  true,
@@ -278,6 +284,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
+	body = ensureModelMaxTokens(body, baseModel)
 	preparedBody, err := e.finalizeClaudeRequestBody(body, req.Model, from, to, baseModel, apiKey, auth, claudeBodyFinalizeOptions{
 		applyThinking:            false,
 		disableForcedToolChoice:  true,
@@ -2531,4 +2538,27 @@ func injectSystemCacheControl(payload []byte) []byte {
 	}
 
 	return payload
+}
+
+func ensureModelMaxTokens(body []byte, modelID string) []byte {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+
+	if maxTokens := gjson.GetBytes(body, "max_tokens"); maxTokens.Exists() {
+		return body
+	}
+
+	for _, provider := range registry.GetGlobalRegistry().GetModelProviders(strings.TrimSpace(modelID)) {
+		if strings.EqualFold(provider, "claude") {
+			maxTokens := defaultModelMaxTokens
+			if info := registry.GetGlobalRegistry().GetModelInfo(strings.TrimSpace(modelID), "claude"); info != nil && info.MaxCompletionTokens > 0 {
+				maxTokens = info.MaxCompletionTokens
+			}
+			body, _ = sjson.SetBytes(body, "max_tokens", maxTokens)
+			return body
+		}
+	}
+
+	return body
 }
