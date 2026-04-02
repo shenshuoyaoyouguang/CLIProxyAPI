@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"time"
 
@@ -82,6 +83,41 @@ type QwenAuth struct {
 	httpClient *http.Client
 }
 
+func qwenRuntimeOS() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "win32"
+	default:
+		return runtime.GOOS
+	}
+}
+
+func qwenRuntimeArch() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x64"
+	case "386":
+		return "x86"
+	default:
+		return runtime.GOARCH
+	}
+}
+
+func qwenUserAgent() string {
+	return fmt.Sprintf("QwenCode/0.14.0 (%s; %s)", qwenRuntimeOS(), qwenRuntimeArch())
+}
+
+func (qa *QwenAuth) newFormRequest(ctx context.Context, endpoint string, data url.Values) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", qwenUserAgent())
+	return req, nil
+}
+
 // NewQwenAuth creates a new QwenAuth instance with a proxy-configured HTTP client.
 func NewQwenAuth(cfg *config.Config) *QwenAuth {
 	return &QwenAuth{
@@ -121,13 +157,10 @@ func (qa *QwenAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Qw
 	data.Set("refresh_token", refreshToken)
 	data.Set("client_id", QwenOAuthClientID)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", QwenOAuthTokenEndpoint, strings.NewReader(data.Encode()))
+	req, err := qa.newFormRequest(ctx, QwenOAuthTokenEndpoint, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
 
 	resp, err := qa.httpClient.Do(req)
 
@@ -180,13 +213,10 @@ func (qa *QwenAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceFlow, error)
 	data.Set("code_challenge", codeChallenge)
 	data.Set("code_challenge_method", "S256")
 
-	req, err := http.NewRequestWithContext(ctx, "POST", QwenOAuthDeviceCodeEndpoint, strings.NewReader(data.Encode()))
+	req, err := qa.newFormRequest(ctx, QwenOAuthDeviceCodeEndpoint, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
 
 	resp, err := qa.httpClient.Do(req)
 
@@ -235,7 +265,14 @@ func (qa *QwenAuth) PollForToken(deviceCode, codeVerifier string) (*QwenTokenDat
 		data.Set("device_code", deviceCode)
 		data.Set("code_verifier", codeVerifier)
 
-		resp, err := http.PostForm(QwenOAuthTokenEndpoint, data)
+		req, err := qa.newFormRequest(context.Background(), QwenOAuthTokenEndpoint, data)
+		if err != nil {
+			fmt.Printf("Polling attempt %d/%d failed: %v\n", attempt+1, maxAttempts, err)
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		resp, err := qa.httpClient.Do(req)
 		if err != nil {
 			fmt.Printf("Polling attempt %d/%d failed: %v\n", attempt+1, maxAttempts, err)
 			time.Sleep(pollInterval)

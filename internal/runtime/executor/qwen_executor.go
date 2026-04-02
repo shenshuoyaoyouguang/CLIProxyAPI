@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -23,10 +24,34 @@ import (
 )
 
 const (
-	qwenUserAgent       = "QwenCode/0.10.3 (darwin; arm64)"
+	qwenCodeVersion     = "0.14.0"
 	qwenRateLimitPerMin = 60          // 60 requests per minute per credential
 	qwenRateLimitWindow = time.Minute // sliding window duration
 )
+
+func qwenRuntimeOS() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "win32"
+	default:
+		return runtime.GOOS
+	}
+}
+
+func qwenRuntimeArch() string {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x64"
+	case "386":
+		return "x86"
+	default:
+		return runtime.GOARCH
+	}
+}
+
+func qwenUserAgent() string {
+	return fmt.Sprintf("QwenCode/%s (%s; %s)", qwenCodeVersion, qwenRuntimeOS(), qwenRuntimeArch())
+}
 
 // qwenBeijingLoc caches the Beijing timezone to avoid repeated LoadLocation syscalls.
 var qwenBeijingLoc = func() *time.Location {
@@ -507,20 +532,14 @@ func (e *QwenExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 }
 
 func applyQwenHeaders(r *http.Request, token string, stream bool) {
+	userAgent := qwenUserAgent()
+
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
-	r.Header.Set("User-Agent", qwenUserAgent)
-	r.Header.Set("X-Dashscope-Useragent", qwenUserAgent)
-	r.Header.Set("X-Stainless-Runtime-Version", "v22.17.0")
-	r.Header.Set("Sec-Fetch-Mode", "cors")
-	r.Header.Set("X-Stainless-Lang", "js")
-	r.Header.Set("X-Stainless-Arch", "arm64")
-	r.Header.Set("X-Stainless-Package-Version", "5.11.0")
-	r.Header.Set("X-Dashscope-Cachecontrol", "enable")
-	r.Header.Set("X-Stainless-Retry-Count", "0")
-	r.Header.Set("X-Stainless-Os", "MacOS")
-	r.Header.Set("X-Dashscope-Authtype", "qwen-oauth")
-	r.Header.Set("X-Stainless-Runtime", "node")
+	r.Header.Set("User-Agent", userAgent)
+	r.Header.Set("X-DashScope-CacheControl", "enable")
+	r.Header.Set("X-DashScope-UserAgent", userAgent)
+	r.Header.Set("X-DashScope-AuthType", "qwen-oauth")
 
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
