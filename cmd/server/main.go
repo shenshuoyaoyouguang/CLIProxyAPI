@@ -527,7 +527,7 @@ func main() {
 					password = localMgmtPassword
 				}
 
-				cancel, done := cmd.StartServiceBackground(cfg, configFilePath, password)
+				cancel, done := cmd.StartServiceBackground(cfg, configFilePath, password, oauthCallbackPort)
 
 				client := tui.NewClient(cfg.Port, password)
 				ready := false
@@ -574,7 +574,7 @@ func main() {
 			if !localModel {
 				registry.StartModelsUpdater(context.Background())
 			}
-			cmd.StartService(cfg, configFilePath, password)
+			cmd.StartService(cfg, configFilePath, password, oauthCallbackPort)
 		}
 	}
 }
