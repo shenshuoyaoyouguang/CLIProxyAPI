@@ -1481,7 +1481,7 @@ func TestDecodeResponseBody_MagicByteGzipNoHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeResponseBody error: %v", err)
 	}
-	defer decoded.Close()
+	defer func() { _ = decoded.Close() }()
 
 	got, err := io.ReadAll(decoded)
 	if err != nil {
@@ -1510,7 +1510,7 @@ func TestDecodeResponseBody_MagicByteZstdNoHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeResponseBody error: %v", err)
 	}
-	defer decoded.Close()
+	defer func() { _ = decoded.Close() }()
 
 	got, err := io.ReadAll(decoded)
 	if err != nil {
@@ -1530,7 +1530,7 @@ func TestDecodeResponseBody_PlainTextNoHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeResponseBody error: %v", err)
 	}
-	defer decoded.Close()
+	defer func() { _ = decoded.Close() }()
 
 	got, err := io.ReadAll(decoded)
 	if err != nil {

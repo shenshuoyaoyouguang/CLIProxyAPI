@@ -201,7 +201,7 @@ func fetchModels(ctx context.Context, auth *coreauth.Auth) []modelEntry {
 		}
 
 		bodyBytes, errRead := io.ReadAll(httpResp.Body)
-		httpResp.Body.Close()
+		_ = httpResp.Body.Close()
 		if errRead != nil {
 			continue
 		}

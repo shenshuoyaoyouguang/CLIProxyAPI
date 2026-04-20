@@ -1035,9 +1035,10 @@ func vertexAPICreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 
 func vertexBaseURL(location string) string {
 	loc := strings.TrimSpace(location)
-	if loc == "" {
-		loc = "us-central1"
-	} else if loc == "global" {
+	switch loc {
+	case "":
+		return "https://us-central1-aiplatform.googleapis.com"
+	case "global":
 		return "https://aiplatform.googleapis.com"
 	}
 	return fmt.Sprintf("https://%s-aiplatform.googleapis.com", loc)

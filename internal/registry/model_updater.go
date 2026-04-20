@@ -159,14 +159,14 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 		}
 
 		if resp.StatusCode != 200 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			cancel()
 			log.Debugf("models fetch returned %d from %s", resp.StatusCode, url)
 			continue
 		}
 
 		data, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		cancel()
 
 		if err != nil {

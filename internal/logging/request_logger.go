@@ -403,9 +403,7 @@ func (l *FileRequestLogger) generateFilename(url string, requestID ...string) st
 	}
 
 	// Remove leading slash
-	if strings.HasPrefix(path, "/") {
-		path = path[1:]
-	}
+	path = strings.TrimPrefix(path, "/")
 
 	// Sanitize path for filename
 	sanitized := l.sanitizeForFilename(path)
@@ -811,12 +809,10 @@ func writeResponseSection(w io.Writer, statusCode int, statusWritten bool, respo
 		}
 	}
 
-	if responseHeaders != nil {
-		for key, values := range responseHeaders {
-			for _, value := range values {
-				if _, errWrite := io.WriteString(w, fmt.Sprintf("%s: %s\n", key, value)); errWrite != nil {
-					return errWrite
-				}
+	for key, values := range responseHeaders {
+		for _, value := range values {
+			if _, errWrite := io.WriteString(w, fmt.Sprintf("%s: %s\n", key, value)); errWrite != nil {
+				return errWrite
 			}
 		}
 	}
@@ -932,7 +928,7 @@ func (l *FileRequestLogger) formatLogContent(url, method string, headers map[str
 
 	for i := 0; i < len(apiResponseErrors); i++ {
 		content.WriteString("=== API ERROR RESPONSE ===\n")
-		content.WriteString(fmt.Sprintf("HTTP Status: %d\n", apiResponseErrors[i].StatusCode))
+		fmt.Fprintf(&content, "HTTP Status: %d\n", apiResponseErrors[i].StatusCode)
 		content.WriteString(apiResponseErrors[i].Error.Error())
 		content.WriteString("\n\n")
 	}
@@ -961,11 +957,9 @@ func (l *FileRequestLogger) formatLogContent(url, method string, headers map[str
 	content.WriteString("=== RESPONSE ===\n")
 	content.WriteString(fmt.Sprintf("Status: %d\n", status))
 
-	if responseHeaders != nil {
-		for key, values := range responseHeaders {
-			for _, value := range values {
-				content.WriteString(fmt.Sprintf("%s: %s\n", key, value))
-			}
+	for key, values := range responseHeaders {
+		for _, value := range values {
+			content.WriteString(fmt.Sprintf("%s: %s\n", key, value))
 		}
 	}
 
@@ -1121,7 +1115,7 @@ func (l *FileRequestLogger) formatRequestInfo(url, method string, headers map[st
 	var content strings.Builder
 
 	content.WriteString("=== REQUEST INFO ===\n")
-	content.WriteString(fmt.Sprintf("Version: %s\n", buildinfo.Version))
+	fmt.Fprintf(&content, "Version: %s\n", buildinfo.Version)
 	content.WriteString(fmt.Sprintf("URL: %s\n", url))
 	content.WriteString(fmt.Sprintf("Method: %s\n", method))
 	if strings.TrimSpace(downstreamTransport) != "" {
