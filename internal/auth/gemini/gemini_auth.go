@@ -11,6 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+<<<<<<< HEAD
+=======
+	"strings"
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
@@ -209,6 +213,14 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 		callbackPort = opts.CallbackPort
 	}
 	callbackURL := fmt.Sprintf("http://localhost:%d/oauth2callback", callbackPort)
+<<<<<<< HEAD
+=======
+	config.RedirectURL = callbackURL
+	expectedState, authURL, errState := buildGeminiAuthURL(config)
+	if errState != nil {
+		return nil, errState
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 	// Use a channel to pass the authorization code from the HTTP handler to the main function.
 	codeChan := make(chan string, 1)
@@ -217,9 +229,38 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	// Create a new HTTP server with its own multiplexer.
 	mux := http.NewServeMux()
 	server := &http.Server{Addr: fmt.Sprintf(":%d", callbackPort), Handler: mux}
+<<<<<<< HEAD
 	config.RedirectURL = callbackURL
 
 	mux.HandleFunc("/oauth2callback", func(w http.ResponseWriter, r *http.Request) {
+=======
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Warnf("Failed to shut down Gemini callback server: %v", err)
+		}
+	}()
+
+	mux.HandleFunc("/oauth2callback", func(w http.ResponseWriter, r *http.Request) {
+		callbackState := strings.TrimSpace(r.URL.Query().Get("state"))
+		if callbackState == "" {
+			_, _ = fmt.Fprint(w, "Authentication failed: state not found.")
+			select {
+			case errChan <- fmt.Errorf("state not found in callback"):
+			default:
+			}
+			return
+		}
+		if callbackState != expectedState {
+			http.Error(w, "Authentication failed: state mismatch.", http.StatusBadRequest)
+			select {
+			case errChan <- fmt.Errorf("state mismatch in callback"):
+			default:
+			}
+			return
+		}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		if err := r.URL.Query().Get("error"); err != "" {
 			_, _ = fmt.Fprintf(w, "Authentication failed: %s", err)
 			select {
@@ -255,9 +296,12 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 		}
 	}()
 
+<<<<<<< HEAD
 	// Open the authorization URL in the user's browser.
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 
+=======
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	noBrowser := false
 	if opts != nil {
 		noBrowser = opts.NoBrowser
@@ -311,6 +355,11 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 waitForCallback:
 	for {
 		select {
+<<<<<<< HEAD
+=======
+		case <-ctx.Done():
+			return nil, ctx.Err()
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		case code := <-codeChan:
 			authCode = code
 			break waitForCallback
@@ -344,6 +393,12 @@ waitForCallback:
 			if parsed.Error != "" {
 				return nil, fmt.Errorf("authentication failed via callback: %s", parsed.Error)
 			}
+<<<<<<< HEAD
+=======
+			if strings.TrimSpace(parsed.State) != expectedState {
+				return nil, fmt.Errorf("state mismatch in callback")
+			}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 			if parsed.Code == "" {
 				return nil, fmt.Errorf("code not found in callback")
 			}
@@ -356,11 +411,14 @@ waitForCallback:
 		}
 	}
 
+<<<<<<< HEAD
 	// Shutdown the server.
 	if err := server.Shutdown(ctx); err != nil {
 		log.Errorf("Failed to shut down server: %v", err)
 	}
 
+=======
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	// Exchange the authorization code for a token.
 	token, err := config.Exchange(ctx, authCode)
 	if err != nil {
@@ -370,3 +428,15 @@ waitForCallback:
 	fmt.Println("Authentication successful.")
 	return token, nil
 }
+<<<<<<< HEAD
+=======
+
+func buildGeminiAuthURL(config *oauth2.Config) (string, string, error) {
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate oauth state: %w", err)
+	}
+	authURL := config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
+	return state, authURL, nil
+}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)

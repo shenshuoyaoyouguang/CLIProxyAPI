@@ -25,6 +25,17 @@ const (
 	RedirectURI = "http://localhost:54545/callback"
 )
 
+<<<<<<< HEAD
+=======
+// RedirectURIForPort returns the Claude OAuth redirect URI for the provided callback port.
+func RedirectURIForPort(port int) string {
+	if port <= 0 {
+		return RedirectURI
+	}
+	return fmt.Sprintf("http://localhost:%d/callback", port)
+}
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 // tokenResponse represents the response structure from Anthropic's OAuth token endpoint.
 // It contains access token, refresh token, and associated user/organization information.
 type tokenResponse struct {
@@ -99,15 +110,33 @@ func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth 
 //   - string: The state parameter for verification
 //   - error: An error if PKCE codes are missing or URL generation fails
 func (o *ClaudeAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string, string, error) {
+<<<<<<< HEAD
 	if pkceCodes == nil {
 		return "", "", fmt.Errorf("PKCE codes are required")
 	}
+=======
+	return o.GenerateAuthURLWithRedirect(state, RedirectURI, pkceCodes)
+}
+
+// GenerateAuthURLWithRedirect creates the OAuth authorization URL using a caller-provided redirect URI.
+func (o *ClaudeAuth) GenerateAuthURLWithRedirect(state, redirectURI string, pkceCodes *PKCECodes) (string, string, error) {
+	if pkceCodes == nil {
+		return "", "", fmt.Errorf("PKCE codes are required")
+	}
+	if strings.TrimSpace(redirectURI) == "" {
+		return "", "", fmt.Errorf("redirect URI is required")
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 	params := url.Values{
 		"code":                  {"true"},
 		"client_id":             {ClientID},
 		"response_type":         {"code"},
+<<<<<<< HEAD
 		"redirect_uri":          {RedirectURI},
+=======
+		"redirect_uri":          {strings.TrimSpace(redirectURI)},
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		"scope":                 {"user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"},
 		"code_challenge":        {pkceCodes.CodeChallenge},
 		"code_challenge_method": {"S256"},
@@ -150,9 +179,27 @@ func (c *ClaudeAuth) parseCodeAndState(code string) (parsedCode, parsedState str
 //   - *ClaudeAuthBundle: The complete authentication bundle with tokens
 //   - error: An error if token exchange fails
 func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state string, pkceCodes *PKCECodes) (*ClaudeAuthBundle, error) {
+<<<<<<< HEAD
 	if pkceCodes == nil {
 		return nil, fmt.Errorf("PKCE codes are required for token exchange")
 	}
+=======
+	return o.ExchangeCodeForTokensWithRedirect(ctx, code, state, RedirectURI, pkceCodes)
+}
+
+// ExchangeCodeForTokensWithRedirect exchanges authorization code for access tokens using a caller-provided redirect URI.
+func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirect(
+	ctx context.Context,
+	code, state, redirectURI string,
+	pkceCodes *PKCECodes,
+) (*ClaudeAuthBundle, error) {
+	if pkceCodes == nil {
+		return nil, fmt.Errorf("PKCE codes are required for token exchange")
+	}
+	if strings.TrimSpace(redirectURI) == "" {
+		return nil, fmt.Errorf("redirect URI is required for token exchange")
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	newCode, newState := o.parseCodeAndState(code)
 
 	// Prepare token exchange request
@@ -161,7 +208,11 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 		"state":         state,
 		"grant_type":    "authorization_code",
 		"client_id":     ClientID,
+<<<<<<< HEAD
 		"redirect_uri":  RedirectURI,
+=======
+		"redirect_uri":  strings.TrimSpace(redirectURI),
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		"code_verifier": pkceCodes.CodeVerifier,
 	}
 

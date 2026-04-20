@@ -18,6 +18,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+<<<<<<< HEAD
+=======
+	log "github.com/sirupsen/logrus"
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -48,6 +52,10 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+<<<<<<< HEAD
+=======
+	oauthCallbackPort   int
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 }
 
 // NewHandler creates a new management handler instance.
@@ -65,6 +73,10 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
 	}
+<<<<<<< HEAD
+=======
+	h.configureUsagePersistence()
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	h.startAttemptCleanup()
 	return h
 }
@@ -112,6 +124,10 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 	h.mu.Lock()
 	h.cfg = cfg
 	h.mu.Unlock()
+<<<<<<< HEAD
+=======
+	h.configureUsagePersistence()
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
@@ -125,7 +141,17 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 }
 
 // SetUsageStatistics allows replacing the usage statistics reference.
+<<<<<<< HEAD
 func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) { h.usageStats = stats }
+=======
+func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) {
+	if h == nil {
+		return
+	}
+	h.usageStats = stats
+	h.configureUsagePersistence()
+}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 // SetLocalPassword configures the runtime-local password accepted for localhost requests.
 func (h *Handler) SetLocalPassword(password string) { h.localPassword = password }
@@ -148,6 +174,17 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 	h.postAuthHook = hook
 }
 
+<<<<<<< HEAD
+=======
+// SetOAuthCallbackPort configures a runtime callback-port override for OAuth browser flows.
+func (h *Handler) SetOAuthCallbackPort(port int) {
+	if h == nil || port <= 0 {
+		return
+	}
+	h.oauthCallbackPort = port
+}
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 // Middleware enforces access control for management endpoints.
 // All requests (local and remote) require a valid management key.
 // Additionally, remote access requires allow-remote-management=true.
@@ -341,3 +378,43 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 	set(*body.Value)
 	h.persist(c)
 }
+<<<<<<< HEAD
+=======
+
+func (h *Handler) configureUsagePersistence() {
+	if h == nil || h.usageStats == nil {
+		return
+	}
+	path := h.usagePersistencePath()
+	if path == "" {
+		return
+	}
+	if err := h.usageStats.SetPersistencePath(path); err != nil {
+		log.WithError(err).Warn("failed to configure usage statistics persistence")
+	}
+}
+
+func (h *Handler) usagePersistencePath() string {
+	if h == nil {
+		return ""
+	}
+
+	baseDir := ""
+	if configPath := strings.TrimSpace(h.configFilePath); configPath != "" {
+		baseDir = filepath.Dir(configPath)
+	}
+	if baseDir == "" && h.cfg != nil {
+		if authDir := strings.TrimSpace(h.cfg.AuthDir); authDir != "" {
+			baseDir = filepath.Dir(authDir)
+		}
+	}
+	if baseDir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return ""
+		}
+		baseDir = wd
+	}
+	return filepath.Join(baseDir, ".usage-statistics.json")
+}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)

@@ -273,7 +273,18 @@ func (a *CodexAuthenticator) buildAuthRecord(authSvc *codex.CodexAuth, authBundl
 
 	fileName := codex.CredentialFileName(tokenStorage.Email, planType, hashAccountID, true)
 	metadata := map[string]any{
+<<<<<<< HEAD
 		"email": tokenStorage.Email,
+=======
+		"email":         tokenStorage.Email,
+		"access_token":  tokenStorage.AccessToken,
+		"refresh_token": tokenStorage.RefreshToken,
+		"id_token":      tokenStorage.IDToken,
+		"account_id":    tokenStorage.AccountID,
+		"expired":       tokenStorage.Expire,
+		"last_refresh":  tokenStorage.LastRefresh,
+		"type":          "codex",
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	}
 
 	fmt.Println("Codex authentication successful")

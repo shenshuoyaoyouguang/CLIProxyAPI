@@ -77,8 +77,14 @@ func (a *ClaudeAuthenticator) Login(ctx context.Context, cfg *config.Config, opt
 	}()
 
 	authSvc := claude.NewClaudeAuth(cfg)
+<<<<<<< HEAD
 
 	authURL, returnedState, err := authSvc.GenerateAuthURL(state, pkceCodes)
+=======
+	redirectURI := claude.RedirectURIForPort(callbackPort)
+
+	authURL, returnedState, err := authSvc.GenerateAuthURLWithRedirect(state, redirectURI, pkceCodes)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	if err != nil {
 		return nil, fmt.Errorf("claude authorization url generation failed: %w", err)
 	}
@@ -107,7 +113,11 @@ func (a *ClaudeAuthenticator) Login(ctx context.Context, cfg *config.Config, opt
 	manualDescription := ""
 
 	go func() {
+<<<<<<< HEAD
 		result, errWait := oauthServer.WaitForCallback(5 * time.Minute)
+=======
+		result, errWait := oauthServer.WaitForCallbackContext(ctx, 5*time.Minute)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		if errWait != nil {
 			callbackErrCh <- errWait
 			return
@@ -132,6 +142,11 @@ waitForCallback:
 		select {
 		case result = <-callbackCh:
 			break waitForCallback
+<<<<<<< HEAD
+=======
+		case <-ctx.Done():
+			return nil, ctx.Err()
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		case err = <-callbackErrCh:
 			if strings.Contains(err.Error(), "timeout") {
 				return nil, claude.NewAuthenticationError(claude.ErrCallbackTimeout, err)
@@ -188,7 +203,11 @@ waitForCallback:
 	log.Debug("Claude authorization code received; exchanging for tokens")
 	log.Debugf("Code: %s, State: %s", result.Code[:min(20, len(result.Code))], state)
 
+<<<<<<< HEAD
 	authBundle, err := authSvc.ExchangeCodeForTokens(ctx, result.Code, state, pkceCodes)
+=======
+	authBundle, err := authSvc.ExchangeCodeForTokensWithRedirect(ctx, result.Code, state, redirectURI, pkceCodes)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	if err != nil {
 		log.Errorf("Token exchange failed: %v", err)
 		return nil, claude.NewAuthenticationError(claude.ErrCodeExchangeFailed, err)

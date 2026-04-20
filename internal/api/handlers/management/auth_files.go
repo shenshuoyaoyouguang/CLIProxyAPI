@@ -49,6 +49,16 @@ const (
 	geminiCLIVersion      = "v1internal"
 )
 
+<<<<<<< HEAD
+=======
+func (h *Handler) resolvedOAuthCallbackPort(defaultPort int) int {
+	if h != nil && h.oauthCallbackPort > 0 {
+		return h.oauthCallbackPort
+	}
+	return defaultPort
+}
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 type callbackForwarder struct {
 	provider string
 	server   *http.Server
@@ -412,6 +422,12 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if !auth.NextRetryAfter.IsZero() {
 		entry["next_retry_after"] = auth.NextRetryAfter
 	}
+<<<<<<< HEAD
+=======
+	if state, ok := auth.AccountHealth(); ok && state != nil {
+		entry["account_health"] = accountHealthResponse(state, time.Now())
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	if path != "" {
 		entry["path"] = path
 		entry["source"] = "file"
@@ -1022,6 +1038,10 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
+<<<<<<< HEAD
+=======
+	auth.ApplyPersistedAccountHealth(time.Now())
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	if hasLastRefresh {
 		auth.LastRefreshedAt = lastRefresh
 	}
@@ -1059,26 +1079,54 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		return
 	}
 
+<<<<<<< HEAD
 	var req struct {
 		Name     string `json:"name"`
 		Disabled *bool  `json:"disabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+=======
+	var raw map[string]any
+	if err := c.ShouldBindJSON(&raw); err != nil {
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
+<<<<<<< HEAD
 	name := strings.TrimSpace(req.Name)
+=======
+	name, okName := optionalStringField(raw, "name")
+	name = strings.TrimSpace(name)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	if name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
+<<<<<<< HEAD
 	if req.Disabled == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "disabled is required"})
+=======
+	if !okName {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	disabled, hasDisabled := optionalBoolField(raw, "disabled")
+	degraded, hasDegraded := optionalBoolField(raw, "degraded")
+	degradedReason, hasReason := optionalStringField(raw, "degraded_reason", "degradedReason")
+	degradedMessage, hasMessage := optionalStringField(raw, "degraded_message", "degradedMessage")
+	degradedStatus, hasStatus := optionalInt64Field(raw, "degraded_status", "degradedStatus")
+	cooldownUntil, hasCooldown, cooldownNull := optionalNullableInt64Field(raw, "cooldown_until", "cooldownUntil")
+	manualDegraded, hasManual := optionalBoolField(raw, "manual_degraded", "manualDegraded")
+	if !hasDisabled && !hasDegraded && !hasReason && !hasMessage && !hasStatus && !hasCooldown && !hasManual {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no status fields provided"})
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		return
 	}
 
 	ctx := c.Request.Context()
+<<<<<<< HEAD
 
 	// Find auth by name or ID
 	var targetAuth *coreauth.Auth
@@ -1094,11 +1142,17 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		}
 	}
 
+=======
+	now := time.Now()
+
+	targetAuth := h.findAuthByNameOrID(name)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	if targetAuth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
 		return
 	}
 
+<<<<<<< HEAD
 	// Update disabled state
 	targetAuth.Disabled = *req.Disabled
 	if *req.Disabled {
@@ -1109,13 +1163,72 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		targetAuth.StatusMessage = ""
 	}
 	targetAuth.UpdatedAt = time.Now()
+=======
+	if hasDisabled {
+		targetAuth.Disabled = disabled
+	}
+
+	if hasDegraded || hasReason || hasMessage || hasStatus || hasCooldown || hasManual {
+		state, ok := targetAuth.AccountHealth()
+		if !ok || state == nil {
+			state = &coreauth.AccountHealthState{}
+		} else {
+			state = state.Clone()
+		}
+		if hasDegraded {
+			state.Degraded = degraded
+		}
+		if hasReason {
+			state.DegradedReason = coreauth.AccountHealthReason(strings.TrimSpace(degradedReason))
+		}
+		if hasMessage {
+			state.DegradedMessage = strings.TrimSpace(degradedMessage)
+		}
+		if hasStatus {
+			state.DegradedStatus = int(degradedStatus)
+		}
+		if hasCooldown {
+			if cooldownNull {
+				state.CooldownUntil = nil
+			} else {
+				next := cooldownUntil
+				state.CooldownUntil = &next
+			}
+		}
+		if hasManual {
+			state.ManualDegraded = manualDegraded
+		}
+		if state.Degraded && state.DegradedAt <= 0 {
+			state.DegradedAt = now.UnixMilli()
+		}
+		if state.Degraded {
+			targetAuth.SetAccountHealth(state)
+		} else {
+			targetAuth.ClearAccountHealth()
+		}
+	}
+
+	syncAuthStateFromHealth(targetAuth, now)
+	targetAuth.UpdatedAt = now
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
 	}
 
+<<<<<<< HEAD
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
+=======
+	response := gin.H{
+		"status":   "ok",
+		"disabled": targetAuth.Disabled,
+	}
+	if state, ok := targetAuth.AccountHealth(); ok && state != nil {
+		response["health"] = accountHealthResponse(state, now)
+	}
+	c.JSON(http.StatusOK, response)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 }
 
 // PatchAuthFileFields updates editable fields (prefix, proxy_url, headers, priority, note) of an auth file.
@@ -1410,9 +1523,17 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 	// Initialize Claude auth service
 	anthropicAuth := claude.NewClaudeAuth(h.cfg)
+<<<<<<< HEAD
 
 	// Generate authorization URL (then override redirect_uri to reuse server port)
 	authURL, state, err := anthropicAuth.GenerateAuthURL(state, pkceCodes)
+=======
+	callbackPort := h.resolvedOAuthCallbackPort(anthropicCallbackPort)
+	redirectURI := claude.RedirectURIForPort(callbackPort)
+
+	// Generate authorization URL
+	authURL, state, err := anthropicAuth.GenerateAuthURLWithRedirect(state, redirectURI, pkceCodes)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	if err != nil {
 		log.Errorf("Failed to generate authorization URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
@@ -1431,7 +1552,11 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 			return
 		}
 		var errStart error
+<<<<<<< HEAD
 		if forwarder, errStart = startCallbackForwarder(anthropicCallbackPort, "anthropic", targetURL); errStart != nil {
+=======
+		if forwarder, errStart = startCallbackForwarder(callbackPort, "anthropic", targetURL); errStart != nil {
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 			log.WithError(errStart).Error("failed to start anthropic callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
@@ -1440,7 +1565,11 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
+<<<<<<< HEAD
 			defer stopCallbackForwarderInstance(anthropicCallbackPort, forwarder)
+=======
+			defer stopCallbackForwarderInstance(callbackPort, forwarder)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		}
 
 		// Helper: wait for callback file
@@ -1495,7 +1624,11 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		code := strings.Split(rawCode, "#")[0]
 
 		// Exchange code for tokens using internal auth service
+<<<<<<< HEAD
 		bundle, errExchange := anthropicAuth.ExchangeCodeForTokens(ctx, code, state, pkceCodes)
+=======
+		bundle, errExchange := anthropicAuth.ExchangeCodeForTokensWithRedirect(ctx, code, state, redirectURI, pkceCodes)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		if errExchange != nil {
 			authErr := claude.NewAuthenticationError(claude.ErrCodeExchangeFailed, errExchange)
 			log.Errorf("Failed to exchange authorization code for tokens: %v", authErr)
@@ -1525,7 +1658,10 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		}
 		fmt.Println("You can now use Claude services through this CLI")
 		CompleteOAuthSession(state)
+<<<<<<< HEAD
 		CompleteOAuthSessionsByProvider("anthropic")
+=======
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
@@ -1541,18 +1677,35 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 	projectID := c.Query("project_id")
 
 	fmt.Println("Initializing Google authentication...")
+<<<<<<< HEAD
+=======
+	callbackPort := h.resolvedOAuthCallbackPort(geminiCallbackPort)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 	// OAuth2 configuration using exported constants from internal/auth/gemini
 	conf := &oauth2.Config{
 		ClientID:     geminiAuth.ClientID,
 		ClientSecret: geminiAuth.ClientSecret,
+<<<<<<< HEAD
 		RedirectURL:  fmt.Sprintf("http://localhost:%d/oauth2callback", geminiAuth.DefaultCallbackPort),
+=======
+		RedirectURL:  fmt.Sprintf("http://localhost:%d/oauth2callback", callbackPort),
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		Scopes:       geminiAuth.Scopes,
 		Endpoint:     google.Endpoint,
 	}
 
 	// Build authorization URL and return it immediately
+<<<<<<< HEAD
 	state := fmt.Sprintf("gem-%d", time.Now().UnixNano())
+=======
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		log.Errorf("Failed to generate state parameter: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 
 	RegisterOAuthSession(state, "gemini")
@@ -1567,7 +1720,11 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 			return
 		}
 		var errStart error
+<<<<<<< HEAD
 		if forwarder, errStart = startCallbackForwarder(geminiCallbackPort, "gemini", targetURL); errStart != nil {
+=======
+		if forwarder, errStart = startCallbackForwarder(callbackPort, "gemini", targetURL); errStart != nil {
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 			log.WithError(errStart).Error("failed to start gemini callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
@@ -1576,7 +1733,11 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
+<<<<<<< HEAD
 			defer stopCallbackForwarderInstance(geminiCallbackPort, forwarder)
+=======
+			defer stopCallbackForwarderInstance(callbackPort, forwarder)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		}
 
 		// Wait for callback file written by server route
@@ -1783,7 +1944,10 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 		}
 
 		CompleteOAuthSession(state)
+<<<<<<< HEAD
 		CompleteOAuthSessionsByProvider("gemini")
+=======
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		fmt.Printf("You can now use Gemini CLI services through this CLI; token saved to %s\n", savedPath)
 	}()
 
@@ -1814,9 +1978,17 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 
 	// Initialize Codex auth service
 	openaiAuth := codex.NewCodexAuth(h.cfg)
+<<<<<<< HEAD
 
 	// Generate authorization URL
 	authURL, err := openaiAuth.GenerateAuthURL(state, pkceCodes)
+=======
+	callbackPort := h.resolvedOAuthCallbackPort(codexCallbackPort)
+	redirectURI := codex.RedirectURIForPort(callbackPort)
+
+	// Generate authorization URL
+	authURL, err := openaiAuth.GenerateAuthURLWithRedirect(state, redirectURI, pkceCodes)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	if err != nil {
 		log.Errorf("Failed to generate authorization URL: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
@@ -1835,7 +2007,11 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 			return
 		}
 		var errStart error
+<<<<<<< HEAD
 		if forwarder, errStart = startCallbackForwarder(codexCallbackPort, "codex", targetURL); errStart != nil {
+=======
+		if forwarder, errStart = startCallbackForwarder(callbackPort, "codex", targetURL); errStart != nil {
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 			log.WithError(errStart).Error("failed to start codex callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
@@ -1844,7 +2020,11 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
+<<<<<<< HEAD
 			defer stopCallbackForwarderInstance(codexCallbackPort, forwarder)
+=======
+			defer stopCallbackForwarderInstance(callbackPort, forwarder)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		}
 
 		// Wait for callback file
@@ -1885,7 +2065,11 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 
 		log.Debug("Authorization code received, exchanging for tokens...")
 		// Exchange code for tokens using internal auth service
+<<<<<<< HEAD
 		bundle, errExchange := openaiAuth.ExchangeCodeForTokens(ctx, code, pkceCodes)
+=======
+		bundle, errExchange := openaiAuth.ExchangeCodeForTokensWithRedirect(ctx, code, redirectURI, pkceCodes)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		if errExchange != nil {
 			authErr := codex.NewAuthenticationError(codex.ErrCodeExchangeFailed, errExchange)
 			SetOAuthSessionError(state, "Failed to exchange authorization code for tokens")
@@ -1930,7 +2114,10 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 		fmt.Println("You can now use Codex services through this CLI")
 		CompleteOAuthSession(state)
+<<<<<<< HEAD
 		CompleteOAuthSessionsByProvider("codex")
+=======
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
@@ -1943,6 +2130,10 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 	fmt.Println("Initializing Antigravity authentication...")
 
 	authSvc := antigravity.NewAntigravityAuth(h.cfg, nil)
+<<<<<<< HEAD
+=======
+	callbackPort := h.resolvedOAuthCallbackPort(antigravity.CallbackPort)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 	state, errState := misc.GenerateRandomState()
 	if errState != nil {
@@ -1951,7 +2142,11 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		return
 	}
 
+<<<<<<< HEAD
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
+=======
+	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", callbackPort)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	authURL := authSvc.BuildAuthURL(state, redirectURI)
 
 	RegisterOAuthSession(state, "antigravity")
@@ -1966,7 +2161,11 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			return
 		}
 		var errStart error
+<<<<<<< HEAD
 		if forwarder, errStart = startCallbackForwarder(antigravity.CallbackPort, "antigravity", targetURL); errStart != nil {
+=======
+		if forwarder, errStart = startCallbackForwarder(callbackPort, "antigravity", targetURL); errStart != nil {
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 			log.WithError(errStart).Error("failed to start antigravity callback forwarder")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
 			return
@@ -1975,7 +2174,11 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
+<<<<<<< HEAD
 			defer stopCallbackForwarderInstance(antigravity.CallbackPort, forwarder)
+=======
+			defer stopCallbackForwarderInstance(callbackPort, forwarder)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		}
 
 		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-antigravity-%s.oauth", state))
@@ -2090,7 +2293,10 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		}
 
 		CompleteOAuthSession(state)
+<<<<<<< HEAD
 		CompleteOAuthSessionsByProvider("antigravity")
+=======
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		if projectID != "" {
 			fmt.Printf("Using GCP project: %s\n", projectID)
@@ -2107,7 +2313,16 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 
 	fmt.Println("Initializing Kimi authentication...")
 
+<<<<<<< HEAD
 	state := fmt.Sprintf("kmi-%d", time.Now().UnixNano())
+=======
+	state, errState := misc.GenerateRandomState()
+	if errState != nil {
+		log.Errorf("Failed to generate state parameter: %v", errState)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	// Initialize Kimi auth service
 	kimiAuth := kimi.NewKimiAuth(h.cfg)
 
@@ -2172,7 +2387,10 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		fmt.Println("You can now use Kimi services through this CLI")
 		CompleteOAuthSession(state)
+<<<<<<< HEAD
 		CompleteOAuthSessionsByProvider("kimi")
+=======
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})

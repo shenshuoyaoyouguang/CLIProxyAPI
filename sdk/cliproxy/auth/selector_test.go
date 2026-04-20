@@ -313,6 +313,61 @@ func TestIsAuthBlockedForModel_UnavailableWithoutNextRetryIsNotBlocked(t *testin
 	}
 }
 
+<<<<<<< HEAD
+=======
+func TestIsAuthBlockedForModel_PersistedAccountHealthPermanentBlock(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	auth := &Auth{
+		ID:       "a",
+		Metadata: map[string]any{},
+	}
+	auth.SetAccountHealth(&AccountHealthState{
+		Degraded:        true,
+		DegradedReason:  AccountHealthReasonUnauthorized,
+		DegradedMessage: "401 unauthorized",
+	})
+
+	blocked, reason, next := isAuthBlockedForModel(auth, "", now)
+	if !blocked {
+		t.Fatalf("blocked = false, want true")
+	}
+	if reason != blockReasonOther {
+		t.Fatalf("reason = %v, want %v", reason, blockReasonOther)
+	}
+	if !next.IsZero() {
+		t.Fatalf("next = %v, want zero", next)
+	}
+}
+
+func TestIsAuthBlockedForModel_PersistedAccountHealthExpiredCooldownNotBlocked(t *testing.T) {
+	t.Parallel()
+
+	past := time.Now().Add(-1 * time.Minute).UnixMilli()
+	auth := &Auth{
+		ID:       "a",
+		Metadata: map[string]any{},
+	}
+	auth.SetAccountHealth(&AccountHealthState{
+		Degraded:       true,
+		DegradedReason: AccountHealthReasonRateLimited,
+		CooldownUntil:  &past,
+	})
+
+	blocked, reason, next := isAuthBlockedForModel(auth, "", time.Now())
+	if blocked {
+		t.Fatalf("blocked = true, want false")
+	}
+	if reason != blockReasonNone {
+		t.Fatalf("reason = %v, want %v", reason, blockReasonNone)
+	}
+	if !next.IsZero() {
+		t.Fatalf("next = %v, want zero", next)
+	}
+}
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 func TestFillFirstSelectorPick_ThinkingSuffixFallsBackToBaseModelState(t *testing.T) {
 	t.Parallel()
 

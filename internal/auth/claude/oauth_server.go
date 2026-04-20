@@ -148,12 +148,29 @@ func (s *OAuthServer) Stop(ctx context.Context) error {
 //   - *OAuthResult: The OAuth result if successful
 //   - error: An error if the callback times out or an error occurs
 func (s *OAuthServer) WaitForCallback(timeout time.Duration) (*OAuthResult, error) {
+<<<<<<< HEAD
+=======
+	return s.WaitForCallbackContext(context.Background(), timeout)
+}
+
+// WaitForCallbackContext waits for the OAuth callback until completion, cancellation, or timeout.
+func (s *OAuthServer) WaitForCallbackContext(ctx context.Context, timeout time.Duration) (*OAuthResult, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	select {
 	case result := <-s.resultChan:
 		return result, nil
 	case err := <-s.errorChan:
 		return nil, err
+<<<<<<< HEAD
 	case <-time.After(timeout):
+=======
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		return nil, fmt.Errorf("timeout waiting for OAuth callback")
 	}
 }

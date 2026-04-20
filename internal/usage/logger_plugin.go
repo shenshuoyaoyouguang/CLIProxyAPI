@@ -5,7 +5,14 @@ package usage
 
 import (
 	"context"
+<<<<<<< HEAD
 	"fmt"
+=======
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +20,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+<<<<<<< HEAD
+=======
+	log "github.com/sirupsen/logrus"
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 )
 
 var statisticsEnabled atomic.Bool
@@ -71,6 +82,13 @@ type RequestStatistics struct {
 	requestsByHour map[int]int64
 	tokensByDay    map[string]int64
 	tokensByHour   map[int]int64
+<<<<<<< HEAD
+=======
+
+	persistMu     sync.Mutex
+	persistPath   string
+	persistSignal chan struct{}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 }
 
 // apiStats holds aggregated metrics for a single API key.
@@ -137,6 +155,20 @@ type ModelSnapshot struct {
 
 var defaultRequestStatistics = NewRequestStatistics()
 
+<<<<<<< HEAD
+=======
+const (
+	statisticsPersistenceVersion = 1
+	statisticsPersistDebounce    = 5 * time.Second
+)
+
+type persistedStatisticsPayload struct {
+	Version   int                `json:"version"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	Usage     StatisticsSnapshot `json:"usage"`
+}
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 // GetRequestStatistics returns the shared statistics store.
 func GetRequestStatistics() *RequestStatistics { return defaultRequestStatistics }
 
@@ -151,6 +183,84 @@ func NewRequestStatistics() *RequestStatistics {
 	}
 }
 
+<<<<<<< HEAD
+=======
+// SetPersistencePath configures the snapshot file used for automatic persistence.
+func (s *RequestStatistics) SetPersistencePath(path string) error {
+	if s == nil {
+		return nil
+	}
+
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if !filepath.IsAbs(path) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return fmt.Errorf("resolve statistics persistence path: %w", err)
+		}
+		path = abs
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create statistics persistence dir: %w", err)
+	}
+
+	s.persistMu.Lock()
+	if s.persistPath == path {
+		s.persistMu.Unlock()
+		return nil
+	}
+	s.persistPath = path
+	if s.persistSignal == nil {
+		s.persistSignal = make(chan struct{}, 1)
+		go s.persistLoop()
+	}
+	s.persistMu.Unlock()
+
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat persisted usage snapshot: %w", err)
+	}
+
+	return s.loadPersistedSnapshot(path)
+}
+
+// PersistNow writes the current snapshot to the configured persistence file.
+func (s *RequestStatistics) PersistNow() error {
+	if s == nil {
+		return nil
+	}
+	path := s.persistencePath()
+	if path == "" {
+		return nil
+	}
+
+	payload := persistedStatisticsPayload{
+		Version:   statisticsPersistenceVersion,
+		UpdatedAt: time.Now().UTC(),
+		Usage:     s.Snapshot(),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal usage snapshot: %w", err)
+	}
+
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
+		return fmt.Errorf("write usage snapshot: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("replace usage snapshot: %w", err)
+	}
+	return nil
+}
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 // Record ingests a new usage record and updates the aggregates.
 func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record) {
 	if s == nil {
@@ -210,6 +320,10 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	s.requestsByHour[hourKey]++
 	s.tokensByDay[dayKey] += totalTokens
 	s.tokensByHour[hourKey] += totalTokens
+<<<<<<< HEAD
+=======
+	s.queuePersist()
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 }
 
 func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail RequestDetail) {
@@ -281,6 +395,10 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 		result.TokensByHour[key] = v
 	}
 
+<<<<<<< HEAD
+=======
+	s.queuePersist()
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	return result
 }
 
@@ -482,3 +600,84 @@ func formatHour(hour int) string {
 	hour = hour % 24
 	return fmt.Sprintf("%02d", hour)
 }
+<<<<<<< HEAD
+=======
+
+func (s *RequestStatistics) persistencePath() string {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	return s.persistPath
+}
+
+func (s *RequestStatistics) queuePersist() {
+	if s == nil {
+		return
+	}
+	s.persistMu.Lock()
+	ch := s.persistSignal
+	path := s.persistPath
+	s.persistMu.Unlock()
+	if path == "" || ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func (s *RequestStatistics) persistLoop() {
+	var timer *time.Timer
+	for range s.persistSignal {
+		if timer == nil {
+			timer = time.NewTimer(statisticsPersistDebounce)
+		} else {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(statisticsPersistDebounce)
+		}
+
+		for {
+			select {
+			case <-s.persistSignal:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(statisticsPersistDebounce)
+			case <-timer.C:
+				if err := s.PersistNow(); err != nil {
+					log.WithError(err).Warn("usage: failed to persist usage statistics")
+				}
+				timer = nil
+				goto nextCycle
+			}
+		}
+	nextCycle:
+	}
+}
+
+func (s *RequestStatistics) loadPersistedSnapshot(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read usage snapshot: %w", err)
+	}
+
+	var payload persistedStatisticsPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("decode usage snapshot: %w", err)
+	}
+	if payload.Version != 0 && payload.Version != statisticsPersistenceVersion {
+		return fmt.Errorf("unsupported usage snapshot version %d", payload.Version)
+	}
+
+	s.MergeSnapshot(payload.Usage)
+	return nil
+}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)

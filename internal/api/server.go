@@ -42,6 +42,10 @@ import (
 )
 
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
+<<<<<<< HEAD
+=======
+const oauthCallbackErrorHTML = `<html><head><meta charset="utf-8"><title>Authentication failed</title></head><body><h1>Authentication failed</h1><p>%s</p><p>Please return to the application and retry the login flow.</p></body></html>`
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 type serverOptionConfig struct {
 	extraMiddleware      []gin.HandlerFunc
@@ -49,6 +53,10 @@ type serverOptionConfig struct {
 	routerConfigurator   func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
 	requestLoggerFactory func(*config.Config, string) logging.RequestLogger
 	localPassword        string
+<<<<<<< HEAD
+=======
+	oauthCallbackPort    int
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	keepAliveEnabled     bool
 	keepAliveTimeout     time.Duration
 	keepAliveOnTimeout   func()
@@ -92,6 +100,18 @@ func WithLocalManagementPassword(password string) ServerOption {
 	}
 }
 
+<<<<<<< HEAD
+=======
+// WithOAuthCallbackPort overrides the localhost OAuth callback port used by management/TUI browser flows.
+func WithOAuthCallbackPort(port int) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		if port > 0 {
+			cfg.oauthCallbackPort = port
+		}
+	}
+}
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 // WithKeepAliveEndpoint enables a keep-alive endpoint with the provided timeout and callback.
 func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption {
 	return func(cfg *serverOptionConfig) {
@@ -268,6 +288,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}
+<<<<<<< HEAD
+=======
+	if optionState.oauthCallbackPort > 0 {
+		s.mgmt.SetOAuthCallbackPort(optionState.oauthCallbackPort)
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	logDir := logging.ResolveLogDirectory(cfg)
 	s.mgmt.SetLogDirectory(logDir)
 	if optionState.postAuthHook != nil {
@@ -370,6 +396,7 @@ func (s *Server) setupRoutes() {
 	// These endpoints receive provider redirects and persist
 	// the short-lived code/state for the waiting goroutine.
 	s.engine.GET("/anthropic/callback", func(c *gin.Context) {
+<<<<<<< HEAD
 		code := c.Query("code")
 		state := c.Query("state")
 		errStr := c.Query("error")
@@ -423,11 +450,68 @@ func (s *Server) setupRoutes() {
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
+=======
+		s.handleOAuthBrowserCallback(c, "anthropic")
+	})
+
+	s.engine.GET("/codex/callback", func(c *gin.Context) {
+		s.handleOAuthBrowserCallback(c, "codex")
+	})
+
+	s.engine.GET("/google/callback", func(c *gin.Context) {
+		s.handleOAuthBrowserCallback(c, "gemini")
+	})
+
+	s.engine.GET("/antigravity/callback", func(c *gin.Context) {
+		s.handleOAuthBrowserCallback(c, "antigravity")
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	})
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
 }
 
+<<<<<<< HEAD
+=======
+func (s *Server) handleOAuthBrowserCallback(c *gin.Context, provider string) {
+	if s == nil || s.cfg == nil {
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	code := strings.TrimSpace(c.Query("code"))
+	state := strings.TrimSpace(c.Query("state"))
+	errStr := strings.TrimSpace(c.Query("error"))
+	if errStr == "" {
+		errStr = strings.TrimSpace(c.Query("error_description"))
+	}
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	if state == "" {
+		c.String(http.StatusBadRequest, oauthCallbackErrorHTML, "Missing OAuth state.")
+		return
+	}
+
+	if !managementHandlers.IsOAuthSessionPending(state, provider) {
+		c.String(http.StatusConflict, oauthCallbackErrorHTML, "This OAuth login is no longer pending.")
+		return
+	}
+
+	if _, err := managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, provider, state, code, errStr); err != nil {
+		status := http.StatusInternalServerError
+		message := "Failed to record the OAuth callback."
+		if !managementHandlers.IsOAuthSessionPending(state, provider) {
+			status = http.StatusConflict
+			message = "This OAuth login is no longer pending."
+		}
+		log.WithError(err).WithField("provider", provider).Warn("failed to persist oauth callback")
+		c.String(status, oauthCallbackErrorHTML, message)
+		return
+	}
+
+	c.String(http.StatusOK, oauthCallbackSuccessHTML)
+}
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 // AttachWebsocketRoute registers a websocket upgrade handler on the primary Gin engine.
 // The handler is served as-is without additional middleware beyond the standard stack already configured.
 func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
@@ -619,6 +703,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
+<<<<<<< HEAD
+=======
+		mgmt.GET("/auth-files/health", s.mgmt.GetAuthFileHealth)
+		mgmt.PUT("/auth-files/health", s.mgmt.PutAuthFileHealth)
+		mgmt.POST("/auth-files/health/:name/recover", s.mgmt.RecoverAuthFileHealth)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
 

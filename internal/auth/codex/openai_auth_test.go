@@ -4,6 +4,10 @@ import (
 	"context"
 	"io"
 	"net/http"
+<<<<<<< HEAD
+=======
+	"net/url"
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -78,3 +82,70 @@ func TestNewCodexAuthWithProxyURL_OverrideProxyTakesPrecedence(t *testing.T) {
 		t.Fatalf("proxy URL = %v, want http://override.example.com:8081", proxyURL)
 	}
 }
+<<<<<<< HEAD
+=======
+
+func TestGenerateAuthURLWithRedirect_UsesProvidedRedirect(t *testing.T) {
+	auth := NewCodexAuthWithProxyURL(&config.Config{}, "")
+
+	authURL, err := auth.GenerateAuthURLWithRedirect("state-1", "http://localhost:2468/auth/callback", &PKCECodes{
+		CodeVerifier:  "verifier",
+		CodeChallenge: "challenge",
+	})
+	if err != nil {
+		t.Fatalf("GenerateAuthURLWithRedirect() error = %v", err)
+	}
+
+	parsedURL, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("Parse(authURL) error = %v", err)
+	}
+	if got := parsedURL.Query().Get("redirect_uri"); got != "http://localhost:2468/auth/callback" {
+		t.Fatalf("redirect_uri = %q, want %q", got, "http://localhost:2468/auth/callback")
+	}
+}
+
+func TestExchangeCodeForTokensWithRedirect_UsesProvidedRedirect(t *testing.T) {
+	var requestBody string
+	auth := &CodexAuth{
+		httpClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				body, errRead := io.ReadAll(req.Body)
+				if errRead != nil {
+					t.Fatalf("ReadAll(req.Body) error = %v", errRead)
+				}
+				requestBody = string(body)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body: io.NopCloser(strings.NewReader(
+						`{"access_token":"tok-123","refresh_token":"ref-123","id_token":"","token_type":"Bearer","expires_in":3600}`,
+					)),
+					Header:  make(http.Header),
+					Request: req,
+				}, nil
+			}),
+		},
+	}
+
+	_, err := auth.ExchangeCodeForTokensWithRedirect(
+		context.Background(),
+		"code-123",
+		"http://localhost:2468/auth/callback",
+		&PKCECodes{
+			CodeVerifier:  "verifier",
+			CodeChallenge: "challenge",
+		},
+	)
+	if err != nil {
+		t.Fatalf("ExchangeCodeForTokensWithRedirect() error = %v", err)
+	}
+
+	values, err := url.ParseQuery(requestBody)
+	if err != nil {
+		t.Fatalf("ParseQuery(requestBody) error = %v", err)
+	}
+	if got := values.Get("redirect_uri"); got != "http://localhost:2468/auth/callback" {
+		t.Fatalf("redirect_uri = %q, want %q", got, "http://localhost:2468/auth/callback")
+	}
+}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)

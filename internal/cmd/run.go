@@ -24,11 +24,21 @@ import (
 //   - cfg: The application configuration
 //   - configPath: The path to the configuration file
 //   - localPassword: Optional password accepted for local management requests
+<<<<<<< HEAD
 func StartService(cfg *config.Config, configPath string, localPassword string) {
+=======
+func StartService(cfg *config.Config, configPath string, localPassword string, oauthCallbackPort int) {
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		WithLocalManagementPassword(localPassword)
+<<<<<<< HEAD
+=======
+	if oauthCallbackPort > 0 {
+		builder = builder.WithServerOptions(api.WithOAuthCallbackPort(oauthCallbackPort))
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 	ctxSignal, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -57,11 +67,21 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 
 // StartServiceBackground starts the proxy service in a background goroutine
 // and returns a cancel function for shutdown and a done channel.
+<<<<<<< HEAD
 func StartServiceBackground(cfg *config.Config, configPath string, localPassword string) (cancel func(), done <-chan struct{}) {
+=======
+func StartServiceBackground(cfg *config.Config, configPath string, localPassword string, oauthCallbackPort int) (cancel func(), done <-chan struct{}) {
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		WithLocalManagementPassword(localPassword)
+<<<<<<< HEAD
+=======
+	if oauthCallbackPort > 0 {
+		builder = builder.WithServerOptions(api.WithOAuthCallbackPort(oauthCallbackPort))
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	doneCh := make(chan struct{})

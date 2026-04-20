@@ -2,15 +2,29 @@ package api
 
 import (
 	"encoding/json"
+<<<<<<< HEAD
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+=======
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	"strings"
 	"testing"
 	"time"
 
 	gin "github.com/gin-gonic/gin"
+<<<<<<< HEAD
+=======
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -20,6 +34,14 @@ import (
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+<<<<<<< HEAD
+=======
+	return newTestServerWithOptions(t)
+}
+
+func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
+	t.Helper()
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 
 	gin.SetMode(gin.TestMode)
 
@@ -44,7 +66,11 @@ func newTestServer(t *testing.T) *Server {
 	accessManager := sdkaccess.NewManager()
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
+<<<<<<< HEAD
 	return NewServer(cfg, authManager, accessManager, configPath)
+=======
+	return NewServer(cfg, authManager, accessManager, configPath, opts...)
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 }
 
 func TestHealthz(t *testing.T) {
@@ -69,6 +95,145 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+<<<<<<< HEAD
+=======
+func TestOAuthBrowserCallback_ReturnsConflictWhenSessionIsNotPending(t *testing.T) {
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/google/callback?state=missing-state-1234567890abcdef&code=test-code", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusConflict, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "Authentication successful") {
+		t.Fatalf("unexpected success page for missing oauth session: %s", rr.Body.String())
+	}
+}
+
+func TestOAuthBrowserCallback_PersistsPendingCallbackBeforeShowingSuccess(t *testing.T) {
+	server := newTestServer(t)
+	state := "pending-state-1234567890abcdef"
+	managementHandlers.RegisterOAuthSession(state, "gemini")
+	defer managementHandlers.CompleteOAuthSession(state)
+
+	req := httptest.NewRequest(http.MethodGet, "/google/callback?state="+state+"&code=test-code", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Authentication successful") {
+		t.Fatalf("expected success page, got %s", rr.Body.String())
+	}
+
+	callbackFile := filepath.Join(server.cfg.AuthDir, ".oauth-gemini-"+state+".oauth")
+	if _, err := os.Stat(callbackFile); err != nil {
+		t.Fatalf("expected oauth callback file to be created: %v", err)
+	}
+}
+
+func TestRequestGeminiCLIToken_ReturnsRandomState(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-mgmt")
+	server := newTestServer(t)
+
+	seen := make(map[string]struct{}, 2)
+	statePattern := regexp.MustCompile(`^[a-f0-9]{32}$`)
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/gemini-cli-auth-url", nil)
+		req.Header.Set("Authorization", "Bearer test-mgmt")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
+		}
+		state, _ := payload["state"].(string)
+		if !statePattern.MatchString(state) {
+			t.Fatalf("state = %q, want 32-char random hex string", state)
+		}
+		if _, exists := seen[state]; exists {
+			t.Fatalf("expected distinct states, got duplicate %q", state)
+		}
+		seen[state] = struct{}{}
+		managementHandlers.CompleteOAuthSession(state)
+	}
+}
+
+func TestManagementOAuthAuthURLs_UseOverriddenCallbackPort(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-mgmt")
+	callbackPort := 41234
+	server := newTestServerWithOptions(t, WithOAuthCallbackPort(callbackPort))
+
+	testCases := []struct {
+		name      string
+		path      string
+		paramName string
+		wantValue string
+		stateKey  string
+	}{
+		{
+			name:      "claude",
+			path:      "/v0/management/anthropic-auth-url",
+			paramName: "redirect_uri",
+			wantValue: fmt.Sprintf("http://localhost:%d/callback", callbackPort),
+			stateKey:  "state",
+		},
+		{
+			name:      "codex",
+			path:      "/v0/management/codex-auth-url",
+			paramName: "redirect_uri",
+			wantValue: fmt.Sprintf("http://localhost:%d/auth/callback", callbackPort),
+			stateKey:  "state",
+		},
+		{
+			name:      "gemini",
+			path:      "/v0/management/gemini-cli-auth-url",
+			paramName: "redirect_uri",
+			wantValue: fmt.Sprintf("http://localhost:%d/oauth2callback", callbackPort),
+			stateKey:  "state",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer test-mgmt")
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
+			}
+			rawURL, _ := payload["url"].(string)
+			parsedURL, err := url.Parse(rawURL)
+			if err != nil {
+				t.Fatalf("url.Parse(authURL) error = %v", err)
+			}
+			if got := parsedURL.Query().Get(tc.paramName); got != tc.wantValue {
+				t.Fatalf("%s %s = %q, want %q", tc.name, tc.paramName, got, tc.wantValue)
+			}
+
+			state, _ := payload[tc.stateKey].(string)
+			managementHandlers.CompleteOAuthSession(state)
+		})
+	}
+}
+
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 func TestAmpProviderModelRoutes(t *testing.T) {
 	testCases := []struct {
 		name         string

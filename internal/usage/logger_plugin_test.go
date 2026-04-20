@@ -2,6 +2,10 @@ package usage
 
 import (
 	"context"
+<<<<<<< HEAD
+=======
+	"path/filepath"
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	"testing"
 	"time"
 
@@ -94,3 +98,42 @@ func TestRequestStatisticsMergeSnapshotDedupIgnoresLatency(t *testing.T) {
 		t.Fatalf("details len = %d, want 1", len(details))
 	}
 }
+<<<<<<< HEAD
+=======
+
+func TestRequestStatisticsPersistAndRestoreSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".usage-statistics.json")
+
+	stats := NewRequestStatistics()
+	if err := stats.SetPersistencePath(path); err != nil {
+		t.Fatalf("SetPersistencePath() error = %v", err)
+	}
+
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "persisted-key",
+		Model:       "gpt-5.4",
+		RequestedAt: time.Date(2026, 3, 20, 13, 0, 0, 0, time.UTC),
+		Detail: coreusage.Detail{
+			InputTokens:  8,
+			OutputTokens: 12,
+			TotalTokens:  20,
+		},
+	})
+	if err := stats.PersistNow(); err != nil {
+		t.Fatalf("PersistNow() error = %v", err)
+	}
+
+	restored := NewRequestStatistics()
+	if err := restored.SetPersistencePath(path); err != nil {
+		t.Fatalf("restored SetPersistencePath() error = %v", err)
+	}
+
+	snapshot := restored.Snapshot()
+	if snapshot.TotalRequests != 1 {
+		t.Fatalf("snapshot.TotalRequests = %d, want 1", snapshot.TotalRequests)
+	}
+	if snapshot.APIs["persisted-key"].Models["gpt-5.4"].TotalTokens != 20 {
+		t.Fatalf("restored total tokens = %d, want 20", snapshot.APIs["persisted-key"].Models["gpt-5.4"].TotalTokens)
+	}
+}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)

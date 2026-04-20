@@ -375,6 +375,17 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+<<<<<<< HEAD
+=======
+	if health, ok := auth.AccountHealth(); ok && health != nil {
+		if blocked, cooldown, next := health.IsBlocked(now); blocked {
+			if cooldown {
+				return true, blockReasonCooldown, next
+			}
+			return true, blockReasonOther, next
+		}
+	}
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
 			state, ok := auth.ModelStates[model]

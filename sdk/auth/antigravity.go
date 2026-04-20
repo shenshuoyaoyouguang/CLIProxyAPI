@@ -104,6 +104,11 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 waitForCallback:
 	for {
 		select {
+<<<<<<< HEAD
+=======
+		case <-ctx.Done():
+			return nil, ctx.Err()
+>>>>>>> 27c1428b (feat: add core proxy server implementation)
 		case res := <-cbChan:
 			cbRes = res
 			break waitForCallback
