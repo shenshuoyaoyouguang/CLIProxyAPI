@@ -81,8 +81,9 @@ func (a *CodexAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 	}()
 
 	authSvc := codex.NewCodexAuth(cfg)
+	redirectURI := codex.RedirectURIForPort(callbackPort)
 
-	authURL, err := authSvc.GenerateAuthURL(state, pkceCodes)
+	authURL, err := authSvc.GenerateAuthURLWithRedirect(state, redirectURI, pkceCodes)
 	if err != nil {
 		return nil, fmt.Errorf("codex authorization url generation failed: %w", err)
 	}
@@ -110,7 +111,7 @@ func (a *CodexAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 	manualDescription := ""
 
 	go func() {
-		result, errWait := oauthServer.WaitForCallback(5 * time.Minute)
+		result, errWait := oauthServer.WaitForCallbackContext(ctx, 5*time.Minute)
 		if errWait != nil {
 			callbackErrCh <- errWait
 			return
@@ -135,6 +136,8 @@ waitForCallback:
 		select {
 		case result = <-callbackCh:
 			break waitForCallback
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		case err = <-callbackErrCh:
 			if strings.Contains(err.Error(), "timeout") {
 				return nil, codex.NewAuthenticationError(codex.ErrCallbackTimeout, err)
@@ -189,7 +192,7 @@ waitForCallback:
 
 	log.Debug("Codex authorization code received; exchanging for tokens")
 
-	authBundle, err := authSvc.ExchangeCodeForTokens(ctx, result.Code, pkceCodes)
+	authBundle, err := authSvc.ExchangeCodeForTokensWithRedirect(ctx, result.Code, redirectURI, pkceCodes)
 	if err != nil {
 		return nil, codex.NewAuthenticationError(codex.ErrCodeExchangeFailed, err)
 	}
