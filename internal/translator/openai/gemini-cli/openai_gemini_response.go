@@ -9,7 +9,7 @@ import (
 	"context"
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
-	. "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/openai/gemini"
+	openaiGemini "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/openai/gemini"
 )
 
 // ConvertOpenAIResponseToGeminiCLI converts OpenAI Chat Completions streaming response format to Gemini API format.
@@ -25,7 +25,7 @@ import (
 // Returns:
 //   - [][]byte: A slice of Gemini-compatible JSON responses.
 func ConvertOpenAIResponseToGeminiCLI(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
-	outputs := ConvertOpenAIResponseToGemini(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, param)
+	outputs := openaiGemini.ConvertOpenAIResponseToGemini(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, param)
 	newOutputs := make([][]byte, 0, len(outputs))
 	for i := 0; i < len(outputs); i++ {
 		newOutputs = append(newOutputs, translatorcommon.WrapGeminiCLIResponse(outputs[i]))
@@ -44,7 +44,7 @@ func ConvertOpenAIResponseToGeminiCLI(ctx context.Context, modelName string, ori
 // Returns:
 //   - []byte: A Gemini-compatible JSON response.
 func ConvertOpenAIResponseToGeminiCLINonStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []byte {
-	out := ConvertOpenAIResponseToGeminiNonStream(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, param)
+	out := openaiGemini.ConvertOpenAIResponseToGeminiNonStream(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, param)
 	return translatorcommon.WrapGeminiCLIResponse(out)
 }
 

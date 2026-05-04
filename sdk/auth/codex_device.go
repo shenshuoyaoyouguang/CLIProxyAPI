@@ -142,7 +142,11 @@ func requestCodexDeviceUserCode(ctx context.Context, client *http.Client) (*code
 	if err != nil {
 		return nil, fmt.Errorf("failed to request codex device code: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Errorf("codex device: close response body: %v", err)
+		}
+	}()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

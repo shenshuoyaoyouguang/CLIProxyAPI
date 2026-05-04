@@ -16,6 +16,7 @@ import (
 	"time"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 // FileTokenStore persists token records and auth metadata using the filesystem as backing storage.
@@ -365,7 +366,11 @@ func refreshGeminiAccessToken(tokenMap map[string]any, httpClient *http.Client) 
 	if err != nil {
 		return "", fmt.Errorf("refresh request: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Errorf("filestore: close refresh response body: %v", err)
+		}
+	}()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {

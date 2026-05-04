@@ -67,15 +67,15 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 	index := len(attempts) + 1
 
 	builder := &strings.Builder{}
-	builder.WriteString(fmt.Sprintf("=== API REQUEST %d ===\n", index))
-	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
+	fmt.Fprintf(builder, "=== API REQUEST %d ===\n", index)
+	fmt.Fprintf(builder, "Timestamp: %s\n", time.Now().Format(time.RFC3339Nano))
 	if info.URL != "" {
-		builder.WriteString(fmt.Sprintf("Upstream URL: %s\n", info.URL))
+		fmt.Fprintf(builder, "Upstream URL: %s\n", info.URL)
 	} else {
 		builder.WriteString("Upstream URL: <unknown>\n")
 	}
 	if info.Method != "" {
-		builder.WriteString(fmt.Sprintf("HTTP Method: %s\n", info.Method))
+		fmt.Fprintf(builder, "HTTP Method: %s\n", info.Method)
 	}
 	if auth := formatAuthInfo(info); auth != "" {
 		builder.WriteString(fmt.Sprintf("Auth: %s\n", auth))

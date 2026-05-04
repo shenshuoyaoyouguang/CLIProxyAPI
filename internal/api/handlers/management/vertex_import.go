@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/vertex"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 // ImportVertexCredential handles uploading a Vertex service account JSON and saving it as an auth record.
@@ -35,7 +36,11 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
 		return
 	}
-	defer func() { _ = file.Close() }()
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Errorf("failed to close uploaded file: %v", err)
+		}
+	}()
 
 	data, err := io.ReadAll(file)
 	if err != nil {

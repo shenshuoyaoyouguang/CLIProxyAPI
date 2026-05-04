@@ -109,7 +109,7 @@ func TestConvertGeminiResponseToOpenAIResponses_UnwrapAndAggregateText(t *testin
 	if posTextDone == -1 || posPartDone == -1 || posMessageDone == -1 || posFuncAdded == -1 {
 		t.Fatalf("missing ordering events: textDone=%d partDone=%d messageDone=%d funcAdded=%d", posTextDone, posPartDone, posMessageDone, posFuncAdded)
 	}
-	if !(posTextDone < posPartDone && posPartDone < posMessageDone && posMessageDone < posFuncAdded) {
+	if posTextDone >= posPartDone || posPartDone >= posMessageDone || posMessageDone >= posFuncAdded {
 		t.Fatalf("unexpected message/function ordering: textDone=%d partDone=%d messageDone=%d funcAdded=%d", posTextDone, posPartDone, posMessageDone, posFuncAdded)
 	}
 	if !gotMessageDone {

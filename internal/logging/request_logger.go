@@ -1091,7 +1091,9 @@ func (l *FileRequestLogger) decompressZstd(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create zstd reader: %w", err)
 	}
-	defer decoder.Close()
+	defer func() {
+		decoder.Close()
+	}()
 
 	decompressed, err := io.ReadAll(decoder)
 	if err != nil {

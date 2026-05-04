@@ -25,6 +25,9 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// ctxKeyGin is a custom type to avoid collisions in context.WithValue.
+type ctxKeyGin struct{}
+
 const (
 	wsRequestTypeCreate  = "response.create"
 	wsRequestTypeAppend  = "response.append"
@@ -144,7 +147,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			allowCompactionReplayBypass,
 		)
 		if errMsg != nil {
-			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+			h.LoggingAPIResponseError(context.WithValue(context.Background(), ctxKeyGin{}, c), errMsg)
 			markAPIResponseTimestamp(c)
 			errorPayload, errWrite := writeResponsesWebsocketError(conn, &wsTimelineLog, errMsg)
 			log.Infof(
@@ -846,7 +849,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				continue
 			}
 			if errMsg != nil {
-				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+				h.LoggingAPIResponseError(context.WithValue(context.Background(), ctxKeyGin{}, c), errMsg)
 				markAPIResponseTimestamp(c)
 				errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, errMsg)
 				log.Infof(
@@ -880,7 +883,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						StatusCode: http.StatusRequestTimeout,
 						Error:      fmt.Errorf("stream closed before response.completed"),
 					}
-					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+					h.LoggingAPIResponseError(context.WithValue(context.Background(), ctxKeyGin{}, c), errMsg)
 					markAPIResponseTimestamp(c)
 					errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, errMsg)
 					log.Infof(

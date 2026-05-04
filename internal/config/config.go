@@ -1092,7 +1092,11 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Errorf("config: close file after write: %v", err)
+		}
+	}()
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
@@ -1144,7 +1148,11 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Errorf("config: close file after write: %v", err)
+		}
+	}()
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)

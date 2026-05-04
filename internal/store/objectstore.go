@@ -347,7 +347,11 @@ func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context, example str
 		if errGet != nil {
 			return fmt.Errorf("object store: fetch config: %w", errGet)
 		}
-		defer func() { _ = object.Close() }()
+		defer func() {
+			if err := object.Close(); err != nil {
+				log.Errorf("object store: close config object: %v", err)
+			}
+		}()
 		data, errRead := io.ReadAll(object)
 		if errRead != nil {
 			return fmt.Errorf("object store: read config: %w", errRead)

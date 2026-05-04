@@ -73,7 +73,11 @@ func TestRegisterManagementRoutes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("request failed: %v", err)
 			}
-			defer func() { _ = resp.Body.Close() }()
+			defer func() {
+				if err := resp.Body.Close(); err != nil {
+					t.Logf("close response body: %v", err)
+				}
+			}()
 
 			if resp.StatusCode == http.StatusNotFound {
 				t.Fatalf("route %s not registered", path.path)

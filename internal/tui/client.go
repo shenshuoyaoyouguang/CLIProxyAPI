@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // Client wraps HTTP calls to the management API.
@@ -50,7 +52,11 @@ func (c *Client) doRequest(method, path string, body io.Reader) ([]byte, int, er
 	if err != nil {
 		return nil, 0, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Errorf("tui client: close response body: %v", err)
+		}
+	}()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, resp.StatusCode, err

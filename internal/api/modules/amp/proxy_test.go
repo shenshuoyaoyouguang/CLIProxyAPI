@@ -480,7 +480,9 @@ func TestReverseProxy_ErrorHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(res.Body)
-	_ = res.Body.Close()
+	if err := res.Body.Close(); err != nil {
+		t.Logf("close response body: %v", err)
+	}
 
 	if res.StatusCode != http.StatusBadGateway {
 		t.Fatalf("want 502, got %d", res.StatusCode)
@@ -540,7 +542,9 @@ func TestReverseProxy_FullRoundTrip_Gzip(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(res.Body)
-	_ = res.Body.Close()
+	if err := res.Body.Close(); err != nil {
+		t.Logf("close response body: %v", err)
+	}
 
 	expected := []byte(`{"upstream":"ok"}`)
 	if !bytes.Equal(body, expected) {
@@ -572,7 +576,9 @@ func TestReverseProxy_FullRoundTrip_PlainJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(res.Body)
-	_ = res.Body.Close()
+	if err := res.Body.Close(); err != nil {
+		t.Logf("close response body: %v", err)
+	}
 
 	expected := []byte(`{"plain":"json"}`)
 	if !bytes.Equal(body, expected) {

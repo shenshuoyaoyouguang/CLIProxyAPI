@@ -779,7 +779,11 @@ func (h *Handler) storeUploadedAuthFile(ctx context.Context, file *multipart.Fil
 	if err != nil {
 		return "", fmt.Errorf("failed to open uploaded file: %w", err)
 	}
-	defer func() { _ = src.Close() }()
+	defer func() {
+		if err := src.Close(); err != nil {
+			log.Errorf("failed to close uploaded file: %v", err)
+		}
+	}()
 
 	data, err := io.ReadAll(src)
 	if err != nil {

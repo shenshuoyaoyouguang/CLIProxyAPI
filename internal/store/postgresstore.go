@@ -266,7 +266,11 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 	if err != nil {
 		return nil, fmt.Errorf("postgres store: list auth: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Errorf("postgres store: close list rows: %v", err)
+		}
+	}()
 
 	auths := make([]*cliproxyauth.Auth, 0, 32)
 	for rows.Next() {
@@ -441,7 +445,11 @@ func (s *PostgresStore) syncAuthFromDatabase(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("postgres store: load auth from database: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Errorf("postgres store: close sync rows: %v", err)
+		}
+	}()
 
 	if err = os.RemoveAll(s.authDir); err != nil {
 		return fmt.Errorf("postgres store: reset auth directory: %w", err)

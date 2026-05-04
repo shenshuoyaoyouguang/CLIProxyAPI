@@ -801,12 +801,7 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer func() {
-		errClose := conn.Close()
-		if errClose != nil {
-			t.Fatalf("close websocket: %v", errClose)
-		}
-	}()
+	defer conn.Close()
 
 	_, payload, errReadMessage := conn.ReadMessage()
 	if errReadMessage != nil {
@@ -880,9 +875,7 @@ func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer func() {
-		_ = conn.Close()
-	}()
+	defer conn.Close()
 
 	if errServer := <-serverErrCh; errServer != nil {
 		t.Fatalf("server error: %v", errServer)
@@ -922,7 +915,9 @@ func TestResponsesWebsocketTimelineRecordsDisconnectEvent(t *testing.T) {
 	if err = conn.WriteControl(websocket.CloseMessage, closePayload, time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("write close control: %v", err)
 	}
-	_ = conn.Close()
+	if err := conn.Close(); err != nil {
+		t.Logf("close websocket: %v", err)
+	}
 
 	select {
 	case timeline := <-timelineCh:
@@ -1032,12 +1027,7 @@ func TestResponsesWebsocketPrewarmHandledLocallyForSSEUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer func() {
-		errClose := conn.Close()
-		if errClose != nil {
-			t.Fatalf("close websocket: %v", errClose)
-		}
-	}()
+	defer conn.Close()
 
 	errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"test-model","generate":false}`))
 	if errWrite != nil {
@@ -1175,11 +1165,7 @@ func TestResponsesWebsocketPinsOnlyWebsocketCapableAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer func() {
-		if errClose := conn.Close(); errClose != nil {
-			t.Fatalf("close websocket: %v", errClose)
-		}
-	}()
+	defer conn.Close()
 
 	requests := []string{
 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,
@@ -1451,11 +1437,7 @@ func TestResponsesWebsocketCompactionResetsTurnStateOnCustomToolTranscriptReplac
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer func() {
-		if errClose := conn.Close(); errClose != nil {
-			t.Fatalf("close websocket: %v", errClose)
-		}
-	}()
+	defer conn.Close()
 
 	requests := []string{
 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,
@@ -1555,11 +1537,7 @@ func TestResponsesWebsocketCompactionResetsTurnStateOnTranscriptReplacement(t *t
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer func() {
-		if errClose := conn.Close(); errClose != nil {
-			t.Fatalf("close websocket: %v", errClose)
-		}
-	}()
+	defer conn.Close()
 
 	requests := []string{
 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,
