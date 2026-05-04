@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	log "github.com/sirupsen/logrus"
 )
@@ -64,42 +63,36 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(parsed)
-	originalDirector := proxy.Director
 
 	// Modify outgoing requests to inject API key and fix routing
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.Host = parsed.Host
+	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
+		pr.SetURL(parsed)
+		pr.Out.Host = parsed.Host
 
 		// Remove client's Authorization header - it was only used for CLI Proxy API authentication
 		// We will set our own Authorization using the configured upstream-api-key
-		req.Header.Del("Authorization")
-		req.Header.Del("X-Api-Key")
-		req.Header.Del("X-Goog-Api-Key")
+		pr.Out.Header.Del("Authorization")
+		pr.Out.Header.Del("X-Api-Key")
+		pr.Out.Header.Del("X-Goog-Api-Key")
 
 		// Remove proxy, client identity, and browser fingerprint headers
-		misc.ScrubProxyAndFingerprintHeaders(req)
+		misc.ScrubProxyAndFingerprintHeaders(pr.Out)
 
 		// Remove query-based credentials if they match the authenticated client API key.
 		// This prevents leaking client auth material to the Amp upstream while avoiding
 		// breaking unrelated upstream query parameters.
-		clientKey := getClientAPIKeyFromContext(req.Context())
-		removeQueryValuesMatching(req, "key", clientKey)
-		removeQueryValuesMatching(req, "auth_token", clientKey)
-
-		// Preserve correlation headers for debugging
-		if req.Header.Get("X-Request-ID") == "" {
-			// Could generate one here if needed
-		}
+		clientKey := getClientAPIKeyFromContext(pr.Out.Context())
+		removeQueryValuesMatching(pr.Out, "key", clientKey)
+		removeQueryValuesMatching(pr.Out, "auth_token", clientKey)
 
 		// Note: We do NOT filter Anthropic-Beta headers in the proxy path
 		// Users going through ampcode.com proxy are paying for the service and should get all features
 		// including 1M context window (context-1m-2025-08-07)
 
 		// Inject API key from secret source (only uses upstream-api-key from config)
-		if key, err := secretSource.Get(req.Context()); err == nil && key != "" {
-			req.Header.Set("X-Api-Key", key)
-			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
+		if key, err := secretSource.Get(pr.Out.Context()); err == nil && key != "" {
+			pr.Out.Header.Set("X-Api-Key", key)
+			pr.Out.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 		} else if err != nil {
 			log.Warnf("amp secret source error (continuing without auth): %v", err)
 		}
@@ -215,13 +208,6 @@ func isStreamingResponse(resp *http.Response) bool {
 	}
 
 	return false
-}
-
-// proxyHandler converts httputil.ReverseProxy to gin.HandlerFunc
-func proxyHandler(proxy *httputil.ReverseProxy) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		proxy.ServeHTTP(c.Writer, c.Request)
-	}
 }
 
 // filterBetaFeatures removes a specific beta feature from comma-separated list

@@ -1118,7 +1118,7 @@ func TestNormalizeCacheControlTTL_PreservesKeyOrderWhenModified(t *testing.T) {
 	if idxModel == -1 || idxMessages == -1 || idxTools == -1 || idxSystem == -1 {
 		t.Fatalf("failed to locate top-level keys in output: %s", outStr)
 	}
-	if !(idxModel < idxMessages && idxMessages < idxTools && idxTools < idxSystem) {
+	if idxModel >= idxMessages || idxMessages >= idxTools || idxTools >= idxSystem {
 		t.Fatalf("top-level key order changed:\noriginal: %s\ngot:      %s", payload, out)
 	}
 }
@@ -1172,7 +1172,7 @@ func TestEnforceCacheControlLimit_PreservesKeyOrderWhenModified(t *testing.T) {
 	if idxModel == -1 || idxMessages == -1 || idxTools == -1 || idxSystem == -1 {
 		t.Fatalf("failed to locate top-level keys in output: %s", outStr)
 	}
-	if !(idxModel < idxMessages && idxMessages < idxTools && idxTools < idxSystem) {
+	if idxModel >= idxMessages || idxMessages >= idxTools || idxTools >= idxSystem {
 		t.Fatalf("top-level key order changed:\noriginal: %s\ngot:      %s", payload, out)
 	}
 }
@@ -1588,7 +1588,7 @@ func TestDecodeResponseBody_MagicByteGzipNoHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeResponseBody error: %v", err)
 	}
-	defer decoded.Close()
+	defer func() { _ = decoded.Close() }()
 
 	got, err := io.ReadAll(decoded)
 	if err != nil {
@@ -1617,7 +1617,7 @@ func TestDecodeResponseBody_MagicByteZstdNoHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeResponseBody error: %v", err)
 	}
-	defer decoded.Close()
+	defer func() { _ = decoded.Close() }()
 
 	got, err := io.ReadAll(decoded)
 	if err != nil {
@@ -1637,7 +1637,7 @@ func TestDecodeResponseBody_PlainTextNoHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeResponseBody error: %v", err)
 	}
-	defer decoded.Close()
+	defer func() { _ = decoded.Close() }()
 
 	got, err := io.ReadAll(decoded)
 	if err != nil {

@@ -128,7 +128,7 @@ func (m dashboardModel) renderDashboard(cfg map[string]any, authFiles []map[stri
 	// ━━━ Connection Status ━━━
 	connStyle := lipgloss.NewStyle().Bold(true).Foreground(colorSuccess)
 	sb.WriteString(connStyle.Render(T("connected")))
-	sb.WriteString(fmt.Sprintf("  %s", m.client.baseURL))
+	fmt.Fprintf(&sb, "  %s", m.client.baseURL)
 	sb.WriteString("\n\n")
 
 	// ━━━ Stats Cards ━━━
@@ -208,9 +208,9 @@ func (m dashboardModel) renderDashboard(cfg map[string]any, authFiles []map[stri
 
 		// Render config items as a compact row
 		for _, item := range configItems {
-			sb.WriteString(fmt.Sprintf("  %s %s\n",
+			fmt.Fprintf(&sb, "  %s %s\n",
 				labelStyle.Render(item.label+":"),
-				valueStyle.Render(item.value)))
+				valueStyle.Render(item.value))
 		}
 
 		// Routing strategy
@@ -220,18 +220,14 @@ func (m dashboardModel) renderDashboard(cfg map[string]any, authFiles []map[stri
 				strategy = s
 			}
 		}
-		sb.WriteString(fmt.Sprintf("  %s %s\n",
+		fmt.Fprintf(&sb, "  %s %s\n",
 			labelStyle.Render(T("routing_strategy")+":"),
-			valueStyle.Render(strategy)))
+			valueStyle.Render(strategy))
 	}
 
 	sb.WriteString("\n")
 
 	return sb.String()
-}
-
-func formatKV(key, value string) string {
-	return fmt.Sprintf("  %s %s\n", labelStyle.Render(key+":"), valueStyle.Render(value))
 }
 
 func getString(m map[string]any, key string) string {
@@ -270,23 +266,6 @@ func boolEmoji(b bool) string {
 		return T("bool_yes")
 	}
 	return T("bool_no")
-}
-
-func formatLargeNumber(n int64) string {
-	if n >= 1_000_000 {
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
-	}
-	if n >= 1_000 {
-		return fmt.Sprintf("%.1fK", float64(n)/1_000)
-	}
-	return fmt.Sprintf("%d", n)
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) > maxLen {
-		return s[:maxLen-3] + "..."
-	}
-	return s
 }
 
 func minInt(a, b int) int {

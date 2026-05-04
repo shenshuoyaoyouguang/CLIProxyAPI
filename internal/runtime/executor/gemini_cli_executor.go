@@ -32,6 +32,12 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
+type geminiCLIContextKey string
+
+const (
+	geminiCLIContextKeyAlt geminiCLIContextKey = "alt"
+)
+
 const (
 	codeAssistEndpoint      = "https://cloudcode-pa.googleapis.com"
 	codeAssistVersion       = "v1internal"
@@ -156,7 +162,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	}
 
 	httpClient := newHTTPClient(ctx, e.cfg, auth, 0)
-	respCtx := context.WithValue(ctx, "alt", opts.Alt)
+	respCtx := context.WithValue(ctx, geminiCLIContextKeyAlt, opts.Alt)
 
 	var authID, authLabel, authType, authValue string
 	authID = auth.ID
@@ -306,7 +312,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	}
 
 	httpClient := newHTTPClient(ctx, e.cfg, auth, 0)
-	respCtx := context.WithValue(ctx, "alt", opts.Alt)
+	respCtx := context.WithValue(ctx, geminiCLIContextKeyAlt, opts.Alt)
 
 	var authID, authLabel, authType, authValue string
 	authID = auth.ID
@@ -482,7 +488,7 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 	}
 
 	httpClient := newHTTPClient(ctx, e.cfg, auth, 0)
-	respCtx := context.WithValue(ctx, "alt", opts.Alt)
+	respCtx := context.WithValue(ctx, geminiCLIContextKeyAlt, opts.Alt)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {

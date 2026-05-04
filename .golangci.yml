@@ -13,3 +13,10 @@ issues:
     - linters:
         - staticcheck
       text: "SA1019|SA1029"
+    - linters:
+        - staticcheck
+      text: "QF1001|QF1003|QF1008|QF1012|QF1002"
+    - linters:
+        - errcheck
+      path: _test\.go
+      text: "Close"

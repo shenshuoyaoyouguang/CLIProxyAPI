@@ -801,7 +801,7 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_, payload, errReadMessage := conn.ReadMessage()
 	if errReadMessage != nil {
@@ -875,7 +875,7 @@ func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if errServer := <-serverErrCh; errServer != nil {
 		t.Fatalf("server error: %v", errServer)
@@ -1027,7 +1027,7 @@ func TestResponsesWebsocketPrewarmHandledLocallyForSSEUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"test-model","generate":false}`))
 	if errWrite != nil {
@@ -1165,7 +1165,11 @@ func TestResponsesWebsocketPinsOnlyWebsocketCapableAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Logf("close websocket: %v", err)
+		}
+	}()
 
 	requests := []string{
 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,
@@ -1437,7 +1441,11 @@ func TestResponsesWebsocketCompactionResetsTurnStateOnCustomToolTranscriptReplac
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Logf("close websocket: %v", err)
+		}
+	}()
 
 	requests := []string{
 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,
@@ -1537,7 +1545,11 @@ func TestResponsesWebsocketCompactionResetsTurnStateOnTranscriptReplacement(t *t
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Logf("close websocket: %v", err)
+		}
+	}()
 
 	requests := []string{
 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,

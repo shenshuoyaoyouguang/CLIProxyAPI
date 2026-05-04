@@ -1,0 +1,2558 @@
+diff --git a/.golangci.yml b/.golangci.yml
+index 8d396b5b..f2d952dc 100644
+--- a/.golangci.yml
++++ b/.golangci.yml
+@@ -13,3 +13,10 @@ issues:
+     - linters:
+         - staticcheck
+       text: "SA1019|SA1029"
++    - linters:
++        - staticcheck
++      text: "QF1001|QF1003|QF1008|QF1012|QF1002"
++    - linters:
++        - errcheck
++      path: _test\.go
++      text: "Close"
+diff --git a/internal/api/handlers/management/auth_files.go b/internal/api/handlers/management/auth_files.go
+index d5363719..2ffb38ea 100644
+--- a/internal/api/handlers/management/auth_files.go
++++ b/internal/api/handlers/management/auth_files.go
+@@ -974,17 +974,6 @@ func (h *Handler) authIDForPath(path string) string {
+ 	return id
+ }
+ 
+-func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []byte) error {
+-	if h.authManager == nil {
+-		return nil
+-	}
+-	auth, err := h.buildAuthFromFileData(path, data)
+-	if err != nil {
+-		return err
+-	}
+-	return h.upsertAuthRecord(ctx, auth)
+-}
+-
+ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
+ 	if path == "" {
+ 		return nil, fmt.Errorf("auth path is empty")
+diff --git a/internal/api/modules/amp/proxy.go b/internal/api/modules/amp/proxy.go
+index c8010854..c796997b 100644
+--- a/internal/api/modules/amp/proxy.go
++++ b/internal/api/modules/amp/proxy.go
+@@ -13,7 +13,6 @@ import (
+ 	"strconv"
+ 	"strings"
+ 
+-	"github.com/gin-gonic/gin"
+ 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+ 	log "github.com/sirupsen/logrus"
+ )
+@@ -64,42 +63,36 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
+ 	}
+ 
+ 	proxy := httputil.NewSingleHostReverseProxy(parsed)
+-	originalDirector := proxy.Director
+ 
+ 	// Modify outgoing requests to inject API key and fix routing
+-	proxy.Director = func(req *http.Request) {
+-		originalDirector(req)
+-		req.Host = parsed.Host
++	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
++		pr.SetURL(parsed)
++		pr.Out.Host = parsed.Host
+ 
+ 		// Remove client's Authorization header - it was only used for CLI Proxy API authentication
+ 		// We will set our own Authorization using the configured upstream-api-key
+-		req.Header.Del("Authorization")
+-		req.Header.Del("X-Api-Key")
+-		req.Header.Del("X-Goog-Api-Key")
++		pr.Out.Header.Del("Authorization")
++		pr.Out.Header.Del("X-Api-Key")
++		pr.Out.Header.Del("X-Goog-Api-Key")
+ 
+ 		// Remove proxy, client identity, and browser fingerprint headers
+-		misc.ScrubProxyAndFingerprintHeaders(req)
++		misc.ScrubProxyAndFingerprintHeaders(pr.Out)
+ 
+ 		// Remove query-based credentials if they match the authenticated client API key.
+ 		// This prevents leaking client auth material to the Amp upstream while avoiding
+ 		// breaking unrelated upstream query parameters.
+-		clientKey := getClientAPIKeyFromContext(req.Context())
+-		removeQueryValuesMatching(req, "key", clientKey)
+-		removeQueryValuesMatching(req, "auth_token", clientKey)
+-
+-		// Preserve correlation headers for debugging
+-		if req.Header.Get("X-Request-ID") == "" {
+-			// Could generate one here if needed
+-		}
++		clientKey := getClientAPIKeyFromContext(pr.Out.Context())
++		removeQueryValuesMatching(pr.Out, "key", clientKey)
++		removeQueryValuesMatching(pr.Out, "auth_token", clientKey)
+ 
+ 		// Note: We do NOT filter Anthropic-Beta headers in the proxy path
+ 		// Users going through ampcode.com proxy are paying for the service and should get all features
+ 		// including 1M context window (context-1m-2025-08-07)
+ 
+ 		// Inject API key from secret source (only uses upstream-api-key from config)
+-		if key, err := secretSource.Get(req.Context()); err == nil && key != "" {
+-			req.Header.Set("X-Api-Key", key)
+-			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
++		if key, err := secretSource.Get(pr.Out.Context()); err == nil && key != "" {
++			pr.Out.Header.Set("X-Api-Key", key)
++			pr.Out.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
+ 		} else if err != nil {
+ 			log.Warnf("amp secret source error (continuing without auth): %v", err)
+ 		}
+@@ -217,13 +210,6 @@ func isStreamingResponse(resp *http.Response) bool {
+ 	return false
+ }
+ 
+-// proxyHandler converts httputil.ReverseProxy to gin.HandlerFunc
+-func proxyHandler(proxy *httputil.ReverseProxy) gin.HandlerFunc {
+-	return func(c *gin.Context) {
+-		proxy.ServeHTTP(c.Writer, c.Request)
+-	}
+-}
+-
+ // filterBetaFeatures removes a specific beta feature from comma-separated list
+ func filterBetaFeatures(header, featureToRemove string) string {
+ 	features := strings.Split(header, ",")
+diff --git a/internal/config/config.go b/internal/config/config.go
+index d1fddd52..e63364ed 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -141,8 +141,6 @@ type Config struct {
+ 
+ 	// Payload defines default and override rules for provider payload parameters.
+ 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+-
+-	legacyMigrationPending bool `yaml:"-" json:"-"`
+ }
+ 
+ // ClaudeHeaderDefaults configures default header values injected into Claude API requests.
+@@ -1074,12 +1072,6 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
+ 		return fmt.Errorf("expected generated root mapping node")
+ 	}
+ 
+-	// Remove deprecated sections before merging back the sanitized config.
+-	removeLegacyAuthBlock(original.Content[0])
+-	removeLegacyOpenAICompatAPIKeys(original.Content[0])
+-	removeLegacyAmpKeys(original.Content[0])
+-	removeLegacyGenerativeLanguageKeys(original.Content[0])
+-
+ 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
+ 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
+ 
+@@ -1758,194 +1750,3 @@ func normalizeCollectionNodeStyles(node *yaml.Node) {
+ 		// Scalars keep their existing style to preserve quoting
+ 	}
+ }
+-
+-// Legacy migration helpers (move deprecated config keys into structured fields).
+-type legacyConfigData struct {
+-	LegacyGeminiKeys      []string                    `yaml:"generative-language-api-key"`
+-	OpenAICompat          []legacyOpenAICompatibility `yaml:"openai-compatibility"`
+-	AmpUpstreamURL        string                      `yaml:"amp-upstream-url"`
+-	AmpUpstreamAPIKey     string                      `yaml:"amp-upstream-api-key"`
+-	AmpRestrictManagement *bool                       `yaml:"amp-restrict-management-to-localhost"`
+-	AmpModelMappings      []AmpModelMapping           `yaml:"amp-model-mappings"`
+-}
+-
+-type legacyOpenAICompatibility struct {
+-	Name    string   `yaml:"name"`
+-	BaseURL string   `yaml:"base-url"`
+-	APIKeys []string `yaml:"api-keys"`
+-}
+-
+-func (cfg *Config) migrateLegacyGeminiKeys(legacy []string) bool {
+-	if cfg == nil || len(legacy) == 0 {
+-		return false
+-	}
+-	changed := false
+-	seen := make(map[string]struct{}, len(cfg.GeminiKey))
+-	for i := range cfg.GeminiKey {
+-		key := strings.TrimSpace(cfg.GeminiKey[i].APIKey)
+-		if key == "" {
+-			continue
+-		}
+-		seen[key] = struct{}{}
+-	}
+-	for _, raw := range legacy {
+-		key := strings.TrimSpace(raw)
+-		if key == "" {
+-			continue
+-		}
+-		if _, exists := seen[key]; exists {
+-			continue
+-		}
+-		cfg.GeminiKey = append(cfg.GeminiKey, GeminiKey{APIKey: key})
+-		seen[key] = struct{}{}
+-		changed = true
+-	}
+-	return changed
+-}
+-
+-func (cfg *Config) migrateLegacyOpenAICompatibilityKeys(legacy []legacyOpenAICompatibility) bool {
+-	if cfg == nil || len(cfg.OpenAICompatibility) == 0 || len(legacy) == 0 {
+-		return false
+-	}
+-	changed := false
+-	for _, legacyEntry := range legacy {
+-		if len(legacyEntry.APIKeys) == 0 {
+-			continue
+-		}
+-		target := findOpenAICompatTarget(cfg.OpenAICompatibility, legacyEntry.Name, legacyEntry.BaseURL)
+-		if target == nil {
+-			continue
+-		}
+-		if mergeLegacyOpenAICompatAPIKeys(target, legacyEntry.APIKeys) {
+-			changed = true
+-		}
+-	}
+-	return changed
+-}
+-
+-func mergeLegacyOpenAICompatAPIKeys(entry *OpenAICompatibility, keys []string) bool {
+-	if entry == nil || len(keys) == 0 {
+-		return false
+-	}
+-	changed := false
+-	existing := make(map[string]struct{}, len(entry.APIKeyEntries))
+-	for i := range entry.APIKeyEntries {
+-		key := strings.TrimSpace(entry.APIKeyEntries[i].APIKey)
+-		if key == "" {
+-			continue
+-		}
+-		existing[key] = struct{}{}
+-	}
+-	for _, raw := range keys {
+-		key := strings.TrimSpace(raw)
+-		if key == "" {
+-			continue
+-		}
+-		if _, ok := existing[key]; ok {
+-			continue
+-		}
+-		entry.APIKeyEntries = append(entry.APIKeyEntries, OpenAICompatibilityAPIKey{APIKey: key})
+-		existing[key] = struct{}{}
+-		changed = true
+-	}
+-	return changed
+-}
+-
+-func findOpenAICompatTarget(entries []OpenAICompatibility, legacyName, legacyBase string) *OpenAICompatibility {
+-	nameKey := strings.ToLower(strings.TrimSpace(legacyName))
+-	baseKey := strings.ToLower(strings.TrimSpace(legacyBase))
+-	if nameKey != "" && baseKey != "" {
+-		for i := range entries {
+-			if strings.ToLower(strings.TrimSpace(entries[i].Name)) == nameKey &&
+-				strings.ToLower(strings.TrimSpace(entries[i].BaseURL)) == baseKey {
+-				return &entries[i]
+-			}
+-		}
+-	}
+-	if baseKey != "" {
+-		for i := range entries {
+-			if strings.ToLower(strings.TrimSpace(entries[i].BaseURL)) == baseKey {
+-				return &entries[i]
+-			}
+-		}
+-	}
+-	if nameKey != "" {
+-		for i := range entries {
+-			if strings.ToLower(strings.TrimSpace(entries[i].Name)) == nameKey {
+-				return &entries[i]
+-			}
+-		}
+-	}
+-	return nil
+-}
+-
+-func (cfg *Config) migrateLegacyAmpConfig(legacy *legacyConfigData) bool {
+-	if cfg == nil || legacy == nil {
+-		return false
+-	}
+-	changed := false
+-	if cfg.AmpCode.UpstreamURL == "" {
+-		if val := strings.TrimSpace(legacy.AmpUpstreamURL); val != "" {
+-			cfg.AmpCode.UpstreamURL = val
+-			changed = true
+-		}
+-	}
+-	if cfg.AmpCode.UpstreamAPIKey == "" {
+-		if val := strings.TrimSpace(legacy.AmpUpstreamAPIKey); val != "" {
+-			cfg.AmpCode.UpstreamAPIKey = val
+-			changed = true
+-		}
+-	}
+-	if legacy.AmpRestrictManagement != nil {
+-		cfg.AmpCode.RestrictManagementToLocalhost = *legacy.AmpRestrictManagement
+-		changed = true
+-	}
+-	if len(cfg.AmpCode.ModelMappings) == 0 && len(legacy.AmpModelMappings) > 0 {
+-		cfg.AmpCode.ModelMappings = append([]AmpModelMapping(nil), legacy.AmpModelMappings...)
+-		changed = true
+-	}
+-	return changed
+-}
+-
+-func removeLegacyOpenAICompatAPIKeys(root *yaml.Node) {
+-	if root == nil || root.Kind != yaml.MappingNode {
+-		return
+-	}
+-	idx := findMapKeyIndex(root, "openai-compatibility")
+-	if idx < 0 || idx+1 >= len(root.Content) {
+-		return
+-	}
+-	seq := root.Content[idx+1]
+-	if seq == nil || seq.Kind != yaml.SequenceNode {
+-		return
+-	}
+-	for i := range seq.Content {
+-		if seq.Content[i] != nil && seq.Content[i].Kind == yaml.MappingNode {
+-			removeMapKey(seq.Content[i], "api-keys")
+-		}
+-	}
+-}
+-
+-func removeLegacyAmpKeys(root *yaml.Node) {
+-	if root == nil || root.Kind != yaml.MappingNode {
+-		return
+-	}
+-	removeMapKey(root, "amp-upstream-url")
+-	removeMapKey(root, "amp-upstream-api-key")
+-	removeMapKey(root, "amp-restrict-management-to-localhost")
+-	removeMapKey(root, "amp-model-mappings")
+-}
+-
+-func removeLegacyGenerativeLanguageKeys(root *yaml.Node) {
+-	if root == nil || root.Kind != yaml.MappingNode {
+-		return
+-	}
+-	removeMapKey(root, "generative-language-api-key")
+-}
+-
+-func removeLegacyAuthBlock(root *yaml.Node) {
+-	if root == nil || root.Kind != yaml.MappingNode {
+-		return
+-	}
+-	removeMapKey(root, "auth")
+-}
+diff --git a/internal/logging/request_logger.go b/internal/logging/request_logger.go
+index cfa22bca..fb15e360 100644
+--- a/internal/logging/request_logger.go
++++ b/internal/logging/request_logger.go
+@@ -859,117 +859,6 @@ func responseBodyStartsWithLeadingNewline(reader *bufio.Reader) bool {
+ 	return false
+ }
+ 
+-// formatLogContent creates the complete log content for non-streaming requests.
+-//
+-// Parameters:
+-//   - url: The request URL
+-//   - method: The HTTP method
+-//   - headers: The request headers
+-//   - body: The request body
+-//   - websocketTimeline: The downstream websocket event timeline
+-//   - apiRequest: The API request data
+-//   - apiResponse: The API response data
+-//   - response: The raw response data
+-//   - status: The response status code
+-//   - responseHeaders: The response headers
+-//
+-// Returns:
+-//   - string: The formatted log content
+-func (l *FileRequestLogger) formatLogContent(url, method string, headers map[string][]string, body, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline, response []byte, status int, responseHeaders map[string][]string, apiResponseErrors []*interfaces.ErrorMessage) string {
+-	var content strings.Builder
+-	isWebsocketTranscript := hasSectionPayload(websocketTimeline)
+-	downstreamTransport := inferDownstreamTransport(headers, websocketTimeline)
+-	upstreamTransport := inferUpstreamTransport(apiRequest, apiResponse, apiWebsocketTimeline, apiResponseErrors)
+-
+-	// Request info
+-	content.WriteString(l.formatRequestInfo(url, method, headers, body, downstreamTransport, upstreamTransport, !isWebsocketTranscript))
+-
+-	if len(websocketTimeline) > 0 {
+-		if bytes.HasPrefix(websocketTimeline, []byte("=== WEBSOCKET TIMELINE")) {
+-			content.Write(websocketTimeline)
+-			if !bytes.HasSuffix(websocketTimeline, []byte("\n")) {
+-				content.WriteString("\n")
+-			}
+-		} else {
+-			content.WriteString("=== WEBSOCKET TIMELINE ===\n")
+-			content.Write(websocketTimeline)
+-			content.WriteString("\n")
+-		}
+-		content.WriteString("\n")
+-	}
+-
+-	if len(apiWebsocketTimeline) > 0 {
+-		if bytes.HasPrefix(apiWebsocketTimeline, []byte("=== API WEBSOCKET TIMELINE")) {
+-			content.Write(apiWebsocketTimeline)
+-			if !bytes.HasSuffix(apiWebsocketTimeline, []byte("\n")) {
+-				content.WriteString("\n")
+-			}
+-		} else {
+-			content.WriteString("=== API WEBSOCKET TIMELINE ===\n")
+-			content.Write(apiWebsocketTimeline)
+-			content.WriteString("\n")
+-		}
+-		content.WriteString("\n")
+-	}
+-
+-	if len(apiRequest) > 0 {
+-		if bytes.HasPrefix(apiRequest, []byte("=== API REQUEST")) {
+-			content.Write(apiRequest)
+-			if !bytes.HasSuffix(apiRequest, []byte("\n")) {
+-				content.WriteString("\n")
+-			}
+-		} else {
+-			content.WriteString("=== API REQUEST ===\n")
+-			content.Write(apiRequest)
+-			content.WriteString("\n")
+-		}
+-		content.WriteString("\n")
+-	}
+-
+-	for i := 0; i < len(apiResponseErrors); i++ {
+-		content.WriteString("=== API ERROR RESPONSE ===\n")
+-		fmt.Fprintf(&content, "HTTP Status: %d\n", apiResponseErrors[i].StatusCode)
+-		content.WriteString(apiResponseErrors[i].Error.Error())
+-		content.WriteString("\n\n")
+-	}
+-
+-	if len(apiResponse) > 0 {
+-		if bytes.HasPrefix(apiResponse, []byte("=== API RESPONSE")) {
+-			content.Write(apiResponse)
+-			if !bytes.HasSuffix(apiResponse, []byte("\n")) {
+-				content.WriteString("\n")
+-			}
+-		} else {
+-			content.WriteString("=== API RESPONSE ===\n")
+-			content.Write(apiResponse)
+-			content.WriteString("\n")
+-		}
+-		content.WriteString("\n")
+-	}
+-
+-	if isWebsocketTranscript {
+-		// Mirror writeNonStreamingLog: websocket transcripts end with the dedicated
+-		// timeline sections instead of a generic downstream HTTP response block.
+-		return content.String()
+-	}
+-
+-	// Response section
+-	content.WriteString("=== RESPONSE ===\n")
+-	content.WriteString(fmt.Sprintf("Status: %d\n", status))
+-
+-	for key, values := range responseHeaders {
+-		for _, value := range values {
+-			content.WriteString(fmt.Sprintf("%s: %s\n", key, value))
+-		}
+-	}
+-
+-	content.WriteString("\n")
+-	content.Write(response)
+-	content.WriteString("\n")
+-
+-	return content.String()
+-}
+-
+ // decompressResponse decompresses response data based on Content-Encoding header.
+ //
+ // Parameters:
+@@ -1103,52 +992,6 @@ func (l *FileRequestLogger) decompressZstd(data []byte) ([]byte, error) {
+ 	return decompressed, nil
+ }
+ 
+-// formatRequestInfo creates the request information section of the log.
+-//
+-// Parameters:
+-//   - url: The request URL
+-//   - method: The HTTP method
+-//   - headers: The request headers
+-//   - body: The request body
+-//
+-// Returns:
+-//   - string: The formatted request information
+-func (l *FileRequestLogger) formatRequestInfo(url, method string, headers map[string][]string, body []byte, downstreamTransport string, upstreamTransport string, includeBody bool) string {
+-	var content strings.Builder
+-
+-	content.WriteString("=== REQUEST INFO ===\n")
+-	fmt.Fprintf(&content, "Version: %s\n", buildinfo.Version)
+-	content.WriteString(fmt.Sprintf("URL: %s\n", url))
+-	content.WriteString(fmt.Sprintf("Method: %s\n", method))
+-	if strings.TrimSpace(downstreamTransport) != "" {
+-		content.WriteString(fmt.Sprintf("Downstream Transport: %s\n", downstreamTransport))
+-	}
+-	if strings.TrimSpace(upstreamTransport) != "" {
+-		content.WriteString(fmt.Sprintf("Upstream Transport: %s\n", upstreamTransport))
+-	}
+-	content.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
+-	content.WriteString("\n")
+-
+-	content.WriteString("=== HEADERS ===\n")
+-	for key, values := range headers {
+-		for _, value := range values {
+-			masked := util.MaskSensitiveHeaderValue(key, value)
+-			content.WriteString(fmt.Sprintf("%s: %s\n", key, masked))
+-		}
+-	}
+-	content.WriteString("\n")
+-
+-	if !includeBody {
+-		return content.String()
+-	}
+-
+-	content.WriteString("=== REQUEST BODY ===\n")
+-	content.Write(body)
+-	content.WriteString("\n\n")
+-
+-	return content.String()
+-}
+-
+ // FileStreamingLogWriter implements StreamingLogWriter for file-based streaming logs.
+ // It spools streaming response chunks to a temporary file to avoid retaining large responses in memory.
+ // The final log file is assembled when Close is called.
+diff --git a/internal/redisqueue/plugin_test.go b/internal/redisqueue/plugin_test.go
+index 0cc8b9b9..3db44a44 100644
+--- a/internal/redisqueue/plugin_test.go
++++ b/internal/redisqueue/plugin_test.go
+@@ -13,6 +13,10 @@ import (
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+ )
+ 
++type testContextKey string
++
++const ginContextKey testContextKey = "gin"
++
+ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
+ 	withEnabledQueue(t, func() {
+ 		ctx := internallogging.WithRequestID(context.Background(), "ctx-request-id")
+@@ -84,7 +88,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t
+ func TestUsageQueuePluginAsyncIgnoresRecycledGinContext(t *testing.T) {
+ 	withEnabledQueue(t, func() {
+ 		ginCtx := newTestGinContext(t, http.MethodPost, "/v1/chat/completions", http.StatusOK)
+-		ctx := context.WithValue(context.Background(), "gin", ginCtx)
++		ctx := context.WithValue(context.Background(), ginContextKey, ginCtx)
+ 		ctx = internallogging.WithRequestID(ctx, "ctx-request-id")
+ 		ctx = internallogging.WithEndpoint(ctx, "POST /v1/chat/completions")
+ 		ctx = internallogging.WithResponseStatusHolder(ctx)
+diff --git a/internal/runtime/executor/antigravity_executor_credits_test.go b/internal/runtime/executor/antigravity_executor_credits_test.go
+index 4569f5df..b1a156a8 100644
+--- a/internal/runtime/executor/antigravity_executor_credits_test.go
++++ b/internal/runtime/executor/antigravity_executor_credits_test.go
+@@ -399,15 +399,15 @@ func TestEnsureAccessToken_WarmTokenLoadsCreditsHint(t *testing.T) {
+ 			"expired":      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+ 		},
+ 	}
+-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+-		if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+-			t.Fatalf("unexpected request url %s", req.URL.String())
+-		}
+-		return &http.Response{
+-			StatusCode: http.StatusOK,
+-			Header:     make(http.Header),
+-			Body:       io.NopCloser(strings.NewReader(`{"paidTier":{"id":"tier-1","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"25000","minimumCreditAmountForUsage":"50"}]}}`)),
+-		}, nil
++	ctx := context.WithValue(context.Background(), contextKeyRoundTripper, roundTripperFunc(func(req *http.Request) (*http.Response, error) {
++		if req.URL.String() != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
++		t.Fatalf("unexpected request url %s", req.URL.String())
++	}
++	return &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     make(http.Header),
++		Body:       io.NopCloser(strings.NewReader(`{"paidTier":{"id":"tier-1","availableCredits":[{"creditType":"GOOGLE_ONE_AI","creditAmount":"25000","minimumCreditAmountForUsage":"50"}]}}`)),
++	}, nil
+ 	}))
+ 
+ 	token, updatedAuth, err := exec.ensureAccessToken(ctx, auth)
+@@ -449,11 +449,11 @@ func TestUpdateAntigravityCreditsBalance_LoadCodeAssistUserAgent(t *testing.T) {
+ 		ID:         "auth-load-code-assist-ua",
+ 		Attributes: map[string]string{"user_agent": userAgent},
+ 	}
+-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+-		if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+-			t.Fatalf("unexpected request url %s", req.URL.String())
+-		}
+-		if got := req.Header.Get("User-Agent"); got != userAgent {
++	ctx := context.WithValue(context.Background(), contextKeyRoundTripper, roundTripperFunc(func(req *http.Request) (*http.Response, error) {
++		if req.URL.String() != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
++		t.Fatalf("unexpected request url %s", req.URL.String())
++	}
++	if got := req.Header.Get("User-Agent"); got != userAgent {
+ 			t.Fatalf("User-Agent = %q, want %q", got, userAgent)
+ 		}
+ 		if got := req.Header.Get("X-Goog-Api-Client"); got != "gl-node/22.21.1" {
+diff --git a/internal/runtime/executor/antigravity_executor_signature_test.go b/internal/runtime/executor/antigravity_executor_signature_test.go
+index 226daf5c..d43a2576 100644
+--- a/internal/runtime/executor/antigravity_executor_signature_test.go
++++ b/internal/runtime/executor/antigravity_executor_signature_test.go
+@@ -1,7 +1,6 @@
+ package executor
+ 
+ import (
+-	"bytes"
+ 	"context"
+ 	"encoding/base64"
+ 	"net/http"
+@@ -16,11 +15,6 @@ import (
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+ )
+ 
+-func testGeminiSignaturePayload() string {
+-	payload := append([]byte{0x0A}, bytes.Repeat([]byte{0x56}, 48)...)
+-	return base64.StdEncoding.EncodeToString(payload)
+-}
+-
+ // testFakeClaudeSignature returns a base64 string starting with 'E' that passes
+ // the lightweight hasValidClaudeSignature check but has invalid protobuf content
+ // (first decoded byte 0x12 is correct, but no valid protobuf field 2 follows),
+diff --git a/internal/runtime/executor/claude_executor_test.go b/internal/runtime/executor/claude_executor_test.go
+index 6793adda..30914d6d 100644
+--- a/internal/runtime/executor/claude_executor_test.go
++++ b/internal/runtime/executor/claude_executor_test.go
+@@ -27,6 +27,10 @@ import (
+ 	"github.com/tidwall/sjson"
+ )
+ 
++type testContextKey string
++
++const testContextKeyGin testContextKey = "gin"
++
+ func resetClaudeDeviceProfileCache() {
+ 	helps.ResetClaudeDeviceProfileCache()
+ }
+@@ -42,7 +46,7 @@ func newClaudeHeaderTestRequest(t *testing.T, incoming http.Header) *http.Reques
+ 	ginCtx.Request = ginReq
+ 
+ 	req := httptest.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
+-	return req.WithContext(context.WithValue(req.Context(), "gin", ginCtx))
++	return req.WithContext(context.WithValue(req.Context(), testContextKeyGin, ginCtx))
+ }
+ 
+ func assertClaudeFingerprint(t *testing.T, headers http.Header, userAgent, pkgVersion, runtimeVersion, osName, arch string) {
+@@ -1118,7 +1122,7 @@ func TestNormalizeCacheControlTTL_PreservesKeyOrderWhenModified(t *testing.T) {
+ 	if idxModel == -1 || idxMessages == -1 || idxTools == -1 || idxSystem == -1 {
+ 		t.Fatalf("failed to locate top-level keys in output: %s", outStr)
+ 	}
+-	if !(idxModel < idxMessages && idxMessages < idxTools && idxTools < idxSystem) {
++	if idxModel >= idxMessages || idxMessages >= idxTools || idxTools >= idxSystem {
+ 		t.Fatalf("top-level key order changed:\noriginal: %s\ngot:      %s", payload, out)
+ 	}
+ }
+@@ -1172,7 +1176,7 @@ func TestEnforceCacheControlLimit_PreservesKeyOrderWhenModified(t *testing.T) {
+ 	if idxModel == -1 || idxMessages == -1 || idxTools == -1 || idxSystem == -1 {
+ 		t.Fatalf("failed to locate top-level keys in output: %s", outStr)
+ 	}
+-	if !(idxModel < idxMessages && idxMessages < idxTools && idxTools < idxSystem) {
++	if idxModel >= idxMessages || idxMessages >= idxTools || idxTools >= idxSystem {
+ 		t.Fatalf("top-level key order changed:\noriginal: %s\ngot:      %s", payload, out)
+ 	}
+ }
+@@ -1588,7 +1592,7 @@ func TestDecodeResponseBody_MagicByteGzipNoHeader(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("decodeResponseBody error: %v", err)
+ 	}
+-	defer decoded.Close()
++	defer func() { _ = decoded.Close() }()
+ 
+ 	got, err := io.ReadAll(decoded)
+ 	if err != nil {
+@@ -1617,7 +1621,7 @@ func TestDecodeResponseBody_MagicByteZstdNoHeader(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("decodeResponseBody error: %v", err)
+ 	}
+-	defer decoded.Close()
++	defer func() { _ = decoded.Close() }()
+ 
+ 	got, err := io.ReadAll(decoded)
+ 	if err != nil {
+@@ -1637,7 +1641,7 @@ func TestDecodeResponseBody_PlainTextNoHeader(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("decodeResponseBody error: %v", err)
+ 	}
+-	defer decoded.Close()
++	defer func() { _ = decoded.Close() }()
+ 
+ 	got, err := io.ReadAll(decoded)
+ 	if err != nil {
+diff --git a/internal/runtime/executor/codex_executor.go b/internal/runtime/executor/codex_executor.go
+index 182d4f27..9c4e6358 100644
+--- a/internal/runtime/executor/codex_executor.go
++++ b/internal/runtime/executor/codex_executor.go
+@@ -1002,42 +1002,3 @@ func codexCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
+ 	}
+ 	return
+ }
+-
+-func (e *CodexExecutor) resolveCodexConfig(auth *cliproxyauth.Auth) *config.CodexKey {
+-	if auth == nil || e.cfg == nil {
+-		return nil
+-	}
+-	var attrKey, attrBase string
+-	if auth.Attributes != nil {
+-		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+-	}
+-	for i := range e.cfg.CodexKey {
+-		entry := &e.cfg.CodexKey[i]
+-		cfgKey := strings.TrimSpace(entry.APIKey)
+-		cfgBase := strings.TrimSpace(entry.BaseURL)
+-		if attrKey != "" && attrBase != "" {
+-			if strings.EqualFold(cfgKey, attrKey) && strings.EqualFold(cfgBase, attrBase) {
+-				return entry
+-			}
+-			continue
+-		}
+-		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
+-			if cfgBase == "" || strings.EqualFold(cfgBase, attrBase) {
+-				return entry
+-			}
+-		}
+-		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
+-			return entry
+-		}
+-	}
+-	if attrKey != "" {
+-		for i := range e.cfg.CodexKey {
+-			entry := &e.cfg.CodexKey[i]
+-			if strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
+-				return entry
+-			}
+-		}
+-	}
+-	return nil
+-}
+diff --git a/internal/runtime/executor/codex_executor_cache_test.go b/internal/runtime/executor/codex_executor_cache_test.go
+index 7a24fd96..6c88463c 100644
+--- a/internal/runtime/executor/codex_executor_cache_test.go
++++ b/internal/runtime/executor/codex_executor_cache_test.go
+@@ -18,7 +18,7 @@ func TestCodexExecutorCacheHelper_OpenAIChatCompletions_StablePromptCacheKeyFrom
+ 	ginCtx, _ := gin.CreateTestContext(recorder)
+ 	ginCtx.Set("apiKey", "test-api-key")
+ 
+-	ctx := context.WithValue(context.Background(), "gin", ginCtx)
++	ctx := context.WithValue(context.Background(), testContextKeyGin, ginCtx)
+ 	executor := &CodexExecutor{}
+ 	rawJSON := []byte(`{"model":"gpt-5.3-codex","stream":true}`)
+ 	req := cliproxyexecutor.Request{
+diff --git a/internal/runtime/executor/codex_websockets_executor.go b/internal/runtime/executor/codex_websockets_executor.go
+index 023d0f1f..540e7673 100644
+--- a/internal/runtime/executor/codex_websockets_executor.go
++++ b/internal/runtime/executor/codex_websockets_executor.go
+@@ -295,7 +295,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
+ 				recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
+ 				if errSendRetry := writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry == nil {
+ 					conn = connRetry
+-					wsReqBody = wsReqBodyRetry
+ 				} else {
+ 					e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
+ 					helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
+@@ -502,7 +501,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+ 				return nil, errSendRetry
+ 			}
+ 			conn = connRetry
+-			wsReqBody = wsReqBodyRetry
+ 		} else {
+ 			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "send_error", errSend)
+ 			if errClose := conn.Close(); errClose != nil {
+@@ -1282,30 +1280,6 @@ func (e *CodexWebsocketsExecutor) CloseExecutionSession(sessionID string) {
+ 	e.closeExecutionSession(sess, "session_closed")
+ }
+ 
+-func (e *CodexWebsocketsExecutor) closeAllExecutionSessions(reason string) {
+-	if e == nil {
+-		return
+-	}
+-
+-	store := e.store
+-	if store == nil {
+-		store = globalCodexWebsocketSessionStore
+-	}
+-	store.mu.Lock()
+-	sessions := make([]*codexWebsocketSession, 0, len(store.sessions))
+-	for sessionID, sess := range store.sessions {
+-		delete(store.sessions, sessionID)
+-		if sess != nil {
+-			sessions = append(sessions, sess)
+-		}
+-	}
+-	store.mu.Unlock()
+-
+-	for i := range sessions {
+-		e.closeExecutionSession(sessions[i], reason)
+-	}
+-}
+-
+ func (e *CodexWebsocketsExecutor) closeExecutionSession(sess *codexWebsocketSession, reason string) {
+ 	closeCodexWebsocketSession(sess, reason)
+ }
+diff --git a/internal/runtime/executor/codex_websockets_executor_test.go b/internal/runtime/executor/codex_websockets_executor_test.go
+index dec356de..32d7bf05 100644
+--- a/internal/runtime/executor/codex_websockets_executor_test.go
++++ b/internal/runtime/executor/codex_websockets_executor_test.go
+@@ -274,7 +274,7 @@ func contextWithGinHeaders(headers map[string]string) context.Context {
+ 	for key, value := range headers {
+ 		ginCtx.Request.Header.Set(key, value)
+ 	}
+-	return context.WithValue(context.Background(), "gin", ginCtx)
++	return context.WithValue(context.Background(), testContextKeyGin, ginCtx)
+ }
+ 
+ func TestNewProxyAwareWebsocketDialerDirectDisablesProxy(t *testing.T) {
+diff --git a/internal/runtime/executor/gemini_cli_executor.go b/internal/runtime/executor/gemini_cli_executor.go
+index 15e84572..b2c7bd3c 100644
+--- a/internal/runtime/executor/gemini_cli_executor.go
++++ b/internal/runtime/executor/gemini_cli_executor.go
+@@ -32,6 +32,12 @@ import (
+ 	"golang.org/x/oauth2/google"
+ )
+ 
++type geminiCLIContextKey string
++
++const (
++	geminiCLIContextKeyAlt geminiCLIContextKey = "alt"
++)
++
+ const (
+ 	codeAssistEndpoint      = "https://cloudcode-pa.googleapis.com"
+ 	codeAssistVersion       = "v1internal"
+@@ -156,7 +162,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
+ 	}
+ 
+ 	httpClient := newHTTPClient(ctx, e.cfg, auth, 0)
+-	respCtx := context.WithValue(ctx, "alt", opts.Alt)
++	respCtx := context.WithValue(ctx, geminiCLIContextKeyAlt, opts.Alt)
+ 
+ 	var authID, authLabel, authType, authValue string
+ 	authID = auth.ID
+@@ -306,7 +312,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
+ 	}
+ 
+ 	httpClient := newHTTPClient(ctx, e.cfg, auth, 0)
+-	respCtx := context.WithValue(ctx, "alt", opts.Alt)
++	respCtx := context.WithValue(ctx, geminiCLIContextKeyAlt, opts.Alt)
+ 
+ 	var authID, authLabel, authType, authValue string
+ 	authID = auth.ID
+@@ -482,7 +488,7 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
+ 	}
+ 
+ 	httpClient := newHTTPClient(ctx, e.cfg, auth, 0)
+-	respCtx := context.WithValue(ctx, "alt", opts.Alt)
++	respCtx := context.WithValue(ctx, geminiCLIContextKeyAlt, opts.Alt)
+ 
+ 	var authID, authLabel, authType, authValue string
+ 	if auth != nil {
+diff --git a/internal/runtime/executor/gemini_executor.go b/internal/runtime/executor/gemini_executor.go
+index 0e3c3ec6..20a6ed31 100644
+--- a/internal/runtime/executor/gemini_executor.go
++++ b/internal/runtime/executor/gemini_executor.go
+@@ -466,45 +466,6 @@ func resolveGeminiBaseURL(auth *cliproxyauth.Auth) string {
+ 	return base
+ }
+ 
+-func (e *GeminiExecutor) resolveGeminiConfig(auth *cliproxyauth.Auth) *config.GeminiKey {
+-	if auth == nil || e.cfg == nil {
+-		return nil
+-	}
+-	var attrKey, attrBase string
+-	if auth.Attributes != nil {
+-		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+-	}
+-	for i := range e.cfg.GeminiKey {
+-		entry := &e.cfg.GeminiKey[i]
+-		cfgKey := strings.TrimSpace(entry.APIKey)
+-		cfgBase := strings.TrimSpace(entry.BaseURL)
+-		if attrKey != "" && attrBase != "" {
+-			if strings.EqualFold(cfgKey, attrKey) && strings.EqualFold(cfgBase, attrBase) {
+-				return entry
+-			}
+-			continue
+-		}
+-		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
+-			if cfgBase == "" || strings.EqualFold(cfgBase, attrBase) {
+-				return entry
+-			}
+-		}
+-		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
+-			return entry
+-		}
+-	}
+-	if attrKey != "" {
+-		for i := range e.cfg.GeminiKey {
+-			entry := &e.cfg.GeminiKey[i]
+-			if strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
+-				return entry
+-			}
+-		}
+-	}
+-	return nil
+-}
+-
+ func applyGeminiHeaders(req *http.Request, auth *cliproxyauth.Auth) {
+ 	var attrs map[string]string
+ 	if auth != nil {
+diff --git a/internal/runtime/executor/gemini_vertex_executor.go b/internal/runtime/executor/gemini_vertex_executor.go
+index 539a684a..41dbd965 100644
+--- a/internal/runtime/executor/gemini_vertex_executor.go
++++ b/internal/runtime/executor/gemini_vertex_executor.go
+@@ -907,7 +907,7 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
+ 
+ 	translatedReq = fixGeminiImageAspectRatio(baseModel, translatedReq)
+ 	translatedReq, _ = sjson.SetBytes(translatedReq, "model", baseModel)
+-	respCtx := context.WithValue(ctx, "alt", opts.Alt)
++	respCtx := context.WithValue(ctx, vertexContextKeyAlt, opts.Alt)
+ 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "tools")
+ 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "generationConfig")
+ 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
+@@ -1063,43 +1063,3 @@ func vertexAccessToken(ctx context.Context, cfg *config.Config, auth *cliproxyau
+ 	}
+ 	return tok.AccessToken, nil
+ }
+-
+-// resolveVertexConfig finds the matching vertex-api-key configuration entry for the given auth.
+-func (e *GeminiVertexExecutor) resolveVertexConfig(auth *cliproxyauth.Auth) *config.VertexCompatKey {
+-	if auth == nil || e.cfg == nil {
+-		return nil
+-	}
+-	var attrKey, attrBase string
+-	if auth.Attributes != nil {
+-		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+-		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+-	}
+-	for i := range e.cfg.VertexCompatAPIKey {
+-		entry := &e.cfg.VertexCompatAPIKey[i]
+-		cfgKey := strings.TrimSpace(entry.APIKey)
+-		cfgBase := strings.TrimSpace(entry.BaseURL)
+-		if attrKey != "" && attrBase != "" {
+-			if strings.EqualFold(cfgKey, attrKey) && strings.EqualFold(cfgBase, attrBase) {
+-				return entry
+-			}
+-			continue
+-		}
+-		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
+-			if cfgBase == "" || strings.EqualFold(cfgBase, attrBase) {
+-				return entry
+-			}
+-		}
+-		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
+-			return entry
+-		}
+-	}
+-	if attrKey != "" {
+-		for i := range e.cfg.VertexCompatAPIKey {
+-			entry := &e.cfg.VertexCompatAPIKey[i]
+-			if strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
+-				return entry
+-			}
+-		}
+-	}
+-	return nil
+-}
+diff --git a/internal/runtime/executor/helps/logging_helpers.go b/internal/runtime/executor/helps/logging_helpers.go
+index 7b6bf607..e175b3d3 100644
+--- a/internal/runtime/executor/helps/logging_helpers.go
++++ b/internal/runtime/executor/helps/logging_helpers.go
+@@ -78,7 +78,7 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
+ 		fmt.Fprintf(builder, "HTTP Method: %s\n", info.Method)
+ 	}
+ 	if auth := formatAuthInfo(info); auth != "" {
+-		builder.WriteString(fmt.Sprintf("Auth: %s\n", auth))
++		fmt.Fprintf(builder, "Auth: %s\n", auth)
+ 	}
+ 	builder.WriteString("\nHeaders:\n")
+ 	writeHeaders(builder, info.Headers)
+@@ -113,7 +113,7 @@ func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
+ 	ensureResponseIntro(attempt)
+ 
+ 	if status > 0 && !attempt.statusWritten {
+-		attempt.response.WriteString(fmt.Sprintf("Status: %d\n", status))
++		fmt.Fprintf(attempt.response, "Status: %d\n", status)
+ 		attempt.statusWritten = true
+ 	}
+ 	if !attempt.headersWritten {
+@@ -145,7 +145,7 @@ func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error)
+ 	if attempt.errorWritten {
+ 		attempt.response.WriteString("\n")
+ 	}
+-	attempt.response.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
++	fmt.Fprintf(attempt.response, "Error: %s\n", err.Error())
+ 	attempt.errorWritten = true
+ 
+ 	updateAggregatedResponse(ginCtx, attempts)
+@@ -204,13 +204,13 @@ func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info Ups
+ 	}
+ 
+ 	builder := &strings.Builder{}
+-	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
++	fmt.Fprintf(builder, "Timestamp: %s\n", time.Now().Format(time.RFC3339Nano))
+ 	builder.WriteString("Event: api.websocket.request\n")
+ 	if info.URL != "" {
+-		builder.WriteString(fmt.Sprintf("Upstream URL: %s\n", info.URL))
++		fmt.Fprintf(builder, "Upstream URL: %s\n", info.URL)
+ 	}
+ 	if auth := formatAuthInfo(info); auth != "" {
+-		builder.WriteString(fmt.Sprintf("Auth: %s\n", auth))
++		fmt.Fprintf(builder, "Auth: %s\n", auth)
+ 	}
+ 	builder.WriteString("Headers:\n")
+ 	writeHeaders(builder, info.Headers)
+@@ -236,10 +236,10 @@ func RecordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, status
+ 	}
+ 
+ 	builder := &strings.Builder{}
+-	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
++	fmt.Fprintf(builder, "Timestamp: %s\n", time.Now().Format(time.RFC3339Nano))
+ 	builder.WriteString("Event: api.websocket.handshake\n")
+ 	if status > 0 {
+-		builder.WriteString(fmt.Sprintf("Status: %d\n", status))
++		fmt.Fprintf(builder, "Status: %d\n", status)
+ 	}
+ 	builder.WriteString("Headers:\n")
+ 	writeHeaders(builder, headers)
+@@ -298,7 +298,7 @@ func AppendAPIWebsocketResponse(ctx context.Context, cfg *config.Config, payload
+ 	markAPIResponseTimestamp(ginCtx)
+ 
+ 	builder := &strings.Builder{}
+-	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
++	fmt.Fprintf(builder, "Timestamp: %s\n", time.Now().Format(time.RFC3339Nano))
+ 	builder.WriteString("Event: api.websocket.response\n")
+ 	builder.Write(data)
+ 	builder.WriteString("\n")
+@@ -318,12 +318,12 @@ func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage stri
+ 	markAPIResponseTimestamp(ginCtx)
+ 
+ 	builder := &strings.Builder{}
+-	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
++	fmt.Fprintf(builder, "Timestamp: %s\n", time.Now().Format(time.RFC3339Nano))
+ 	builder.WriteString("Event: api.websocket.error\n")
+ 	if trimmed := strings.TrimSpace(stage); trimmed != "" {
+-		builder.WriteString(fmt.Sprintf("Stage: %s\n", trimmed))
++		fmt.Fprintf(builder, "Stage: %s\n", trimmed)
+ 	}
+-	builder.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
++	fmt.Fprintf(builder, "Error: %s\n", err.Error())
+ 
+ 	appendAPIWebsocketTimeline(ginCtx, []byte(builder.String()))
+ }
+@@ -364,8 +364,8 @@ func ensureResponseIntro(attempt *upstreamAttempt) {
+ 	if attempt == nil || attempt.response == nil || attempt.responseIntroWritten {
+ 		return
+ 	}
+-	attempt.response.WriteString(fmt.Sprintf("=== API RESPONSE %d ===\n", attempt.index))
+-	attempt.response.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
++	fmt.Fprintf(attempt.response, "=== API RESPONSE %d ===\n", attempt.index)
++	fmt.Fprintf(attempt.response, "Timestamp: %s\n", time.Now().Format(time.RFC3339Nano))
+ 	attempt.response.WriteString("\n")
+ 	attempt.responseIntroWritten = true
+ }
+@@ -455,12 +455,12 @@ func writeHeaders(builder *strings.Builder, headers http.Header) {
+ 	for _, key := range keys {
+ 		values := headers[key]
+ 		if len(values) == 0 {
+-			builder.WriteString(fmt.Sprintf("%s:\n", key))
++			fmt.Fprintf(builder, "%s:\n", key)
+ 			continue
+ 		}
+ 		for _, value := range values {
+ 			masked := util.MaskSensitiveHeaderValue(key, value)
+-			builder.WriteString(fmt.Sprintf("%s: %s\n", key, masked))
++			fmt.Fprintf(builder, "%s: %s\n", key, masked)
+ 		}
+ 	}
+ }
+diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
+index 4e44a7ae..7bc3aab5 100644
+--- a/internal/runtime/executor/openai_compat_executor.go
++++ b/internal/runtime/executor/openai_compat_executor.go
+@@ -362,44 +362,6 @@ func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (base
+ 	return
+ }
+ 
+-func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *config.OpenAICompatibility {
+-	if auth == nil || e.cfg == nil {
+-		return nil
+-	}
+-	candidates := make([]string, 0, 3)
+-	if auth.Attributes != nil {
+-		if v := strings.TrimSpace(auth.Attributes["compat_name"]); v != "" {
+-			candidates = append(candidates, v)
+-		}
+-		if v := strings.TrimSpace(auth.Attributes["provider_key"]); v != "" {
+-			candidates = append(candidates, v)
+-		}
+-	}
+-	if v := strings.TrimSpace(auth.Provider); v != "" {
+-		candidates = append(candidates, v)
+-	}
+-	for i := range e.cfg.OpenAICompatibility {
+-		compat := &e.cfg.OpenAICompatibility[i]
+-		if compat.Disabled {
+-			continue
+-		}
+-		for _, candidate := range candidates {
+-			if candidate != "" && strings.EqualFold(strings.TrimSpace(candidate), compat.Name) {
+-				return compat
+-			}
+-		}
+-	}
+-	return nil
+-}
+-
+-func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
+-	if len(payload) == 0 || model == "" {
+-		return payload
+-	}
+-	payload, _ = sjson.SetBytes(payload, "model", model)
+-	return payload
+-}
+-
+ type statusErr struct {
+ 	code       int
+ 	msg        string
+diff --git a/internal/translator/antigravity/claude/antigravity_claude_response.go b/internal/translator/antigravity/claude/antigravity_claude_response.go
+index 17a31f21..a04d3e6f 100644
+--- a/internal/translator/antigravity/claude/antigravity_claude_response.go
++++ b/internal/translator/antigravity/claude/antigravity_claude_response.go
+@@ -207,11 +207,6 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
+ 						// Transition from another state to thinking
+ 						// First, close any existing content block
+ 						if params.ResponseType != 0 {
+-							if params.ResponseType == 2 {
+-								// output = output + "event: content_block_delta\n"
+-								// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, params.ResponseIndex)
+-								// output = output + "\n\n\n"
+-							}
+ 							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
+ 							params.ResponseIndex++
+ 						}
+@@ -239,11 +234,6 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
+ 							// Transition from another state to text content
+ 							// First, close any existing content block
+ 							if params.ResponseType != 0 {
+-								if params.ResponseType == 2 {
+-									// output = output + "event: content_block_delta\n"
+-									// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, params.ResponseIndex)
+-									// output = output + "\n\n\n"
+-								}
+ 								appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
+ 								params.ResponseIndex++
+ 							}
+@@ -272,13 +262,6 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
+ 					params.ResponseType = 0
+ 				}
+ 
+-				// Special handling for thinking state transition
+-				if params.ResponseType == 2 {
+-					// output = output + "event: content_block_delta\n"
+-					// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, params.ResponseIndex)
+-					// output = output + "\n\n\n"
+-				}
+-
+ 				// Close any other existing content block
+ 				if params.ResponseType != 0 {
+ 					appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex))
+diff --git a/internal/translator/antigravity/claude/signature_validation.go b/internal/translator/antigravity/claude/signature_validation.go
+index 63203abd..593b8153 100644
+--- a/internal/translator/antigravity/claude/signature_validation.go
++++ b/internal/translator/antigravity/claude/signature_validation.go
+@@ -246,10 +246,6 @@ func inspectDoubleLayerSignature(sig string) (*claudeSignatureTree, error) {
+ 	return inspectSingleLayerSignatureWithLayers(string(decoded), 2)
+ }
+ 
+-func inspectSingleLayerSignature(sig string) (*claudeSignatureTree, error) {
+-	return inspectSingleLayerSignatureWithLayers(sig, 1)
+-}
+-
+ func inspectSingleLayerSignatureWithLayers(sig string, encodingLayers int) (*claudeSignatureTree, error) {
+ 	decoded, err := base64.StdEncoding.DecodeString(sig)
+ 	if err != nil {
+diff --git a/internal/translator/antigravity/gemini/antigravity_gemini_response_test.go b/internal/translator/antigravity/gemini/antigravity_gemini_response_test.go
+index 10bc722d..fea88bda 100644
+--- a/internal/translator/antigravity/gemini/antigravity_gemini_response_test.go
++++ b/internal/translator/antigravity/gemini/antigravity_gemini_response_test.go
+@@ -5,6 +5,10 @@ import (
+ 	"testing"
+ )
+ 
++type testContextKey string
++
++const testAltContextKey testContextKey = "alt"
++
+ func TestRestoreUsageMetadata(t *testing.T) {
+ 	tests := []struct {
+ 		name     string
+@@ -67,7 +71,7 @@ func TestConvertAntigravityResponseToGeminiNonStream(t *testing.T) {
+ }
+ 
+ func TestConvertAntigravityResponseToGeminiStream(t *testing.T) {
+-	ctx := context.WithValue(context.Background(), "alt", "")
++	ctx := context.WithValue(context.Background(), testAltContextKey, "")
+ 
+ 	tests := []struct {
+ 		name     string
+diff --git a/internal/translator/codex/claude/codex_claude_request.go b/internal/translator/codex/claude/codex_claude_request.go
+index 1e168f09..d0189f36 100644
+--- a/internal/translator/codex/claude/codex_claude_request.go
++++ b/internal/translator/codex/claude/codex_claude_request.go
+@@ -196,7 +196,8 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool)
+ 							contentResults := contentResult.Array()
+ 							for k := 0; k < len(contentResults); k++ {
+ 								toolResultContentType := contentResults[k].Get("type").String()
+-								if toolResultContentType == "image" {
++								switch toolResultContentType {
++								case "image":
+ 									sourceResult := contentResults[k].Get("source")
+ 									if sourceResult.Exists() {
+ 										data := sourceResult.Get("data").String()
+@@ -218,7 +219,7 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool)
+ 											toolResultContentIndex++
+ 										}
+ 									}
+-								} else if toolResultContentType == "text" {
++								case "text":
+ 									toolResultContent, _ = sjson.SetBytes(toolResultContent, fmt.Sprintf("%d.type", toolResultContentIndex), "input_text")
+ 									toolResultContent, _ = sjson.SetBytes(toolResultContent, fmt.Sprintf("%d.text", toolResultContentIndex), contentResults[k].Get("text").String())
+ 									toolResultContentIndex++
+diff --git a/internal/translator/codex/claude/codex_claude_response.go b/internal/translator/codex/claude/codex_claude_response.go
+index a401a1b7..28b2facd 100644
+--- a/internal/translator/codex/claude/codex_claude_response.go
++++ b/internal/translator/codex/claude/codex_claude_response.go
+@@ -77,47 +77,48 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
+ 	typeStr := typeResult.String()
+ 	var template []byte
+ 
+-	if typeStr == "response.created" {
++	switch typeStr {
++	case "response.created":
+ 		template = []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"claude-opus-4-1-20250805","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0},"content":[],"stop_reason":null}}`)
+ 		template, _ = sjson.SetBytes(template, "message.model", rootResult.Get("response.model").String())
+ 		template, _ = sjson.SetBytes(template, "message.id", rootResult.Get("response.id").String())
+ 
+ 		output = translatorcommon.AppendSSEEventBytes(output, "message_start", template, 2)
+-	} else if typeStr == "response.reasoning_summary_part.added" {
++	case "response.reasoning_summary_part.added":
+ 		if params.ThinkingBlockOpen && params.ThinkingStopPending {
+ 			output = append(output, finalizeCodexThinkingBlock(params)...)
+ 		}
+ 		params.ThinkingSummarySeen = true
+ 		output = append(output, startCodexThinkingBlock(params)...)
+-	} else if typeStr == "response.reasoning_summary_text.delta" {
++	case "response.reasoning_summary_text.delta":
+ 		template = []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}`)
+ 		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
+ 		template, _ = sjson.SetBytes(template, "delta.thinking", rootResult.Get("delta").String())
+ 
+ 		output = translatorcommon.AppendSSEEventBytes(output, "content_block_delta", template, 2)
+-	} else if typeStr == "response.reasoning_summary_part.done" {
++	case "response.reasoning_summary_part.done":
+ 		params.ThinkingStopPending = true
+-	} else if typeStr == "response.content_part.added" {
++	case "response.content_part.added":
+ 		template = []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+ 		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
+ 		params.TextBlockOpen = true
+ 
+ 		output = translatorcommon.AppendSSEEventBytes(output, "content_block_start", template, 2)
+-	} else if typeStr == "response.output_text.delta" {
++	case "response.output_text.delta":
+ 		params.HasTextDelta = true
+ 		template = []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}`)
+ 		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
+ 		template, _ = sjson.SetBytes(template, "delta.text", rootResult.Get("delta").String())
+ 
+ 		output = translatorcommon.AppendSSEEventBytes(output, "content_block_delta", template, 2)
+-	} else if typeStr == "response.content_part.done" {
++	case "response.content_part.done":
+ 		template = []byte(`{"type":"content_block_stop","index":0}`)
+ 		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
+ 		params.TextBlockOpen = false
+ 		params.BlockIndex++
+ 
+ 		output = translatorcommon.AppendSSEEventBytes(output, "content_block_stop", template, 2)
+-	} else if typeStr == "response.completed" || typeStr == "response.incomplete" {
++	case "response.completed", "response.incomplete":
+ 		template = []byte(`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`)
+ 		responseData := rootResult.Get("response")
+ 		template, _ = sjson.SetBytes(template, "delta.stop_reason", mapCodexStopReasonToClaude(codexStopReason(responseData), params.HasToolCall))
+@@ -131,10 +132,11 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
+ 
+ 		output = translatorcommon.AppendSSEEventBytes(output, "message_delta", template, 2)
+ 		output = translatorcommon.AppendSSEEventBytes(output, "message_stop", []byte(`{"type":"message_stop"}`), 2)
+-	} else if typeStr == "response.output_item.added" {
++	case "response.output_item.added":
+ 		itemResult := rootResult.Get("item")
+ 		itemType := itemResult.Get("type").String()
+-		if itemType == "function_call" {
++		switch itemType {
++		case "function_call":
+ 			output = append(output, finalizeCodexThinkingBlock(params)...)
+ 			params.HasToolCall = true
+ 			params.HasReceivedArgumentsDelta = false
+@@ -156,14 +158,15 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
+ 			template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
+ 
+ 			output = translatorcommon.AppendSSEEventBytes(output, "content_block_delta", template, 2)
+-		} else if itemType == "reasoning" {
++		case "reasoning":
+ 			params.ThinkingSummarySeen = false
+ 			params.ThinkingSignature = itemResult.Get("encrypted_content").String()
+ 		}
+-	} else if typeStr == "response.output_item.done" {
++	case "response.output_item.done":
+ 		itemResult := rootResult.Get("item")
+ 		itemType := itemResult.Get("type").String()
+-		if itemType == "message" {
++		switch itemType {
++		case "message":
+ 			if params.HasTextDelta {
+ 				return [][]byte{output}
+ 			}
+@@ -205,13 +208,13 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
+ 			params.BlockIndex++
+ 			params.HasTextDelta = true
+ 			output = translatorcommon.AppendSSEEventBytes(output, "content_block_stop", template, 2)
+-		} else if itemType == "function_call" {
++		case "function_call":
+ 			template = []byte(`{"type":"content_block_stop","index":0}`)
+ 			template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
+ 			params.BlockIndex++
+ 
+ 			output = translatorcommon.AppendSSEEventBytes(output, "content_block_stop", template, 2)
+-		} else if itemType == "reasoning" {
++		case "reasoning":
+ 			if signature := itemResult.Get("encrypted_content").String(); signature != "" {
+ 				params.ThinkingSignature = signature
+ 			}
+@@ -223,14 +226,14 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
+ 			params.ThinkingSignature = ""
+ 			params.ThinkingSummarySeen = false
+ 		}
+-	} else if typeStr == "response.function_call_arguments.delta" {
++	case "response.function_call_arguments.delta":
+ 		params.HasReceivedArgumentsDelta = true
+ 		template = []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}`)
+ 		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
+ 		template, _ = sjson.SetBytes(template, "delta.partial_json", rootResult.Get("delta").String())
+ 
+ 		output = translatorcommon.AppendSSEEventBytes(output, "content_block_delta", template, 2)
+-	} else if typeStr == "response.function_call_arguments.done" {
++	case "response.function_call_arguments.done":
+ 		if !params.HasReceivedArgumentsDelta {
+ 			if args := rootResult.Get("arguments").String(); args != "" {
+ 				template = []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}`)
+diff --git a/internal/translator/codex/gemini/codex_gemini_response.go b/internal/translator/codex/gemini/codex_gemini_response.go
+index a2e4e20e..8ab391ae 100644
+--- a/internal/translator/codex/gemini/codex_gemini_response.go
++++ b/internal/translator/codex/gemini/codex_gemini_response.go
+@@ -167,20 +167,21 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
+ 		}
+ 	}
+ 
+-	if typeStr == "response.created" { // Handle response creation - set model and response ID
++	switch typeStr {
++	case "response.created":
+ 		template, _ = sjson.SetBytes(template, "modelVersion", rootResult.Get("response.model").String())
+ 		template, _ = sjson.SetBytes(template, "responseId", rootResult.Get("response.id").String())
+ 		params.ResponseID = rootResult.Get("response.id").String()
+-	} else if typeStr == "response.reasoning_summary_text.delta" { // Handle reasoning/thinking content delta
++	case "response.reasoning_summary_text.delta":
+ 		part := []byte(`{"thought":true,"text":""}`)
+ 		part, _ = sjson.SetBytes(part, "text", rootResult.Get("delta").String())
+ 		template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
+-	} else if typeStr == "response.output_text.delta" { // Handle regular text content delta
++	case "response.output_text.delta":
+ 		params.HasOutputTextDelta = true
+ 		part := []byte(`{"text":""}`)
+ 		part, _ = sjson.SetBytes(part, "text", rootResult.Get("delta").String())
+ 		template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
+-	} else if typeStr == "response.output_item.done" { // Fallback: emit final message text when no delta chunks were received
++	case "response.output_item.done":
+ 		itemResult := rootResult.Get("item")
+ 		if itemResult.Get("type").String() != "message" || params.HasOutputTextDelta {
+ 			return [][]byte{}
+@@ -209,12 +210,12 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
+ 			return [][]byte{template}
+ 		}
+ 		return [][]byte{}
+-	} else if typeStr == "response.completed" { // Handle response completion with usage metadata
++	case "response.completed":
+ 		template, _ = sjson.SetBytes(template, "usageMetadata.promptTokenCount", rootResult.Get("response.usage.input_tokens").Int())
+ 		template, _ = sjson.SetBytes(template, "usageMetadata.candidatesTokenCount", rootResult.Get("response.usage.output_tokens").Int())
+ 		totalTokens := rootResult.Get("response.usage.input_tokens").Int() + rootResult.Get("response.usage.output_tokens").Int()
+ 		template, _ = sjson.SetBytes(template, "usageMetadata.totalTokenCount", totalTokens)
+-	} else {
++	default:
+ 		return [][]byte{}
+ 	}
+ 
+diff --git a/internal/translator/codex/openai/chat-completions/codex_openai_response.go b/internal/translator/codex/openai/chat-completions/codex_openai_response.go
+index 75b5b848..8068eacb 100644
+--- a/internal/translator/codex/openai/chat-completions/codex_openai_response.go
++++ b/internal/translator/codex/openai/chat-completions/codex_openai_response.go
+@@ -114,20 +114,21 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
+ 		}
+ 	}
+ 
+-	if dataType == "response.reasoning_summary_text.delta" {
++	switch dataType {
++	case "response.reasoning_summary_text.delta":
+ 		if deltaResult := rootResult.Get("delta"); deltaResult.Exists() {
+ 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
+ 			template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", deltaResult.String())
+ 		}
+-	} else if dataType == "response.reasoning_summary_text.done" {
++	case "response.reasoning_summary_text.done":
+ 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
+ 		template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", "\n\n")
+-	} else if dataType == "response.output_text.delta" {
++	case "response.output_text.delta":
+ 		if deltaResult := rootResult.Get("delta"); deltaResult.Exists() {
+ 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
+ 			template, _ = sjson.SetBytes(template, "choices.0.delta.content", deltaResult.String())
+ 		}
+-	} else if dataType == "response.image_generation_call.partial_image" {
++	case "response.image_generation_call.partial_image":
+ 		itemID := rootResult.Get("item_id").String()
+ 		b64 := rootResult.Get("partial_image_b64").String()
+ 		if b64 == "" {
+@@ -160,14 +161,14 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
+ 
+ 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
+ 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.images.-1", imagePayload)
+-	} else if dataType == "response.completed" {
++	case "response.completed":
+ 		finishReason := "stop"
+ 		if (*param).(*ConvertCliToOpenAIParams).FunctionCallIndex != -1 {
+ 			finishReason = "tool_calls"
+ 		}
+ 		template, _ = sjson.SetBytes(template, "choices.0.finish_reason", finishReason)
+ 		template, _ = sjson.SetBytes(template, "choices.0.native_finish_reason", finishReason)
+-	} else if dataType == "response.output_item.added" {
++	case "response.output_item.added":
+ 		itemResult := rootResult.Get("item")
+ 		if !itemResult.Exists() || itemResult.Get("type").String() != "function_call" {
+ 			return [][]byte{}
+@@ -195,7 +196,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
+ 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+ 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallItemTemplate)
+ 
+-	} else if dataType == "response.function_call_arguments.delta" {
++	case "response.function_call_arguments.delta":
+ 		(*param).(*ConvertCliToOpenAIParams).HasReceivedArgumentsDelta = true
+ 
+ 		deltaValue := rootResult.Get("delta").String()
+@@ -206,7 +207,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
+ 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+ 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallItemTemplate)
+ 
+-	} else if dataType == "response.function_call_arguments.done" {
++	case "response.function_call_arguments.done":
+ 		if (*param).(*ConvertCliToOpenAIParams).HasReceivedArgumentsDelta {
+ 			// Arguments were already streamed via delta events; nothing to emit.
+ 			return [][]byte{}
+@@ -221,7 +222,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
+ 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls", []byte(`[]`))
+ 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallItemTemplate)
+ 
+-	} else if dataType == "response.output_item.done" {
++	case "response.output_item.done":
+ 		itemResult := rootResult.Get("item")
+ 		if !itemResult.Exists() {
+ 			return [][]byte{}
+@@ -293,7 +294,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
+ 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
+ 		template, _ = sjson.SetRawBytes(template, "choices.0.delta.tool_calls.-1", functionCallItemTemplate)
+ 
+-	} else {
++	default:
+ 		return [][]byte{}
+ 	}
+ 
+diff --git a/internal/translator/gemini-cli/claude/gemini-cli_claude_response.go b/internal/translator/gemini-cli/claude/gemini-cli_claude_response.go
+index 0bf4d622..1f8b4288 100644
+--- a/internal/translator/gemini-cli/claude/gemini-cli_claude_response.go
++++ b/internal/translator/gemini-cli/claude/gemini-cli_claude_response.go
+@@ -121,11 +121,6 @@ func ConvertGeminiCLIResponseToClaude(_ context.Context, _ string, originalReque
+ 						// Transition from another state to thinking
+ 						// First, close any existing content block
+ 						if (*param).(*Params).ResponseType != 0 {
+-							if (*param).(*Params).ResponseType == 2 {
+-								// output = output + "event: content_block_delta\n"
+-								// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, (*param).(*Params).ResponseIndex)
+-								// output = output + "\n\n\n"
+-							}
+ 							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex))
+ 							(*param).(*Params).ResponseIndex++
+ 						}
+@@ -148,11 +143,6 @@ func ConvertGeminiCLIResponseToClaude(_ context.Context, _ string, originalReque
+ 						// Transition from another state to text content
+ 						// First, close any existing content block
+ 						if (*param).(*Params).ResponseType != 0 {
+-							if (*param).(*Params).ResponseType == 2 {
+-								// output = output + "event: content_block_delta\n"
+-								// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, (*param).(*Params).ResponseIndex)
+-								// output = output + "\n\n\n"
+-							}
+ 							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex))
+ 							(*param).(*Params).ResponseIndex++
+ 						}
+@@ -179,13 +169,6 @@ func ConvertGeminiCLIResponseToClaude(_ context.Context, _ string, originalReque
+ 					(*param).(*Params).ResponseType = 0
+ 				}
+ 
+-				// Special handling for thinking state transition
+-				if (*param).(*Params).ResponseType == 2 {
+-					// output = output + "event: content_block_delta\n"
+-					// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, (*param).(*Params).ResponseIndex)
+-					// output = output + "\n\n\n"
+-				}
+-
+ 				// Close any other existing content block
+ 				if (*param).(*Params).ResponseType != 0 {
+ 					appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex))
+diff --git a/internal/translator/gemini/claude/gemini_claude_response.go b/internal/translator/gemini/claude/gemini_claude_response.go
+index 28722de1..3c66d710 100644
+--- a/internal/translator/gemini/claude/gemini_claude_response.go
++++ b/internal/translator/gemini/claude/gemini_claude_response.go
+@@ -120,11 +120,6 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
+ 						// Transition from another state to thinking
+ 						// First, close any existing content block
+ 						if (*param).(*Params).ResponseType != 0 {
+-							if (*param).(*Params).ResponseType == 2 {
+-								// output = output + "event: content_block_delta\n"
+-								// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, (*param).(*Params).ResponseIndex)
+-								// output = output + "\n\n\n"
+-							}
+ 							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex))
+ 							(*param).(*Params).ResponseIndex++
+ 						}
+@@ -147,11 +142,6 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
+ 						// Transition from another state to text content
+ 						// First, close any existing content block
+ 						if (*param).(*Params).ResponseType != 0 {
+-							if (*param).(*Params).ResponseType == 2 {
+-								// output = output + "event: content_block_delta\n"
+-								// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, (*param).(*Params).ResponseIndex)
+-								// output = output + "\n\n\n"
+-							}
+ 							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex))
+ 							(*param).(*Params).ResponseIndex++
+ 						}
+@@ -191,13 +181,6 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
+ 					(*param).(*Params).ResponseType = 0
+ 				}
+ 
+-				// Special handling for thinking state transition
+-				if (*param).(*Params).ResponseType == 2 {
+-					// output = output + "event: content_block_delta\n"
+-					// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, (*param).(*Params).ResponseIndex)
+-					// output = output + "\n\n\n"
+-				}
+-
+ 				// Close any other existing content block
+ 				if (*param).(*Params).ResponseType != 0 {
+ 					appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex))
+diff --git a/internal/translator/gemini/gemini/gemini_gemini_request.go b/internal/translator/gemini/gemini/gemini_gemini_request.go
+index abc176b2..5126f625 100644
+--- a/internal/translator/gemini/gemini/gemini_gemini_request.go
++++ b/internal/translator/gemini/gemini/gemini_gemini_request.go
+@@ -61,11 +61,12 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte
+ 		valid := role == "user" || role == "model"
+ 		if role == "" || !valid {
+ 			var newRole string
+-			if prevRole == "" {
++			switch prevRole {
++			case "":
+ 				newRole = "user"
+-			} else if prevRole == "user" {
++			case "user":
+ 				newRole = "model"
+-			} else {
++			default:
+ 				newRole = "user"
+ 			}
+ 			path := fmt.Sprintf("contents.%d.role", idx)
+diff --git a/internal/translator/gemini/openai/responses/gemini_openai-responses_response_test.go b/internal/translator/gemini/openai/responses/gemini_openai-responses_response_test.go
+index 0dcf2ae6..b939ed83 100644
+--- a/internal/translator/gemini/openai/responses/gemini_openai-responses_response_test.go
++++ b/internal/translator/gemini/openai/responses/gemini_openai-responses_response_test.go
+@@ -277,10 +277,10 @@ func TestConvertGeminiResponseToOpenAIResponses_FunctionCallEventOrder(t *testin
+ 		if posAdded[idx] == -1 || posArgsDelta[idx] == -1 || posArgsDone[idx] == -1 || posItemDone[idx] == -1 {
+ 			t.Fatalf("missing function call events for output_index %d: added=%d argsDelta=%d argsDone=%d itemDone=%d", idx, posAdded[idx], posArgsDelta[idx], posArgsDone[idx], posItemDone[idx])
+ 		}
+-		if !(posAdded[idx] < posArgsDelta[idx] && posArgsDelta[idx] < posArgsDone[idx] && posArgsDone[idx] < posItemDone[idx]) {
++		if posAdded[idx] >= posArgsDelta[idx] || posArgsDelta[idx] >= posArgsDone[idx] || posArgsDone[idx] >= posItemDone[idx] {
+ 			t.Fatalf("unexpected ordering for output_index %d: added=%d argsDelta=%d argsDone=%d itemDone=%d", idx, posAdded[idx], posArgsDelta[idx], posArgsDone[idx], posItemDone[idx])
+ 		}
+-		if idx > 0 && !(posItemDone[idx-1] < posAdded[idx]) {
++		if idx > 0 && posItemDone[idx-1] >= posAdded[idx] {
+ 			t.Fatalf("function call events overlap between %d and %d: prevDone=%d nextAdded=%d", idx-1, idx, posItemDone[idx-1], posAdded[idx])
+ 		}
+ 	}
+@@ -294,7 +294,7 @@ func TestConvertGeminiResponseToOpenAIResponses_FunctionCallEventOrder(t *testin
+ 	if deltaByIndex[2] == "" || !gjson.Valid(deltaByIndex[2]) || gjson.Get(deltaByIndex[2], "a").Int() != 1 {
+ 		t.Fatalf("unexpected delta for output_index 2: got %q", deltaByIndex[2])
+ 	}
+-	if !(posItemDone[2] < posCompleted) {
++	if posItemDone[2] >= posCompleted {
+ 		t.Fatalf("response.completed should be after last output_item.done: last=%d completed=%d", posItemDone[2], posCompleted)
+ 	}
+ }
+@@ -344,10 +344,10 @@ func TestConvertGeminiResponseToOpenAIResponses_ResponseOutputOrdering(t *testin
+ 	if posFuncDone == -1 || posMsgAdded == -1 || posCompleted == -1 {
+ 		t.Fatalf("missing required events: funcDone=%d msgAdded=%d completed=%d", posFuncDone, posMsgAdded, posCompleted)
+ 	}
+-	if !(posFuncDone < posMsgAdded) {
++	if posFuncDone >= posMsgAdded {
+ 		t.Fatalf("expected function_call to complete before message is added: funcDone=%d msgAdded=%d", posFuncDone, posMsgAdded)
+ 	}
+-	if !(posMsgAdded < posCompleted) {
++	if posMsgAdded >= posCompleted {
+ 		t.Fatalf("expected response.completed after message added: msgAdded=%d completed=%d", posMsgAdded, posCompleted)
+ 	}
+ }
+diff --git a/internal/translator/openai/claude/openai_claude_request.go b/internal/translator/openai/claude/openai_claude_request.go
+index f12dd0c6..3ca9cdaf 100644
+--- a/internal/translator/openai/claude/openai_claude_request.go
++++ b/internal/translator/openai/claude/openai_claude_request.go
+@@ -102,14 +102,15 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream
+ 	systemMsgJSON := []byte(`{"role":"system","content":[]}`)
+ 	hasSystemContent := false
+ 	if system := root.Get("system"); system.Exists() {
+-		if system.Type == gjson.String {
++		switch system.Type {
++		case gjson.String:
+ 			if system.String() != "" {
+ 				oldSystem := []byte(`{"type":"text","text":""}`)
+ 				oldSystem, _ = sjson.SetBytes(oldSystem, "text", system.String())
+ 				systemMsgJSON, _ = sjson.SetRawBytes(systemMsgJSON, "content.-1", oldSystem)
+ 				hasSystemContent = true
+ 			}
+-		} else if system.Type == gjson.JSON {
++		case gjson.JSON:
+ 			if system.IsArray() {
+ 				systemResults := system.Array()
+ 				for i := 0; i < len(systemResults); i++ {
+@@ -203,7 +204,6 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream
+ 				hasContent := len(contentItems) > 0
+ 				hasReasoning := reasoningContent != ""
+ 				hasToolCalls := len(toolCalls) > 0
+-				hasToolResults := len(toolResults) > 0
+ 
+ 				// OpenAI requires: tool messages MUST immediately follow the assistant message with tool_calls.
+ 				// Therefore, we emit tool_result messages FIRST (they respond to the previous assistant's tool_calls),
+@@ -256,8 +256,6 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream
+ 						msgJSON, _ = sjson.SetRawBytes(msgJSON, "content", contentArrayJSON)
+ 
+ 						messagesJSON, _ = sjson.SetRawBytes(messagesJSON, "-1", msgJSON)
+-					} else if hasToolResults && !hasContent {
+-						// tool_results already emitted above, no additional user message needed
+ 					}
+ 				}
+ 
+diff --git a/internal/translator/openai/gemini/openai_gemini_response.go b/internal/translator/openai/gemini/openai_gemini_response.go
+index 20c262bf..37575287 100644
+--- a/internal/translator/openai/gemini/openai_gemini_response.go
++++ b/internal/translator/openai/gemini/openai_gemini_response.go
+@@ -460,11 +460,12 @@ func captureBracketed(runes []rune, i int) (string, int) {
+ 	}
+ 	startRune := runes[i]
+ 	var endRune rune
+-	if startRune == '{' {
++	switch startRune {
++	case '{':
+ 		endRune = '}'
+-	} else if startRune == '[' {
++	case '[':
+ 		endRune = ']'
+-	} else {
++	default:
+ 		return "", -1
+ 	}
+ 	depth := 0
+@@ -492,9 +493,10 @@ func captureBracketed(runes []rune, i int) (string, int) {
+ 			j++
+ 			continue
+ 		}
+-		if r == startRune {
++		switch r {
++		case startRune:
+ 			depth++
+-		} else if r == endRune {
++		case endRune:
+ 			depth--
+ 			if depth == 0 {
+ 				return string(runes[i : j+1]), j + 1
+diff --git a/internal/tui/client.go b/internal/tui/client.go
+index d8f4801a..614011b9 100644
+--- a/internal/tui/client.go
++++ b/internal/tui/client.go
+@@ -36,6 +36,10 @@ func (c *Client) SetSecretKey(secretKey string) {
+ 	c.secretKey = strings.TrimSpace(secretKey)
+ }
+ 
++func (c *Client) GetUsage() (map[string]any, error) {
++	return c.getJSON("/v0/management/api-key-usage")
++}
++
+ func (c *Client) doRequest(method, path string, body io.Reader) ([]byte, int, error) {
+ 	url := c.baseURL + path
+ 	req, err := http.NewRequest(method, url, body)
+diff --git a/internal/tui/dashboard.go b/internal/tui/dashboard.go
+index 99b5409c..181b1990 100644
+--- a/internal/tui/dashboard.go
++++ b/internal/tui/dashboard.go
+@@ -128,7 +128,7 @@ func (m dashboardModel) renderDashboard(cfg map[string]any, authFiles []map[stri
+ 	// ━━━ Connection Status ━━━
+ 	connStyle := lipgloss.NewStyle().Bold(true).Foreground(colorSuccess)
+ 	sb.WriteString(connStyle.Render(T("connected")))
+-	sb.WriteString(fmt.Sprintf("  %s", m.client.baseURL))
++	fmt.Fprintf(&sb, "  %s", m.client.baseURL)
+ 	sb.WriteString("\n\n")
+ 
+ 	// ━━━ Stats Cards ━━━
+@@ -208,9 +208,9 @@ func (m dashboardModel) renderDashboard(cfg map[string]any, authFiles []map[stri
+ 
+ 		// Render config items as a compact row
+ 		for _, item := range configItems {
+-			sb.WriteString(fmt.Sprintf("  %s %s\n",
++			fmt.Fprintf(&sb, "  %s %s\n",
+ 				labelStyle.Render(item.label+":"),
+-				valueStyle.Render(item.value)))
++				valueStyle.Render(item.value))
+ 		}
+ 
+ 		// Routing strategy
+@@ -220,9 +220,9 @@ func (m dashboardModel) renderDashboard(cfg map[string]any, authFiles []map[stri
+ 				strategy = s
+ 			}
+ 		}
+-		sb.WriteString(fmt.Sprintf("  %s %s\n",
++		fmt.Fprintf(&sb, "  %s %s\n",
+ 			labelStyle.Render(T("routing_strategy")+":"),
+-			valueStyle.Render(strategy)))
++			valueStyle.Render(strategy))
+ 	}
+ 
+ 	sb.WriteString("\n")
+@@ -230,10 +230,6 @@ func (m dashboardModel) renderDashboard(cfg map[string]any, authFiles []map[stri
+ 	return sb.String()
+ }
+ 
+-func formatKV(key, value string) string {
+-	return fmt.Sprintf("  %s %s\n", labelStyle.Render(key+":"), valueStyle.Render(value))
+-}
+-
+ func getString(m map[string]any, key string) string {
+ 	if v, ok := m[key]; ok {
+ 		if s, ok := v.(string); ok {
+@@ -272,23 +268,6 @@ func boolEmoji(b bool) string {
+ 	return T("bool_no")
+ }
+ 
+-func formatLargeNumber(n int64) string {
+-	if n >= 1_000_000 {
+-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+-	}
+-	if n >= 1_000 {
+-		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+-	}
+-	return fmt.Sprintf("%d", n)
+-}
+-
+-func truncate(s string, maxLen int) string {
+-	if len(s) > maxLen {
+-		return s[:maxLen-3] + "..."
+-	}
+-	return s
+-}
+-
+ func minInt(a, b int) int {
+ 	if a < b {
+ 		return a
+diff --git a/internal/tui/keys_tab.go b/internal/tui/keys_tab.go
+index 770f7f1e..1ceadc71 100644
+--- a/internal/tui/keys_tab.go
++++ b/internal/tui/keys_tab.go
+@@ -357,7 +357,7 @@ func (m keysTabModel) renderContent() string {
+ 			if baseURL != "" {
+ 				info += " → " + baseURL
+ 			}
+-			sb.WriteString(fmt.Sprintf("  %d. %s\n", i+1, info))
++			fmt.Fprintf(&sb, "  %d. %s\n", i+1, info)
+ 		}
+ 		sb.WriteString("\n")
+ 	}
+@@ -392,7 +392,7 @@ func renderProviderKeys(sb *strings.Builder, title string, keys []map[string]any
+ 		if baseURL != "" {
+ 			info += " → " + baseURL
+ 		}
+-		sb.WriteString(fmt.Sprintf("  %d. %s\n", i+1, info))
++		fmt.Fprintf(sb, "  %d. %s\n", i+1, info)
+ 	}
+ 	sb.WriteString("\n")
+ }
+diff --git a/internal/tui/styles.go b/internal/tui/styles.go
+index f09e4322..87bfcefd 100644
+--- a/internal/tui/styles.go
++++ b/internal/tui/styles.go
+@@ -6,13 +6,11 @@ import "github.com/charmbracelet/lipgloss"
+ // Color palette
+ var (
+ 	colorPrimary   = lipgloss.Color("#7C3AED") // violet
+-	colorSecondary = lipgloss.Color("#6366F1") // indigo
+ 	colorSuccess   = lipgloss.Color("#22C55E") // green
+ 	colorWarning   = lipgloss.Color("#EAB308") // yellow
+ 	colorError     = lipgloss.Color("#EF4444") // red
+ 	colorInfo      = lipgloss.Color("#3B82F6") // blue
+ 	colorMuted     = lipgloss.Color("#6B7280") // gray
+-	colorBg        = lipgloss.Color("#1E1E2E") // dark bg
+ 	colorSurface   = lipgloss.Color("#313244") // slightly lighter
+ 	colorText      = lipgloss.Color("#CDD6F4") // light text
+ 	colorSubtext   = lipgloss.Color("#A6ADC8") // dimmer text
+@@ -58,11 +56,6 @@ var (
+ 	valueStyle = lipgloss.NewStyle().
+ 			Foreground(colorText)
+ 
+-	sectionStyle = lipgloss.NewStyle().
+-			Border(lipgloss.RoundedBorder()).
+-			BorderForeground(colorBorder).
+-			Padding(1, 2)
+-
+ 	errorStyle = lipgloss.NewStyle().
+ 			Foreground(colorError).
+ 			Bold(true)
+@@ -99,28 +92,4 @@ var (
+ 				BorderBottom(true).
+ 				BorderStyle(lipgloss.NormalBorder()).
+ 				BorderForeground(colorBorder)
+-
+-	tableCellStyle = lipgloss.NewStyle().
+-			Foreground(colorText).
+-			PaddingRight(2)
+-
+-	tableSelectedStyle = lipgloss.NewStyle().
+-				Foreground(lipgloss.Color("#FFFFFF")).
+-				Background(colorPrimary).
+-				Bold(true)
+ )
+-
+-func logLevelStyle(level string) lipgloss.Style {
+-	switch level {
+-	case "debug":
+-		return logDebugStyle
+-	case "info":
+-		return logInfoStyle
+-	case "warn", "warning":
+-		return logWarnStyle
+-	case "error", "fatal", "panic":
+-		return logErrorStyle
+-	default:
+-		return logInfoStyle
+-	}
+-}
+diff --git a/internal/tui/usage_tab.go b/internal/tui/usage_tab.go
+deleted file mode 100644
+index 3b75c3bb..00000000
+--- a/internal/tui/usage_tab.go
++++ /dev/null
+@@ -1,433 +0,0 @@
+-package tui
+-
+-import (
+-	"fmt"
+-	"sort"
+-	"strings"
+-
+-	"github.com/charmbracelet/bubbles/viewport"
+-	tea "github.com/charmbracelet/bubbletea"
+-	"github.com/charmbracelet/lipgloss"
+-)
+-
+-// usageTabModel displays usage statistics with charts and breakdowns.
+-type usageTabModel struct {
+-	client   *Client
+-	viewport viewport.Model
+-	usage    map[string]any
+-	err      error
+-	width    int
+-	height   int
+-	ready    bool
+-}
+-
+-type usageDataMsg struct {
+-	usage map[string]any
+-	err   error
+-}
+-
+-func newUsageTabModel(client *Client) usageTabModel {
+-	return usageTabModel{
+-		client: client,
+-	}
+-}
+-
+-func (m usageTabModel) Init() tea.Cmd {
+-	return m.fetchData
+-}
+-
+-func (m usageTabModel) fetchData() tea.Msg {
+-	usage, err := m.client.GetUsage()
+-	return usageDataMsg{usage: usage, err: err}
+-}
+-
+-func (m usageTabModel) Update(msg tea.Msg) (usageTabModel, tea.Cmd) {
+-	switch msg := msg.(type) {
+-	case localeChangedMsg:
+-		m.viewport.SetContent(m.renderContent())
+-		return m, nil
+-	case usageDataMsg:
+-		if msg.err != nil {
+-			m.err = msg.err
+-		} else {
+-			m.err = nil
+-			m.usage = msg.usage
+-		}
+-		m.viewport.SetContent(m.renderContent())
+-		return m, nil
+-
+-	case tea.KeyMsg:
+-		if msg.String() == "r" {
+-			return m, m.fetchData
+-		}
+-		var cmd tea.Cmd
+-		m.viewport, cmd = m.viewport.Update(msg)
+-		return m, cmd
+-	}
+-
+-	var cmd tea.Cmd
+-	m.viewport, cmd = m.viewport.Update(msg)
+-	return m, cmd
+-}
+-
+-func (m *usageTabModel) SetSize(w, h int) {
+-	m.width = w
+-	m.height = h
+-	if !m.ready {
+-		m.viewport = viewport.New(w, h)
+-		m.viewport.SetContent(m.renderContent())
+-		m.ready = true
+-	} else {
+-		m.viewport.Width = w
+-		m.viewport.Height = h
+-	}
+-}
+-
+-func (m usageTabModel) View() string {
+-	if !m.ready {
+-		return T("loading")
+-	}
+-	return m.viewport.View()
+-}
+-
+-func (m usageTabModel) renderContent() string {
+-	var sb strings.Builder
+-
+-	sb.WriteString(titleStyle.Render(T("usage_title")))
+-	sb.WriteString("\n")
+-	sb.WriteString(helpStyle.Render(T("usage_help")))
+-	sb.WriteString("\n\n")
+-
+-	if m.err != nil {
+-		sb.WriteString(errorStyle.Render("⚠ Error: " + m.err.Error()))
+-		sb.WriteString("\n")
+-		return sb.String()
+-	}
+-
+-	if m.usage == nil {
+-		sb.WriteString(subtitleStyle.Render(T("usage_no_data")))
+-		sb.WriteString("\n")
+-		return sb.String()
+-	}
+-
+-	usageMap, _ := m.usage["usage"].(map[string]any)
+-	if usageMap == nil {
+-		sb.WriteString(subtitleStyle.Render(T("usage_no_data")))
+-		sb.WriteString("\n")
+-		return sb.String()
+-	}
+-
+-	totalReqs := int64(getFloat(usageMap, "total_requests"))
+-	successCnt := int64(getFloat(usageMap, "success_count"))
+-	failureCnt := int64(getFloat(usageMap, "failure_count"))
+-	totalTokens := int64(getFloat(usageMap, "total_tokens"))
+-
+-	// ━━━ Overview Cards ━━━
+-	cardWidth := 20
+-	if m.width > 0 {
+-		cardWidth = (m.width - 6) / 4
+-		if cardWidth < 16 {
+-			cardWidth = 16
+-		}
+-	}
+-	cardStyle := lipgloss.NewStyle().
+-		Border(lipgloss.RoundedBorder()).
+-		BorderForeground(lipgloss.Color("240")).
+-		Padding(0, 1).
+-		Width(cardWidth).
+-		Height(3)
+-
+-	// Total Requests
+-	card1 := (lipgloss.NewStyle().
+-		Border(lipgloss.RoundedBorder()).
+-		BorderForeground(lipgloss.Color("111")).
+-		Padding(0, 1).
+-		Width(cardWidth).
+-		Height(3)).Render(fmt.Sprintf(
+-		"%s\n%s\n%s",
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(T("usage_total_reqs")),
+-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111")).Render(fmt.Sprintf("%d", totalReqs)),
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("● %s: %d  ● %s: %d", T("usage_success"), successCnt, T("usage_failure"), failureCnt)),
+-	))
+-
+-	// Total Tokens
+-	card2 := (lipgloss.NewStyle().
+-		Border(lipgloss.RoundedBorder()).
+-		BorderForeground(lipgloss.Color("214")).
+-		Padding(0, 1).
+-		Width(cardWidth).
+-		Height(3)).Render(fmt.Sprintf(
+-		"%s\n%s\n%s",
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(T("usage_total_tokens")),
+-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214")).Render(formatLargeNumber(totalTokens)),
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("%s: %s", T("usage_total_token_l"), formatLargeNumber(totalTokens))),
+-	))
+-
+-	// RPM
+-	rpm := float64(0)
+-	if totalReqs > 0 {
+-		if rByH, ok := usageMap["requests_by_hour"].(map[string]any); ok && len(rByH) > 0 {
+-			rpm = float64(totalReqs) / float64(len(rByH)) / 60.0
+-		}
+-	}
+-	card3 := (lipgloss.NewStyle().
+-		Border(lipgloss.RoundedBorder()).
+-		BorderForeground(lipgloss.Color("76")).
+-		Padding(0, 1).
+-		Width(cardWidth).
+-		Height(3)).Render(fmt.Sprintf(
+-		"%s\n%s\n%s",
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(T("usage_rpm")),
+-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("76")).Render(fmt.Sprintf("%.2f", rpm)),
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("%s: %d", T("usage_total_reqs"), totalReqs)),
+-	))
+-
+-	// TPM
+-	tpm := float64(0)
+-	if totalTokens > 0 {
+-		if tByH, ok := usageMap["tokens_by_hour"].(map[string]any); ok && len(tByH) > 0 {
+-			tpm = float64(totalTokens) / float64(len(tByH)) / 60.0
+-		}
+-	}
+-	card4 := cardStyle.Copy().BorderForeground(lipgloss.Color("170")).Render(fmt.Sprintf(
+-		"%s\n%s\n%s",
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(T("usage_tpm")),
+-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170")).Render(fmt.Sprintf("%.2f", tpm)),
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("%s: %s", T("usage_total_tokens"), formatLargeNumber(totalTokens))),
+-	))
+-
+-	sb.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, card1, " ", card2, " ", card3, " ", card4))
+-	sb.WriteString("\n\n")
+-
+-	// ━━━ Requests by Hour (ASCII bar chart) ━━━
+-	if rByH, ok := usageMap["requests_by_hour"].(map[string]any); ok && len(rByH) > 0 {
+-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorHighlight).Render(T("usage_req_by_hour")))
+-		sb.WriteString("\n")
+-		sb.WriteString(strings.Repeat("─", minInt(m.width, 60)))
+-		sb.WriteString("\n")
+-		sb.WriteString(renderBarChart(rByH, m.width-6, lipgloss.Color("111")))
+-		sb.WriteString("\n")
+-	}
+-
+-	// ━━━ Tokens by Hour ━━━
+-	if tByH, ok := usageMap["tokens_by_hour"].(map[string]any); ok && len(tByH) > 0 {
+-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorHighlight).Render(T("usage_tok_by_hour")))
+-		sb.WriteString("\n")
+-		sb.WriteString(strings.Repeat("─", minInt(m.width, 60)))
+-		sb.WriteString("\n")
+-		sb.WriteString(renderBarChart(tByH, m.width-6, lipgloss.Color("214")))
+-		sb.WriteString("\n")
+-	}
+-
+-	// ━━━ Requests by Day ━━━
+-	if rByD, ok := usageMap["requests_by_day"].(map[string]any); ok && len(rByD) > 0 {
+-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorHighlight).Render(T("usage_req_by_day")))
+-		sb.WriteString("\n")
+-		sb.WriteString(strings.Repeat("─", minInt(m.width, 60)))
+-		sb.WriteString("\n")
+-		sb.WriteString(renderBarChart(rByD, m.width-6, lipgloss.Color("76")))
+-		sb.WriteString("\n")
+-	}
+-
+-	// ━━━ API Detail Stats ━━━
+-	if apis, ok := usageMap["apis"].(map[string]any); ok && len(apis) > 0 {
+-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorHighlight).Render(T("usage_api_detail")))
+-		sb.WriteString("\n")
+-		sb.WriteString(strings.Repeat("─", minInt(m.width, 80)))
+-		sb.WriteString("\n")
+-
+-		header := fmt.Sprintf("  %-30s %10s %12s", "API", T("requests"), T("tokens"))
+-		sb.WriteString(tableHeaderStyle.Render(header))
+-		sb.WriteString("\n")
+-
+-		for apiName, apiSnap := range apis {
+-			if apiMap, ok := apiSnap.(map[string]any); ok {
+-				apiReqs := int64(getFloat(apiMap, "total_requests"))
+-				apiToks := int64(getFloat(apiMap, "total_tokens"))
+-
+-				row := fmt.Sprintf("  %-30s %10d %12s",
+-					truncate(maskKey(apiName), 30), apiReqs, formatLargeNumber(apiToks))
+-				sb.WriteString(lipgloss.NewStyle().Bold(true).Render(row))
+-				sb.WriteString("\n")
+-
+-				// Per-model breakdown
+-				if models, ok := apiMap["models"].(map[string]any); ok {
+-					for model, v := range models {
+-						if stats, ok := v.(map[string]any); ok {
+-							mReqs := int64(getFloat(stats, "total_requests"))
+-							mToks := int64(getFloat(stats, "total_tokens"))
+-							mRow := fmt.Sprintf("    ├─ %-28s %10d %12s",
+-								truncate(model, 28), mReqs, formatLargeNumber(mToks))
+-							sb.WriteString(tableCellStyle.Render(mRow))
+-							sb.WriteString("\n")
+-
+-							// Token type breakdown from details
+-							sb.WriteString(m.renderTokenBreakdown(stats))
+-
+-							// Latency breakdown from details
+-							sb.WriteString(m.renderLatencyBreakdown(stats))
+-						}
+-					}
+-				}
+-			}
+-		}
+-	}
+-
+-	sb.WriteString("\n")
+-	return sb.String()
+-}
+-
+-// renderTokenBreakdown aggregates input/output/cached/reasoning tokens from model details.
+-func (m usageTabModel) renderTokenBreakdown(modelStats map[string]any) string {
+-	details, ok := modelStats["details"]
+-	if !ok {
+-		return ""
+-	}
+-	detailList, ok := details.([]any)
+-	if !ok || len(detailList) == 0 {
+-		return ""
+-	}
+-
+-	var inputTotal, outputTotal, cachedTotal, reasoningTotal int64
+-	for _, d := range detailList {
+-		dm, ok := d.(map[string]any)
+-		if !ok {
+-			continue
+-		}
+-		tokens, ok := dm["tokens"].(map[string]any)
+-		if !ok {
+-			continue
+-		}
+-		inputTotal += int64(getFloat(tokens, "input_tokens"))
+-		outputTotal += int64(getFloat(tokens, "output_tokens"))
+-		cachedTotal += int64(getFloat(tokens, "cached_tokens"))
+-		reasoningTotal += int64(getFloat(tokens, "reasoning_tokens"))
+-	}
+-
+-	if inputTotal == 0 && outputTotal == 0 && cachedTotal == 0 && reasoningTotal == 0 {
+-		return ""
+-	}
+-
+-	parts := []string{}
+-	if inputTotal > 0 {
+-		parts = append(parts, fmt.Sprintf("%s:%s", T("usage_input"), formatLargeNumber(inputTotal)))
+-	}
+-	if outputTotal > 0 {
+-		parts = append(parts, fmt.Sprintf("%s:%s", T("usage_output"), formatLargeNumber(outputTotal)))
+-	}
+-	if cachedTotal > 0 {
+-		parts = append(parts, fmt.Sprintf("%s:%s", T("usage_cached"), formatLargeNumber(cachedTotal)))
+-	}
+-	if reasoningTotal > 0 {
+-		parts = append(parts, fmt.Sprintf("%s:%s", T("usage_reasoning"), formatLargeNumber(reasoningTotal)))
+-	}
+-
+-	return fmt.Sprintf("    │  %s\n",
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(strings.Join(parts, "  ")))
+-}
+-
+-// renderLatencyBreakdown aggregates latency_ms from model details and displays avg/min/max.
+-func (m usageTabModel) renderLatencyBreakdown(modelStats map[string]any) string {
+-	details, ok := modelStats["details"]
+-	if !ok {
+-		return ""
+-	}
+-	detailList, ok := details.([]any)
+-	if !ok || len(detailList) == 0 {
+-		return ""
+-	}
+-
+-	var totalLatency int64
+-	var count int
+-	var minLatency, maxLatency int64
+-	first := true
+-
+-	for _, d := range detailList {
+-		dm, ok := d.(map[string]any)
+-		if !ok {
+-			continue
+-		}
+-		latencyMs := int64(getFloat(dm, "latency_ms"))
+-		if latencyMs <= 0 {
+-			continue
+-		}
+-		totalLatency += latencyMs
+-		count++
+-		if first {
+-			minLatency = latencyMs
+-			maxLatency = latencyMs
+-			first = false
+-		} else {
+-			if latencyMs < minLatency {
+-				minLatency = latencyMs
+-			}
+-			if latencyMs > maxLatency {
+-				maxLatency = latencyMs
+-			}
+-		}
+-	}
+-
+-	if count == 0 {
+-		return ""
+-	}
+-
+-	avgLatency := totalLatency / int64(count)
+-	return fmt.Sprintf("    │  %s: avg %dms  min %dms  max %dms\n",
+-		lipgloss.NewStyle().Foreground(colorMuted).Render(T("usage_time")),
+-		avgLatency, minLatency, maxLatency)
+-}
+-
+-// renderBarChart renders a simple ASCII horizontal bar chart.
+-func renderBarChart(data map[string]any, maxBarWidth int, barColor lipgloss.Color) string {
+-	if maxBarWidth < 10 {
+-		maxBarWidth = 10
+-	}
+-
+-	// Sort keys
+-	keys := make([]string, 0, len(data))
+-	for k := range data {
+-		keys = append(keys, k)
+-	}
+-	sort.Strings(keys)
+-
+-	// Find max value
+-	maxVal := float64(0)
+-	for _, k := range keys {
+-		v := getFloat(data, k)
+-		if v > maxVal {
+-			maxVal = v
+-		}
+-	}
+-	if maxVal == 0 {
+-		return ""
+-	}
+-
+-	barStyle := lipgloss.NewStyle().Foreground(barColor)
+-	var sb strings.Builder
+-
+-	labelWidth := 12
+-	barAvail := maxBarWidth - labelWidth - 12
+-	if barAvail < 5 {
+-		barAvail = 5
+-	}
+-
+-	for _, k := range keys {
+-		v := getFloat(data, k)
+-		barLen := int(v / maxVal * float64(barAvail))
+-		if barLen < 1 && v > 0 {
+-			barLen = 1
+-		}
+-		bar := strings.Repeat("█", barLen)
+-		label := k
+-		if len(label) > labelWidth {
+-			label = label[:labelWidth]
+-		}
+-		sb.WriteString(fmt.Sprintf("  %-*s %s %s\n",
+-			labelWidth, label,
+-			barStyle.Render(bar),
+-			lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("%.0f", v)),
+-		))
+-	}
+-
+-	return sb.String()
+-}
+diff --git a/internal/util/gemini_schema.go b/internal/util/gemini_schema.go
+index 99338d36..dbc4290e 100644
+--- a/internal/util/gemini_schema.go
++++ b/internal/util/gemini_schema.go
+@@ -789,11 +789,11 @@ func splitGJSONPath(path string) []string {
+ 
+ func mergeDescriptionRaw(schemaRaw, parentDesc string) string {
+ 	childDesc := gjson.Get(schemaRaw, "description").String()
+-	switch {
+-	case childDesc == "":
++	switch childDesc {
++	case "":
+ 		updated, _ := sjson.SetBytes([]byte(schemaRaw), "description", parentDesc)
+ 		return string(updated)
+-	case childDesc == parentDesc:
++	case parentDesc:
+ 		return schemaRaw
+ 	default:
+ 		combined := fmt.Sprintf("%s (%s)", parentDesc, childDesc)
+diff --git a/sdk/api/handlers/gemini/gemini-cli_handlers.go b/sdk/api/handlers/gemini/gemini-cli_handlers.go
+index cbc7e11e..803025dd 100644
+--- a/sdk/api/handlers/gemini/gemini-cli_handlers.go
++++ b/sdk/api/handlers/gemini/gemini-cli_handlers.go
+@@ -79,11 +79,12 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
+ 	rawJSON, _ := c.GetRawData()
+ 	requestRawURI := c.Request.URL.Path
+ 
+-	if requestRawURI == "/v1internal:generateContent" {
++	switch requestRawURI {
++	case "/v1internal:generateContent":
+ 		h.handleInternalGenerateContent(c, rawJSON)
+-	} else if requestRawURI == "/v1internal:streamGenerateContent" {
++	case "/v1internal:streamGenerateContent":
+ 		h.handleInternalStreamGenerateContent(c, rawJSON)
+-	} else {
++	default:
+ 		reqBody := bytes.NewBuffer(rawJSON)
+ 		req, err := http.NewRequest("POST", fmt.Sprintf("https://cloudcode-pa.googleapis.com%s", c.Request.URL.RequestURI()), reqBody)
+ 		if err != nil {
+diff --git a/sdk/api/handlers/openai/openai_images_handlers.go b/sdk/api/handlers/openai/openai_images_handlers.go
+index 8d22a4f4..42db59ab 100644
+--- a/sdk/api/handlers/openai/openai_images_handlers.go
++++ b/sdk/api/handlers/openai/openai_images_handlers.go
+@@ -199,7 +199,7 @@ func parseBoolField(raw string, fallback bool) bool {
+ }
+ 
+ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
+-	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
++	if h != nil && h.Cfg != nil && h.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
+ 		c.AbortWithStatus(http.StatusNotFound)
+ 		return
+ 	}
+@@ -287,7 +287,7 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
+ }
+ 
+ func (h *OpenAIAPIHandler) ImagesEdits(c *gin.Context) {
+-	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
++	if h != nil && h.Cfg != nil && h.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
+ 		c.AbortWithStatus(http.StatusNotFound)
+ 		return
+ 	}
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket.go b/sdk/api/handlers/openai/openai_responses_websocket.go
+index b83fa223..b0ec7687 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket.go
+@@ -90,8 +90,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 			wsTerminateErr = errReadMessage
+ 			if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+ 				log.Infof("responses websocket: client disconnected id=%s error=%v", passthroughSessionID, errReadMessage)
+-			} else {
+-				// log.Warnf("responses websocket: read message failed id=%s error=%v", passthroughSessionID, errReadMessage)
+ 			}
+ 			return
+ 		}
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket_test.go b/sdk/api/handlers/openai/openai_responses_websocket_test.go
+index c42c7205..fe94d91b 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket_test.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket_test.go
+@@ -801,7 +801,7 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("dial websocket: %v", err)
+ 	}
+-	defer conn.Close()
++	defer func() { _ = conn.Close() }()
+ 
+ 	_, payload, errReadMessage := conn.ReadMessage()
+ 	if errReadMessage != nil {
+@@ -875,7 +875,7 @@ func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing
+ 	if err != nil {
+ 		t.Fatalf("dial websocket: %v", err)
+ 	}
+-	defer conn.Close()
++	defer func() { _ = conn.Close() }()
+ 
+ 	if errServer := <-serverErrCh; errServer != nil {
+ 		t.Fatalf("server error: %v", errServer)
+@@ -1027,7 +1027,7 @@ func TestResponsesWebsocketPrewarmHandledLocallyForSSEUpstream(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("dial websocket: %v", err)
+ 	}
+-	defer conn.Close()
++	defer func() { _ = conn.Close() }()
+ 
+ 	errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"test-model","generate":false}`))
+ 	if errWrite != nil {
+@@ -1165,7 +1165,11 @@ func TestResponsesWebsocketPinsOnlyWebsocketCapableAuth(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("dial websocket: %v", err)
+ 	}
+-	defer conn.Close()
++	defer func() {
++		if err := conn.Close(); err != nil {
++			t.Logf("close websocket: %v", err)
++		}
++	}()
+ 
+ 	requests := []string{
+ 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,
+@@ -1437,7 +1441,11 @@ func TestResponsesWebsocketCompactionResetsTurnStateOnCustomToolTranscriptReplac
+ 	if err != nil {
+ 		t.Fatalf("dial websocket: %v", err)
+ 	}
+-	defer conn.Close()
++	defer func() {
++		if err := conn.Close(); err != nil {
++			t.Logf("close websocket: %v", err)
++		}
++	}()
+ 
+ 	requests := []string{
+ 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,
+@@ -1537,7 +1545,11 @@ func TestResponsesWebsocketCompactionResetsTurnStateOnTranscriptReplacement(t *t
+ 	if err != nil {
+ 		t.Fatalf("dial websocket: %v", err)
+ 	}
+-	defer conn.Close()
++	defer func() {
++		if err := conn.Close(); err != nil {
++			t.Logf("close websocket: %v", err)
++		}
++	}()
+ 
+ 	requests := []string{
+ 		`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`,
+diff --git a/sdk/cliproxy/auth/antigravity_credits.go b/sdk/cliproxy/auth/antigravity_credits.go
+index 77b03bfd..e6f26db6 100644
+--- a/sdk/cliproxy/auth/antigravity_credits.go
++++ b/sdk/cliproxy/auth/antigravity_credits.go
+@@ -71,20 +71,3 @@ func HasKnownAntigravityCreditsHint(authID string) bool {
+ 	hint, ok := GetAntigravityCreditsHint(authID)
+ 	return ok && hint.Known
+ }
+-
+-func antigravityCreditsAvailableForModel(auth *Auth, model string) bool {
+-	if auth == nil {
+-		return false
+-	}
+-	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+-		return false
+-	}
+-	if !strings.Contains(strings.ToLower(strings.TrimSpace(model)), "claude") {
+-		return false
+-	}
+-	hint, ok := GetAntigravityCreditsHint(auth.ID)
+-	if !ok || !hint.Known {
+-		return false
+-	}
+-	return hint.Available
+-}
+diff --git a/sdk/cliproxy/auth/conductor.go b/sdk/cliproxy/auth/conductor.go
+index 2e9e4e9e..01d70429 100644
+--- a/sdk/cliproxy/auth/conductor.go
++++ b/sdk/cliproxy/auth/conductor.go
+@@ -597,11 +597,6 @@ func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string) ([]stri
+ 	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled
+ }
+ 
+-func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string {
+-	models, _ := m.preparedExecutionModels(auth, routeModel)
+-	return models
+-}
+-
+ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
+ 	if len(auths) == 0 {
+ 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
+@@ -3090,7 +3085,6 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
+ 		creditsCtx := WithAntigravityCredits(ctx)
+ 		if rt := m.roundTripperFor(c.auth); rt != nil {
+ 			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
+-			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+ 		}
+ 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
+ 		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+@@ -3132,7 +3126,6 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
+ 		creditsCtx := WithAntigravityCredits(ctx)
+ 		if rt := m.roundTripperFor(c.auth); rt != nil {
+ 			creditsCtx = context.WithValue(creditsCtx, roundTripperContextKey{}, rt)
+-			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+ 		}
+ 		creditsOpts := ensureRequestedModelMetadata(opts, routeModel)
+ 		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth.ID)
+diff --git a/sdk/cliproxy/auth/scheduler.go b/sdk/cliproxy/auth/scheduler.go
+index b5a39282..a222a124 100644
+--- a/sdk/cliproxy/auth/scheduler.go
++++ b/sdk/cliproxy/auth/scheduler.go
+@@ -222,20 +222,6 @@ func (s *authScheduler) upsertAuth(auth *Auth) {
+ 	s.upsertAuthLocked(auth, time.Now())
+ }
+ 
+-// removeAuth deletes one auth from every scheduler shard that references it.
+-func (s *authScheduler) removeAuth(authID string) {
+-	if s == nil {
+-		return
+-	}
+-	authID = strings.TrimSpace(authID)
+-	if authID == "" {
+-		return
+-	}
+-	s.mu.Lock()
+-	defer s.mu.Unlock()
+-	s.removeAuthLocked(authID)
+-}
+-
+ // pickSingle returns the next auth for a single provider/model request using scheduler state.
+ func (s *authScheduler) pickSingle(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, error) {
+ 	if s == nil {
+diff --git a/sdk/cliproxy/service.go b/sdk/cliproxy/service.go
+index 9f195f56..a09216c6 100644
+--- a/sdk/cliproxy/service.go
++++ b/sdk/cliproxy/service.go
+@@ -501,21 +501,14 @@ func (s *Service) Run(ctx context.Context) error {
+ 		}
+ 	}
+ 
+-	tokenResult, err := s.tokenProvider.Load(ctx, s.cfg)
+-	if err != nil && !errors.Is(err, context.Canceled) {
++	var err error
++	if _, err = s.tokenProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
+ 		return err
+ 	}
+-	if tokenResult == nil {
+-		tokenResult = &TokenClientResult{}
+-	}
+ 
+-	apiKeyResult, err := s.apiKeyProvider.Load(ctx, s.cfg)
+-	if err != nil && !errors.Is(err, context.Canceled) {
++	if _, err = s.apiKeyProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
+ 		return err
+ 	}
+-	if apiKeyResult == nil {
+-		apiKeyResult = &APIKeyClientResult{}
+-	}
+ 
+ 	// legacy clients removed; no caches to refresh
+ 
+@@ -972,7 +965,6 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
+ 					continue
+ 				}
+ 				if strings.EqualFold(compat.Name, compatName) {
+-					isCompatAuth = true
+ 					// Convert compatibility models to registry models
+ 					ms := make([]*ModelInfo, 0, len(compat.Models))
+ 					for j := range compat.Models {

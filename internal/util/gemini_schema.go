@@ -789,11 +789,11 @@ func splitGJSONPath(path string) []string {
 
 func mergeDescriptionRaw(schemaRaw, parentDesc string) string {
 	childDesc := gjson.Get(schemaRaw, "description").String()
-	switch {
-	case childDesc == "":
+	switch childDesc {
+	case "":
 		updated, _ := sjson.SetBytes([]byte(schemaRaw), "description", parentDesc)
 		return string(updated)
-	case childDesc == parentDesc:
+	case parentDesc:
 		return schemaRaw
 	default:
 		combined := fmt.Sprintf("%s (%s)", parentDesc, childDesc)

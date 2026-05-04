@@ -196,7 +196,8 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 							contentResults := contentResult.Array()
 							for k := 0; k < len(contentResults); k++ {
 								toolResultContentType := contentResults[k].Get("type").String()
-								if toolResultContentType == "image" {
+								switch toolResultContentType {
+								case "image":
 									sourceResult := contentResults[k].Get("source")
 									if sourceResult.Exists() {
 										data := sourceResult.Get("data").String()
@@ -218,7 +219,7 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 											toolResultContentIndex++
 										}
 									}
-								} else if toolResultContentType == "text" {
+								case "text":
 									toolResultContent, _ = sjson.SetBytes(toolResultContent, fmt.Sprintf("%d.type", toolResultContentIndex), "input_text")
 									toolResultContent, _ = sjson.SetBytes(toolResultContent, fmt.Sprintf("%d.text", toolResultContentIndex), contentResults[k].Get("text").String())
 									toolResultContentIndex++

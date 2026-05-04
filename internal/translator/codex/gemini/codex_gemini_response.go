@@ -167,20 +167,21 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 		}
 	}
 
-	if typeStr == "response.created" { // Handle response creation - set model and response ID
+	switch typeStr {
+	case "response.created":
 		template, _ = sjson.SetBytes(template, "modelVersion", rootResult.Get("response.model").String())
 		template, _ = sjson.SetBytes(template, "responseId", rootResult.Get("response.id").String())
 		params.ResponseID = rootResult.Get("response.id").String()
-	} else if typeStr == "response.reasoning_summary_text.delta" { // Handle reasoning/thinking content delta
+	case "response.reasoning_summary_text.delta":
 		part := []byte(`{"thought":true,"text":""}`)
 		part, _ = sjson.SetBytes(part, "text", rootResult.Get("delta").String())
 		template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
-	} else if typeStr == "response.output_text.delta" { // Handle regular text content delta
+	case "response.output_text.delta":
 		params.HasOutputTextDelta = true
 		part := []byte(`{"text":""}`)
 		part, _ = sjson.SetBytes(part, "text", rootResult.Get("delta").String())
 		template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", part)
-	} else if typeStr == "response.output_item.done" { // Fallback: emit final message text when no delta chunks were received
+	case "response.output_item.done":
 		itemResult := rootResult.Get("item")
 		if itemResult.Get("type").String() != "message" || params.HasOutputTextDelta {
 			return [][]byte{}
@@ -209,12 +210,12 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 			return [][]byte{template}
 		}
 		return [][]byte{}
-	} else if typeStr == "response.completed" { // Handle response completion with usage metadata
+	case "response.completed":
 		template, _ = sjson.SetBytes(template, "usageMetadata.promptTokenCount", rootResult.Get("response.usage.input_tokens").Int())
 		template, _ = sjson.SetBytes(template, "usageMetadata.candidatesTokenCount", rootResult.Get("response.usage.output_tokens").Int())
 		totalTokens := rootResult.Get("response.usage.input_tokens").Int() + rootResult.Get("response.usage.output_tokens").Int()
 		template, _ = sjson.SetBytes(template, "usageMetadata.totalTokenCount", totalTokens)
-	} else {
+	default:
 		return [][]byte{}
 	}
 

@@ -1,0 +1,252 @@
+sdk\api\handlers\openai\openai_responses_websocket_test.go:1168:18: Error return value of `conn.Close` is not checked (errcheck)
+	defer conn.Close()
+	                ^
+sdk\api\handlers\openai\openai_responses_websocket_test.go:1440:18: Error return value of `conn.Close` is not checked (errcheck)
+	defer conn.Close()
+	                ^
+sdk\api\handlers\openai\openai_responses_websocket_test.go:1540:18: Error return value of `conn.Close` is not checked (errcheck)
+	defer conn.Close()
+	                ^
+internal\runtime\executor\codex_websockets_executor.go:298:6: ineffectual assignment to wsReqBody (ineffassign)
+					wsReqBody = wsReqBodyRetry
+					^
+internal\runtime\executor\codex_websockets_executor.go:505:4: ineffectual assignment to wsReqBody (ineffassign)
+			wsReqBody = wsReqBodyRetry
+			^
+sdk\cliproxy\service.go:509:3: ineffectual assignment to tokenResult (ineffassign)
+		tokenResult = &TokenClientResult{}
+		^
+sdk\cliproxy\service.go:517:3: ineffectual assignment to apiKeyResult (ineffassign)
+		apiKeyResult = &APIKeyClientResult{}
+		^
+sdk\cliproxy\service.go:975:6: ineffectual assignment to isCompatAuth (ineffassign)
+					isCompatAuth = true
+					^
+internal\api\modules\amp\proxy.go:67:22: SA1019: proxy.Director has been deprecated since Go 1.26 and an alternative has been available since Go 1.20: Use Rewrite instead. (staticcheck)
+	originalDirector := proxy.Director
+	                    ^
+internal\api\modules\amp\proxy.go:70:2: SA1019: proxy.Director has been deprecated since Go 1.26 and an alternative has been available since Go 1.20: Use Rewrite instead. (staticcheck)
+	proxy.Director = func(req *http.Request) {
+	^
+internal\api\modules\amp\proxy.go:91:3: SA9003: empty branch (staticcheck)
+		if req.Header.Get("X-Request-ID") == "" {
+		^
+internal\redisqueue\plugin_test.go:87:50: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+		ctx := context.WithValue(context.Background(), "gin", ginCtx)
+		                                               ^
+internal\runtime\executor\antigravity_executor.go:1143:31: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx = context.WithValue(ctx, "alt", "")
+	                             ^
+internal\runtime\executor\antigravity_executor.go:1410:36: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	respCtx := context.WithValue(ctx, "alt", opts.Alt)
+	                                  ^
+internal\runtime\executor\claude_executor_test.go:1121:5: QF1001: could apply De Morgan's law (staticcheck)
+	if !(idxModel < idxMessages && idxMessages < idxTools && idxTools < idxSystem) {
+	   ^
+internal\runtime\executor\claude_executor_test.go:1175:5: QF1001: could apply De Morgan's law (staticcheck)
+	if !(idxModel < idxMessages && idxMessages < idxTools && idxTools < idxSystem) {
+	   ^
+internal\translator\antigravity\claude\antigravity_claude_response.go:210:8: SA9003: empty branch (staticcheck)
+							if params.ResponseType == 2 {
+							^
+internal\translator\antigravity\claude\antigravity_claude_response.go:242:9: SA9003: empty branch (staticcheck)
+								if params.ResponseType == 2 {
+								^
+internal\translator\codex\claude\codex_claude_request.go:199:9: QF1003: could use tagged switch on toolResultContentType (staticcheck)
+								if toolResultContentType == "image" {
+								^
+internal\translator\codex\claude\codex_claude_response.go:80:2: QF1003: could use tagged switch on typeStr (staticcheck)
+	if typeStr == "response.created" {
+	^
+internal\translator\codex\claude\codex_claude_response.go:137:3: QF1003: could use tagged switch on itemType (staticcheck)
+		if itemType == "function_call" {
+		^
+internal\translator\codex\claude\codex_claude_response.go:166:3: QF1003: could use tagged switch on itemType (staticcheck)
+		if itemType == "message" {
+		^
+internal\translator\codex\gemini\codex_gemini_response.go:170:2: QF1003: could use tagged switch on typeStr (staticcheck)
+	if typeStr == "response.created" { // Handle response creation - set model and response ID
+	^
+internal\translator\codex\openai\chat-completions\codex_openai_response.go:117:2: QF1003: could use tagged switch on dataType (staticcheck)
+	if dataType == "response.reasoning_summary_text.delta" {
+	^
+internal\translator\gemini\gemini\gemini_gemini_request.go:64:4: QF1003: could use tagged switch on prevRole (staticcheck)
+			if prevRole == "" {
+			^
+internal\translator\gemini\openai\responses\gemini_openai-responses_response_test.go:280:6: QF1001: could apply De Morgan's law (staticcheck)
+		if !(posAdded[idx] < posArgsDelta[idx] && posArgsDelta[idx] < posArgsDone[idx] && posArgsDone[idx] < posItemDone[idx]) {
+		   ^
+internal\translator\openai\claude\openai_claude_request.go:105:3: QF1003: could use tagged switch on system.Type (staticcheck)
+		if system.Type == gjson.String {
+		^
+internal\translator\openai\gemini\openai_gemini_response.go:463:2: QF1003: could use tagged switch on startRune (staticcheck)
+	if startRune == '{' {
+	^
+internal\translator\openai\gemini\openai_gemini_response.go:495:3: QF1003: could use tagged switch on r (staticcheck)
+		if r == startRune {
+		^
+internal\tui\dashboard.go:131:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	sb.WriteString(fmt.Sprintf("  %s", m.client.baseURL))
+	^
+internal\tui\dashboard.go:211:4: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+			sb.WriteString(fmt.Sprintf("  %s %s\n",
+			^
+internal\tui\dashboard.go:223:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		sb.WriteString(fmt.Sprintf("  %s %s\n",
+		^
+internal\tui\usage_tab.go:192:11: SA1019: cardStyle.Copy is deprecated: to copy just use assignment (i.e. a := b). All methods also return a new style. (staticcheck)
+	card4 := cardStyle.Copy().BorderForeground(lipgloss.Color("170")).Render(fmt.Sprintf(
+	         ^
+internal\util\gemini_schema.go:792:2: QF1002: could use tagged switch on childDesc (staticcheck)
+	switch {
+	^
+sdk\api\handlers\claude\code_handlers.go:19:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
+	^
+sdk\api\handlers\gemini\gemini-cli_handlers.go:18:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
+	^
+sdk\api\handlers\gemini\gemini-cli_handlers.go:82:2: QF1003: could use tagged switch on requestRawURI (staticcheck)
+	if requestRawURI == "/v1internal:generateContent" {
+	^
+sdk\api\handlers\gemini\gemini_handlers.go:16:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
+	^
+sdk\api\handlers\openai\openai_images_handlers.go:202:46: QF1008: could remove embedded field "BaseAPIHandler" from selector (staticcheck)
+	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
+	                                            ^
+sdk\api\handlers\openai\openai_images_handlers.go:290:46: QF1008: could remove embedded field "BaseAPIHandler" from selector (staticcheck)
+	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
+	                                            ^
+internal\api\handlers\management\auth_files.go:977:19: func (*Handler).registerAuthFromFile is unused (unused)
+func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []byte) error {
+                  ^
+internal\api\modules\amp\proxy.go:221:6: func proxyHandler is unused (unused)
+func proxyHandler(proxy *httputil.ReverseProxy) gin.HandlerFunc {
+     ^
+internal\config\config.go:145:2: field legacyMigrationPending is unused (unused)
+	legacyMigrationPending bool `yaml:"-" json:"-"`
+	^
+internal\config\config.go:1763:6: type legacyConfigData is unused (unused)
+type legacyConfigData struct {
+     ^
+internal\config\config.go:1772:6: type legacyOpenAICompatibility is unused (unused)
+type legacyOpenAICompatibility struct {
+     ^
+internal\config\config.go:1778:20: func (*Config).migrateLegacyGeminiKeys is unused (unused)
+func (cfg *Config) migrateLegacyGeminiKeys(legacy []string) bool {
+                   ^
+internal\config\config.go:1806:20: func (*Config).migrateLegacyOpenAICompatibilityKeys is unused (unused)
+func (cfg *Config) migrateLegacyOpenAICompatibilityKeys(legacy []legacyOpenAICompatibility) bool {
+                   ^
+internal\config\config.go:1826:6: func mergeLegacyOpenAICompatAPIKeys is unused (unused)
+func mergeLegacyOpenAICompatAPIKeys(entry *OpenAICompatibility, keys []string) bool {
+     ^
+internal\config\config.go:1854:6: func findOpenAICompatTarget is unused (unused)
+func findOpenAICompatTarget(entries []OpenAICompatibility, legacyName, legacyBase string) *OpenAICompatibility {
+     ^
+internal\config\config.go:1882:20: func (*Config).migrateLegacyAmpConfig is unused (unused)
+func (cfg *Config) migrateLegacyAmpConfig(legacy *legacyConfigData) bool {
+                   ^
+internal\logging\request_logger.go:878:29: func (*FileRequestLogger).formatLogContent is unused (unused)
+func (l *FileRequestLogger) formatLogContent(url, method string, headers map[string][]string, body, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline, response []byte, status int, responseHeaders map[string][]string, apiResponseErrors []*interfaces.ErrorMessage) string {
+                            ^
+internal\logging\request_logger.go:1116:29: func (*FileRequestLogger).formatRequestInfo is unused (unused)
+func (l *FileRequestLogger) formatRequestInfo(url, method string, headers map[string][]string, body []byte, downstreamTransport string, upstreamTransport string, includeBody bool) string {
+                            ^
+internal\runtime\executor\antigravity_executor_signature_test.go:19:6: func testGeminiSignaturePayload is unused (unused)
+func testGeminiSignaturePayload() string {
+     ^
+internal\runtime\executor\codex_executor.go:1006:25: func (*CodexExecutor).resolveCodexConfig is unused (unused)
+func (e *CodexExecutor) resolveCodexConfig(auth *cliproxyauth.Auth) *config.CodexKey {
+                        ^
+internal\runtime\executor\codex_websockets_executor.go:1285:35: func (*CodexWebsocketsExecutor).closeAllExecutionSessions is unused (unused)
+func (e *CodexWebsocketsExecutor) closeAllExecutionSessions(reason string) {
+                                  ^
+internal\runtime\executor\gemini_executor.go:469:26: func (*GeminiExecutor).resolveGeminiConfig is unused (unused)
+func (e *GeminiExecutor) resolveGeminiConfig(auth *cliproxyauth.Auth) *config.GeminiKey {
+                         ^
+internal\runtime\executor\gemini_vertex_executor.go:1068:32: func (*GeminiVertexExecutor).resolveVertexConfig is unused (unused)
+func (e *GeminiVertexExecutor) resolveVertexConfig(auth *cliproxyauth.Auth) *config.VertexCompatKey {
+                               ^
+internal\runtime\executor\openai_compat_executor.go:365:32: func (*OpenAICompatExecutor).resolveCompatConfig is unused (unused)
+func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *config.OpenAICompatibility {
+                               ^
+internal\runtime\executor\openai_compat_executor.go:395:32: func (*OpenAICompatExecutor).overrideModel is unused (unused)
+func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
+                               ^
+internal\translator\antigravity\claude\signature_validation.go:249:6: func inspectSingleLayerSignature is unused (unused)
+func inspectSingleLayerSignature(sig string) (*claudeSignatureTree, error) {
+     ^
+internal\tui\dashboard.go:233:6: func formatKV is unused (unused)
+func formatKV(key, value string) string {
+     ^
+internal\tui\dashboard.go:275:6: func formatLargeNumber is unused (unused)
+func formatLargeNumber(n int64) string {
+     ^
+internal\tui\dashboard.go:285:6: func truncate is unused (unused)
+func truncate(s string, maxLen int) string {
+     ^
+internal\tui\styles.go:9:2: var colorSecondary is unused (unused)
+	colorSecondary = lipgloss.Color("#6366F1") // indigo
+	^
+internal\tui\styles.go:15:2: var colorBg is unused (unused)
+	colorBg        = lipgloss.Color("#1E1E2E") // dark bg
+	^
+internal\tui\styles.go:61:2: var sectionStyle is unused (unused)
+	sectionStyle = lipgloss.NewStyle().
+	^
+internal\tui\styles.go:103:2: var tableCellStyle is unused (unused)
+	tableCellStyle = lipgloss.NewStyle().
+	^
+internal\tui\styles.go:107:2: var tableSelectedStyle is unused (unused)
+	tableSelectedStyle = lipgloss.NewStyle().
+	^
+internal\tui\styles.go:113:6: func logLevelStyle is unused (unused)
+func logLevelStyle(level string) lipgloss.Style {
+     ^
+internal\tui\usage_tab.go:14:6: type usageTabModel is unused (unused)
+type usageTabModel struct {
+     ^
+internal\tui\usage_tab.go:24:6: type usageDataMsg is unused (unused)
+type usageDataMsg struct {
+     ^
+internal\tui\usage_tab.go:29:6: func newUsageTabModel is unused (unused)
+func newUsageTabModel(client *Client) usageTabModel {
+     ^
+internal\tui\usage_tab.go:35:24: func usageTabModel.Init is unused (unused)
+func (m usageTabModel) Init() tea.Cmd {
+                       ^
+internal\tui\usage_tab.go:39:24: func usageTabModel.fetchData is unused (unused)
+func (m usageTabModel) fetchData() tea.Msg {
+                       ^
+internal\tui\usage_tab.go:44:24: func usageTabModel.Update is unused (unused)
+func (m usageTabModel) Update(msg tea.Msg) (usageTabModel, tea.Cmd) {
+                       ^
+internal\tui\usage_tab.go:73:25: func (*usageTabModel).SetSize is unused (unused)
+func (m *usageTabModel) SetSize(w, h int) {
+                        ^
+internal\tui\usage_tab.go:86:24: func usageTabModel.View is unused (unused)
+func (m usageTabModel) View() string {
+                       ^
+internal\tui\usage_tab.go:93:24: func usageTabModel.renderContent is unused (unused)
+func (m usageTabModel) renderContent() string {
+                       ^
+internal\tui\usage_tab.go:281:24: func usageTabModel.renderTokenBreakdown is unused (unused)
+func (m usageTabModel) renderTokenBreakdown(modelStats map[string]any) string {
+                       ^
+internal\tui\usage_tab.go:330:24: func usageTabModel.renderLatencyBreakdown is unused (unused)
+func (m usageTabModel) renderLatencyBreakdown(modelStats map[string]any) string {
+                       ^
+internal\tui\usage_tab.go:381:6: func renderBarChart is unused (unused)
+func renderBarChart(data map[string]any, maxBarWidth int, barColor lipgloss.Color) string {
+     ^
+sdk\cliproxy\auth\antigravity_credits.go:75:6: func antigravityCreditsAvailableForModel is unused (unused)
+func antigravityCreditsAvailableForModel(auth *Auth, model string) bool {
+     ^
+sdk\cliproxy\auth\conductor.go:600:19: func (*Manager).prepareExecutionModels is unused (unused)
+func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string {
+                  ^
+sdk\cliproxy\auth\scheduler.go:226:25: func (*authScheduler).removeAuth is unused (unused)
+func (s *authScheduler) removeAuth(authID string) {
+                        ^

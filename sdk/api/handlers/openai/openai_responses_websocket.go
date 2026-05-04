@@ -90,8 +90,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			wsTerminateErr = errReadMessage
 			if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
 				log.Infof("responses websocket: client disconnected id=%s error=%v", passthroughSessionID, errReadMessage)
-			} else {
-				// log.Warnf("responses websocket: read message failed id=%s error=%v", passthroughSessionID, errReadMessage)
 			}
 			return
 		}

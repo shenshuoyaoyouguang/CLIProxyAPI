@@ -295,7 +295,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 				if errSendRetry := writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry == nil {
 					conn = connRetry
-					wsReqBody = wsReqBodyRetry
 				} else {
 					e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
 					helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
@@ -502,7 +501,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, errSendRetry
 			}
 			conn = connRetry
-			wsReqBody = wsReqBodyRetry
 		} else {
 			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "send_error", errSend)
 			if errClose := conn.Close(); errClose != nil {
@@ -1280,30 +1278,6 @@ func (e *CodexWebsocketsExecutor) CloseExecutionSession(sessionID string) {
 	store.mu.Unlock()
 
 	e.closeExecutionSession(sess, "session_closed")
-}
-
-func (e *CodexWebsocketsExecutor) closeAllExecutionSessions(reason string) {
-	if e == nil {
-		return
-	}
-
-	store := e.store
-	if store == nil {
-		store = globalCodexWebsocketSessionStore
-	}
-	store.mu.Lock()
-	sessions := make([]*codexWebsocketSession, 0, len(store.sessions))
-	for sessionID, sess := range store.sessions {
-		delete(store.sessions, sessionID)
-		if sess != nil {
-			sessions = append(sessions, sess)
-		}
-	}
-	store.mu.Unlock()
-
-	for i := range sessions {
-		e.closeExecutionSession(sessions[i], reason)
-	}
 }
 
 func (e *CodexWebsocketsExecutor) closeExecutionSession(sess *codexWebsocketSession, reason string) {

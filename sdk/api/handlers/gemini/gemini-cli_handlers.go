@@ -79,11 +79,12 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 	rawJSON, _ := c.GetRawData()
 	requestRawURI := c.Request.URL.Path
 
-	if requestRawURI == "/v1internal:generateContent" {
+	switch requestRawURI {
+	case "/v1internal:generateContent":
 		h.handleInternalGenerateContent(c, rawJSON)
-	} else if requestRawURI == "/v1internal:streamGenerateContent" {
+	case "/v1internal:streamGenerateContent":
 		h.handleInternalStreamGenerateContent(c, rawJSON)
-	} else {
+	default:
 		reqBody := bytes.NewBuffer(rawJSON)
 		req, err := http.NewRequest("POST", fmt.Sprintf("https://cloudcode-pa.googleapis.com%s", c.Request.URL.RequestURI()), reqBody)
 		if err != nil {

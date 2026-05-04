@@ -120,11 +120,6 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 						// Transition from another state to thinking
 						// First, close any existing content block
 						if (*param).(*Params).ResponseType != 0 {
-							if (*param).(*Params).ResponseType == 2 {
-								// output = output + "event: content_block_delta\n"
-								// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, (*param).(*Params).ResponseIndex)
-								// output = output + "\n\n\n"
-							}
 							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex))
 							(*param).(*Params).ResponseIndex++
 						}
@@ -147,11 +142,6 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 						// Transition from another state to text content
 						// First, close any existing content block
 						if (*param).(*Params).ResponseType != 0 {
-							if (*param).(*Params).ResponseType == 2 {
-								// output = output + "event: content_block_delta\n"
-								// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, (*param).(*Params).ResponseIndex)
-								// output = output + "\n\n\n"
-							}
 							appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex))
 							(*param).(*Params).ResponseIndex++
 						}
@@ -189,13 +179,6 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 					appendEvent("content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex))
 					(*param).(*Params).ResponseIndex++
 					(*param).(*Params).ResponseType = 0
-				}
-
-				// Special handling for thinking state transition
-				if (*param).(*Params).ResponseType == 2 {
-					// output = output + "event: content_block_delta\n"
-					// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, (*param).(*Params).ResponseIndex)
-					// output = output + "\n\n\n"
 				}
 
 				// Close any other existing content block

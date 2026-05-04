@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"net/http"
@@ -15,11 +14,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
-
-func testGeminiSignaturePayload() string {
-	payload := append([]byte{0x0A}, bytes.Repeat([]byte{0x56}, 48)...)
-	return base64.StdEncoding.EncodeToString(payload)
-}
 
 // testFakeClaudeSignature returns a base64 string starting with 'E' that passes
 // the lightweight hasValidClaudeSignature check but has invalid protobuf content

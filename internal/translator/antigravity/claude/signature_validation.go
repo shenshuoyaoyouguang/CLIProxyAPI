@@ -246,10 +246,6 @@ func inspectDoubleLayerSignature(sig string) (*claudeSignatureTree, error) {
 	return inspectSingleLayerSignatureWithLayers(string(decoded), 2)
 }
 
-func inspectSingleLayerSignature(sig string) (*claudeSignatureTree, error) {
-	return inspectSingleLayerSignatureWithLayers(sig, 1)
-}
-
 func inspectSingleLayerSignatureWithLayers(sig string, encodingLayers int) (*claudeSignatureTree, error) {
 	decoded, err := base64.StdEncoding.DecodeString(sig)
 	if err != nil {

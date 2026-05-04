@@ -36,6 +36,10 @@ func (c *Client) SetSecretKey(secretKey string) {
 	c.secretKey = strings.TrimSpace(secretKey)
 }
 
+func (c *Client) GetUsage() (map[string]any, error) {
+	return c.getJSON("/v0/management/api-key-usage")
+}
+
 func (c *Client) doRequest(method, path string, body io.Reader) ([]byte, int, error) {
 	url := c.baseURL + path
 	req, err := http.NewRequest(method, url, body)
