@@ -64,13 +64,23 @@ func Enqueue(payload []byte) {
 }
 
 func PopOldest(count int) [][]byte {
-	if !Enabled() {
+	if !Enabled() || !UsageStatisticsEnabled() {
 		return nil
 	}
 	if count <= 0 {
 		return nil
 	}
 	return global.popOldest(count)
+}
+
+func PeekOldest(count int) [][]byte {
+	if !Enabled() || !UsageStatisticsEnabled() {
+		return nil
+	}
+	if count <= 0 {
+		return nil
+	}
+	return global.peekOldest(count)
 }
 
 func (q *queue) clear() {
@@ -118,6 +128,29 @@ func (q *queue) popOldest(count int) [][]byte {
 	}
 	q.head += count
 	q.maybeCompactLocked()
+	return out
+}
+
+func (q *queue) peekOldest(count int) [][]byte {
+	now := time.Now()
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	q.pruneLocked(now)
+	available := len(q.items) - q.head
+	if available <= 0 {
+		return nil
+	}
+	if count > available {
+		count = available
+	}
+
+	out := make([][]byte, 0, count)
+	for i := 0; i < count; i++ {
+		item := q.items[q.head+i]
+		out = append(out, item.payload)
+	}
 	return out
 }
 
