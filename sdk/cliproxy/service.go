@@ -13,9 +13,10 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -89,6 +90,12 @@ type Service struct {
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
+
+	// usagePersister persists usage snapshots to object storage.
+	usagePersister *usage.SnapshotPersister
+
+	// persisterStore is the object store backend for usage persistence.
+	persisterStore store.ObjectStorePersistence
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -481,6 +488,21 @@ func (s *Service) Run(ctx context.Context) error {
 
 	usage.StartDefault(ctx)
 
+	if s.persisterStore != nil && s.cfg != nil && s.cfg.UsagePersist.Enabled {
+		persistCfg := s.cfg.UsagePersist
+		aggregator := usage.NewAggregator(1000)
+		s.usagePersister = usage.NewSnapshotPersister(s.persisterStore, persistCfg, aggregator)
+		ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if snap, err := s.usagePersister.RecoverLatest(ctx2); err != nil {
+			log.Warnf("usage: persister: failed to recover latest snapshot: %v", err)
+		} else if snap != nil {
+			log.Infof("usage: persister: recovered snapshot with %d API endpoints", len(snap.APIs))
+			redisqueue.RestoreFromSnapshot(snap)
+		}
+		cancel()
+		go s.usagePersister.Start(context.Background())
+	}
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 	defer func() {
@@ -759,6 +781,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.authQueueStop != nil {
 			s.authQueueStop()
 			s.authQueueStop = nil
+		}
+
+		// Persist final usage snapshot and stop the persister before shutting down the server.
+		if s.usagePersister != nil {
+			s.usagePersister.Stop()
+			if errPersist := s.usagePersister.PersistNow(ctx); errPersist != nil {
+				log.Errorf("usage: persister: failed to persist final snapshot on shutdown: %v", errPersist)
+				if shutdownErr == nil {
+					shutdownErr = errPersist
+				}
+			}
 		}
 
 		if errShutdownPprof := s.shutdownPprof(ctx); errShutdownPprof != nil {

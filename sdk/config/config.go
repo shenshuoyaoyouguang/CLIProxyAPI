@@ -30,6 +30,7 @@ type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
 
 type TLS = internalconfig.TLSConfig
+type UsagePersistConfig = internalconfig.UsagePersistConfig
 
 const (
 	DefaultPanelGitHubRepository = internalconfig.DefaultPanelGitHubRepository

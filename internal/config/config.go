@@ -70,6 +70,9 @@ type Config struct {
 	// Default: 60. Max: 3600.
 	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
 
+	// UsagePersist configures usage statistics persistence to object storage.
+	UsagePersist UsagePersistConfig `yaml:"usage-persist" json:"usage-persist"`
+
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 

@@ -57,3 +57,15 @@ type StreamingConfig struct {
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
 }
+
+// UsagePersistConfig holds configuration for usage statistics persistence to object storage.
+type UsagePersistConfig struct {
+	// Enabled toggles periodic snapshot persistence. Default: false.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// IntervalSeconds controls how often snapshots are written. Default: 300 (5 minutes).
+	IntervalSeconds int `yaml:"interval-seconds" json:"interval-seconds"`
+	// RetentionDays controls how long snapshots are kept before cleanup. Default: 30.
+	RetentionDays int `yaml:"retention-days" json:"retention-days"`
+	// ObjectPathPrefix is the object key prefix for snapshot files.
+	ObjectPathPrefix string `yaml:"object-path-prefix" json:"object-path-prefix"`
+}

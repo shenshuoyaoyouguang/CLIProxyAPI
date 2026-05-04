@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage/record"
 )
 
 func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
@@ -21,7 +22,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		internallogging.SetResponseStatus(ctx, http.StatusOK)
 
 		plugin := &usageQueuePlugin{}
-		plugin.HandleUsage(ctx, coreusage.Record{
+		plugin.HandleUsage(ctx, record.Record{
 			Provider:    "openai",
 			Model:       "gpt-5.4",
 			APIKey:      "test-key",
@@ -30,7 +31,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			Source:      "user@example.com",
 			RequestedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:     1500 * time.Millisecond,
-			Detail: coreusage.Detail{
+			Detail: record.Detail{
 				InputTokens:  10,
 				OutputTokens: 20,
 				TotalTokens:  30,
@@ -55,7 +56,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 		internallogging.SetResponseStatus(ctx, http.StatusInternalServerError)
 
 		plugin := &usageQueuePlugin{}
-		plugin.HandleUsage(ctx, coreusage.Record{
+		plugin.HandleUsage(ctx, record.Record{
 			Provider:    "openai",
 			Model:       "gpt-5.4-mini",
 			APIKey:      "test-key",
@@ -64,7 +65,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 			Source:      "user@example.com",
 			RequestedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:     2500 * time.Millisecond,
-			Detail: coreusage.Detail{
+			Detail: record.Detail{
 				InputTokens:  10,
 				OutputTokens: 20,
 				TotalTokens:  30,
@@ -90,16 +91,15 @@ func TestUsageQueuePluginAsyncIgnoresRecycledGinContext(t *testing.T) {
 		ctx = internallogging.WithResponseStatusHolder(ctx)
 		internallogging.SetResponseStatus(ctx, http.StatusInternalServerError)
 
-		mgr := coreusage.NewManager(16)
-		defer mgr.Stop()
+		mgr := newLocalManager()
 
-		mgr.Register(pluginFunc(func(_ context.Context, _ coreusage.Record) {
+		mgr.Register(pluginFunc(func(_ context.Context, _ record.Record) {
 			ginCtx.Request = httptest.NewRequest(http.MethodGet, "http://example.com/v1/responses", nil)
 			ginCtx.Status(http.StatusOK)
 		}))
 		mgr.Register(&usageQueuePlugin{})
 
-		mgr.Publish(ctx, coreusage.Record{
+		mgr.Publish(ctx, record.Record{
 			Provider:    "openai",
 			Model:       "gpt-5.4",
 			APIKey:      "test-key",
@@ -108,7 +108,7 @@ func TestUsageQueuePluginAsyncIgnoresRecycledGinContext(t *testing.T) {
 			Source:      "user@example.com",
 			RequestedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:     1500 * time.Millisecond,
-			Detail: coreusage.Detail{
+			Detail: record.Detail{
 				InputTokens:  10,
 				OutputTokens: 20,
 				TotalTokens:  30,
@@ -208,10 +208,32 @@ func requireStringField(t *testing.T, payload map[string]json.RawMessage, key, w
 	}
 }
 
-type pluginFunc func(context.Context, coreusage.Record)
+type pluginFunc func(context.Context, record.Record)
 
-func (fn pluginFunc) HandleUsage(ctx context.Context, record coreusage.Record) {
-	fn(ctx, record)
+func (fn pluginFunc) HandleUsage(ctx context.Context, r record.Record) {
+	fn(ctx, r)
+}
+
+type localManager struct {
+	mu      sync.Mutex
+	plugins []record.Plugin
+}
+
+func newLocalManager() *localManager { return &localManager{} }
+
+func (m *localManager) Register(p record.Plugin) {
+	m.mu.Lock()
+	m.plugins = append(m.plugins, p)
+	m.mu.Unlock()
+}
+
+func (m *localManager) Publish(ctx context.Context, r record.Record) {
+	m.mu.Lock()
+	plugins := m.plugins
+	m.mu.Unlock()
+	for _, p := range plugins {
+		p.HandleUsage(ctx, r)
+	}
 }
 
 func requireBoolField(t *testing.T, payload map[string]json.RawMessage, key string, want bool) {

@@ -3,39 +3,22 @@ package usage
 import (
 	"context"
 	"sync"
-	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage/record"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
 )
 
-// Record contains the usage statistics captured for a single provider request.
-type Record struct {
-	Provider    string
-	Model       string
-	APIKey      string
-	AuthID      string
-	AuthIndex   string
-	AuthType    string
-	Source      string
-	RequestedAt time.Time
-	Latency     time.Duration
-	Failed      bool
-	Detail      Detail
-}
+// Re-export record types.
+type Record = record.Record
+type Detail = record.Detail
+type Plugin = record.Plugin
 
-// Detail holds the token usage breakdown.
-type Detail struct {
-	InputTokens     int64
-	OutputTokens    int64
-	ReasoningTokens int64
-	CachedTokens    int64
-	TotalTokens     int64
-}
-
-// Plugin consumes usage records emitted by the proxy runtime.
-type Plugin interface {
-	HandleUsage(ctx context.Context, record Record)
-}
+const (
+	DefaultMaxEvents = 1000
+)
 
 type queueItem struct {
 	ctx    context.Context
@@ -181,3 +164,14 @@ func StartDefault(ctx context.Context) { DefaultManager().Start(ctx) }
 
 // StopDefault stops the default manager's dispatcher.
 func StopDefault() { DefaultManager().Stop() }
+
+// Re-export aggregator types from internal/usage.
+type Aggregator = usage.Aggregator
+
+func NewAggregator(maxEvents int) *Aggregator { return usage.NewAggregator(maxEvents) }
+
+type SnapshotPersister = usage.SnapshotPersister
+
+func NewSnapshotPersister(s store.ObjectStorePersistence, cfg sdkconfig.UsagePersistConfig, agg *Aggregator) *SnapshotPersister {
+	return usage.NewSnapshotPersister(s, cfg, agg)
+}

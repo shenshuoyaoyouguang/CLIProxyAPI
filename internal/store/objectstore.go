@@ -622,3 +622,47 @@ func isObjectNotFound(err error) bool {
 	}
 	return false
 }
+
+// PutObject implements ObjectStorePersistence for usage snapshot persistence.
+func (s *ObjectTokenStore) PutObject(ctx context.Context, key string, data []byte) error {
+	return s.putObject(ctx, key, data, "application/json")
+}
+
+// ListObjects implements ObjectStorePersistence for usage snapshot persistence.
+func (s *ObjectTokenStore) ListObjects(ctx context.Context, prefix string) ([]string, error) {
+	fullPrefix := s.prefixedKey(prefix)
+	var keys []string
+	objectCh := s.client.ListObjects(ctx, s.cfg.Bucket, minio.ListObjectsOptions{
+		Prefix:    fullPrefix,
+		Recursive: false,
+	})
+	for object := range objectCh {
+		if object.Err != nil {
+			return nil, fmt.Errorf("object store: list objects: %w", object.Err)
+		}
+		key := object.Key
+		if s.cfg.Prefix != "" {
+			key = strings.TrimPrefix(key, s.cfg.Prefix+"/")
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+// GetObject implements ObjectStorePersistence for usage snapshot persistence.
+func (s *ObjectTokenStore) GetObject(ctx context.Context, key string) ([]byte, error) {
+	fullKey := s.prefixedKey(key)
+	obj, err := s.client.GetObject(ctx, s.cfg.Bucket, fullKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("object store: get object %s: %w", fullKey, err)
+	}
+	defer func() {
+		_ = obj.Close()
+	}()
+	return io.ReadAll(obj)
+}
+
+// DeleteObject implements ObjectStorePersistence for usage snapshot persistence.
+func (s *ObjectTokenStore) DeleteObject(ctx context.Context, key string) error {
+	return s.deleteObject(ctx, key)
+}

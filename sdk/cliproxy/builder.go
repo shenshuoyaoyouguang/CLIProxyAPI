@@ -10,6 +10,7 @@ import (
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -49,6 +50,9 @@ type Builder struct {
 
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
+
+	// persisterStore provides the object store for usage snapshot persistence.
+	persisterStore store.ObjectStorePersistence
 }
 
 // Hooks allows callers to plug into service lifecycle stages.
@@ -154,6 +158,12 @@ func (b *Builder) WithLocalManagementPassword(password string) *Builder {
 	return b
 }
 
+// WithPersisterStore provides the object store backend for usage snapshot persistence.
+func (b *Builder) WithPersisterStore(store store.ObjectStorePersistence) *Builder {
+	b.persisterStore = store
+	return b
+}
+
 // WithPostAuthHook registers a hook to be called after an Auth record is created
 // but before it is persisted to storage.
 func (b *Builder) WithPostAuthHook(hook coreauth.PostAuthHook) *Builder {
@@ -255,6 +265,7 @@ func (b *Builder) Build() (*Service, error) {
 		accessManager:  accessManager,
 		coreManager:    coreManager,
 		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
+		persisterStore: b.persisterStore,
 	}
 	return service, nil
 }

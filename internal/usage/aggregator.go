@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage/types"
 	"github.com/sirupsen/logrus"
 )
 
@@ -19,20 +20,20 @@ func NewAggregator(maxEvents int) *Aggregator {
 	return &Aggregator{maxEvents: maxEvents}
 }
 
-func (a *Aggregator) GetSnapshot() *UsageSnapshot {
+func (a *Aggregator) GetSnapshot() *types.UsageSnapshot {
 	rawEvents := redisqueue.PeekOldest(a.maxEvents)
 	if len(rawEvents) == 0 {
-		return &UsageSnapshot{APIs: make(map[string]APIEntry)}
+		return &types.UsageSnapshot{APIs: make(map[string]types.APIEntry)}
 	}
 
-	apis := make(map[string]APIEntry)
+	apis := make(map[string]types.APIEntry)
 
 	for i, raw := range rawEvents {
 		if len(raw) == 0 {
 			continue
 		}
 
-		var detail QueuedUsageDetail
+		var detail types.QueuedUsageDetail
 		if err := json.Unmarshal(raw, &detail); err != nil {
 			logrus.WithError(err).WithField("index", i).WithField("raw_len", len(raw)).Debug("failed to unmarshal usage event")
 			continue
@@ -50,15 +51,15 @@ func (a *Aggregator) GetSnapshot() *UsageSnapshot {
 
 		apiEntry, apiExists := apis[endpoint]
 		if !apiExists {
-			apiEntry = APIEntry{
-				Models: make(map[string]ModelEntry),
+			apiEntry = types.APIEntry{
+				Models: make(map[string]types.ModelEntry),
 			}
 		}
 
 		modelEntry, modelExists := apiEntry.Models[model]
 		if !modelExists {
-			modelEntry = ModelEntry{
-				Details: make([]UsageDetail, 0),
+			modelEntry = types.ModelEntry{
+				Details: make([]types.UsageDetail, 0),
 			}
 		}
 
@@ -83,5 +84,5 @@ func (a *Aggregator) GetSnapshot() *UsageSnapshot {
 		apis[endpoint] = apiEntry
 	}
 
-	return &UsageSnapshot{APIs: apis}
+	return &types.UsageSnapshot{APIs: apis}
 }

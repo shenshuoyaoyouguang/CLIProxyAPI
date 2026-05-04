@@ -1,9 +1,12 @@
 package redisqueue
 
 import (
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage/types"
 )
 
 const (
@@ -60,7 +63,69 @@ func Enqueue(payload []byte) {
 	if len(payload) == 0 {
 		return
 	}
+	global.mu.Lock()
+	defer global.mu.Unlock()
 	global.enqueue(payload)
+}
+
+// Clear empties the entire usage queue. Use with caution — intended for recovery from snapshots.
+func Clear() {
+	global.clear()
+}
+
+// RestoreFromSnapshot repopulates the queue with usage events from a UsageSnapshot.
+// It enqueues all UsageDetail events from all API endpoints and models.
+// If the queue already has events, no action is taken (safe to call multiple times).
+func RestoreFromSnapshot(snapshot *types.UsageSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	if !Enabled() || !UsageStatisticsEnabled() {
+		return
+	}
+	global.mu.Lock()
+	defer global.mu.Unlock()
+	if len(global.items)-global.head > 0 {
+		return
+	}
+	for endpoint, apiEntry := range snapshot.APIs {
+		for model, modelEntry := range apiEntry.Models {
+			for _, detail := range modelEntry.Details {
+				timestamp := detail.Timestamp
+				if timestamp == "" {
+					timestamp = time.Now().UTC().Format(time.RFC3339)
+				}
+				parsed, _ := time.Parse(time.RFC3339, timestamp)
+				if parsed.IsZero() {
+					parsed = time.Now().UTC()
+				}
+				queued := queuedUsageDetail{
+					requestDetail: requestDetail{
+						Timestamp: parsed,
+						Source:    detail.Source,
+						AuthIndex: detail.AuthIndex,
+						Tokens: tokenStats{
+							InputTokens:     detail.Tokens.InputTokens,
+							OutputTokens:    detail.Tokens.OutputTokens,
+							ReasoningTokens: detail.Tokens.ReasoningTokens,
+							CachedTokens:    detail.Tokens.CachedTokens,
+							TotalTokens:     detail.Tokens.TotalTokens,
+						},
+						Failed: detail.Failed,
+					},
+					Provider: "unknown",
+					Model:    model,
+					Endpoint: endpoint,
+					AuthType: "unknown",
+				}
+				payload, err := json.Marshal(queued)
+				if err != nil {
+					continue
+				}
+				global.enqueue(payload)
+			}
+		}
+	}
 }
 
 func PopOldest(count int) [][]byte {
@@ -92,10 +157,6 @@ func (q *queue) clear() {
 
 func (q *queue) enqueue(payload []byte) {
 	now := time.Now()
-
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
 	q.pruneLocked(now)
 	q.items = append(q.items, queueItem{
 		enqueuedAt: now,
@@ -185,4 +246,10 @@ func (q *queue) maybeCompactLocked() {
 	}
 	q.items = append([]queueItem(nil), q.items[q.head:]...)
 	q.head = 0
+}
+
+func (q *queue) len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.items) - q.head
 }

@@ -7,16 +7,16 @@ import (
 	"time"
 
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage/record"
 )
 
 func init() {
-	coreusage.RegisterPlugin(&usageQueuePlugin{})
+	record.RegisterPlugin(&usageQueuePlugin{})
 }
 
 type usageQueuePlugin struct{}
 
-func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Record) {
+func (p *usageQueuePlugin) HandleUsage(ctx context.Context, r record.Record) {
 	if p == nil {
 		return
 	}
@@ -24,32 +24,32 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		return
 	}
 
-	timestamp := record.RequestedAt
+	timestamp := r.RequestedAt
 	if timestamp.IsZero() {
 		timestamp = time.Now()
 	}
 
-	modelName := strings.TrimSpace(record.Model)
+	modelName := strings.TrimSpace(r.Model)
 	if modelName == "" {
 		modelName = "unknown"
 	}
-	provider := strings.TrimSpace(record.Provider)
+	provider := strings.TrimSpace(r.Provider)
 	if provider == "" {
 		provider = "unknown"
 	}
-	authType := strings.TrimSpace(record.AuthType)
+	authType := strings.TrimSpace(r.AuthType)
 	if authType == "" {
 		authType = "unknown"
 	}
-	apiKey := strings.TrimSpace(record.APIKey)
+	apiKey := strings.TrimSpace(r.APIKey)
 	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
 
 	tokens := tokenStats{
-		InputTokens:     record.Detail.InputTokens,
-		OutputTokens:    record.Detail.OutputTokens,
-		ReasoningTokens: record.Detail.ReasoningTokens,
-		CachedTokens:    record.Detail.CachedTokens,
-		TotalTokens:     record.Detail.TotalTokens,
+		InputTokens:     r.Detail.InputTokens,
+		OutputTokens:    r.Detail.OutputTokens,
+		ReasoningTokens: r.Detail.ReasoningTokens,
+		CachedTokens:    r.Detail.CachedTokens,
+		TotalTokens:     r.Detail.TotalTokens,
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens
@@ -58,16 +58,16 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CachedTokens
 	}
 
-	failed := record.Failed
+	failed := r.Failed
 	if !failed {
 		failed = !resolveSuccess(ctx)
 	}
 
 	detail := requestDetail{
 		Timestamp: timestamp,
-		LatencyMs: record.Latency.Milliseconds(),
-		Source:    record.Source,
-		AuthIndex: record.AuthIndex,
+		LatencyMs: r.Latency.Milliseconds(),
+		Source:    r.Source,
+		AuthIndex: r.AuthIndex,
 		Tokens:    tokens,
 		Failed:    failed,
 	}
