@@ -3,7 +3,6 @@ package pluginhost
 import (
 	"context"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -15,27 +14,24 @@ type callbackContextRegistry struct {
 }
 
 type callbackContextEntry struct {
-	ctx      context.Context
-	pluginID string
-	cleanup  []func()
+	ctx     context.Context
+	cleanup []func()
 }
 
 func newCallbackContextRegistry() *callbackContextRegistry {
 	return &callbackContextRegistry{contexts: make(map[string]callbackContextEntry)}
 }
 
-func (r *callbackContextRegistry) open(ctx context.Context, pluginID string) (string, func()) {
+func (r *callbackContextRegistry) open(ctx context.Context) (string, func()) {
 	if r == nil {
 		return "", func() {}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	pluginID = strings.TrimSpace(pluginID)
-	ctx = withHostCallbackPluginID(ctx, pluginID)
 	id := strconv.FormatUint(r.next.Add(1), 10)
 	r.mu.Lock()
-	r.contexts[id] = callbackContextEntry{ctx: ctx, pluginID: pluginID}
+	r.contexts[id] = callbackContextEntry{ctx: ctx}
 	r.mu.Unlock()
 
 	var once sync.Once
@@ -54,16 +50,6 @@ func (r *callbackContextRegistry) open(ctx context.Context, pluginID string) (st
 			}
 		})
 	}
-}
-
-func (r *callbackContextRegistry) pluginID(id string) string {
-	if r == nil || id == "" {
-		return ""
-	}
-	r.mu.RLock()
-	entry := r.contexts[id]
-	r.mu.RUnlock()
-	return strings.TrimSpace(entry.pluginID)
 }
 
 func (r *callbackContextRegistry) addCleanup(id string, cleanup func()) bool {
@@ -101,14 +87,10 @@ func (r *callbackContextRegistry) resolve(id string, fallback context.Context) c
 }
 
 func (h *Host) openCallbackContext(ctx context.Context) (string, func()) {
-	return h.openCallbackContextForPlugin(ctx, "")
-}
-
-func (h *Host) openCallbackContextForPlugin(ctx context.Context, pluginID string) (string, func()) {
 	if h == nil || h.callbackContexts == nil {
 		return "", func() {}
 	}
-	return h.callbackContexts.open(ctx, pluginID)
+	return h.callbackContexts.open(ctx)
 }
 
 func (h *Host) addCallbackCleanup(id string, cleanup func()) bool {
@@ -129,11 +111,4 @@ func (h *Host) resolveCallbackContext(id string, fallback context.Context) conte
 		return fallback
 	}
 	return h.callbackContexts.resolve(id, fallback)
-}
-
-func (h *Host) callbackContextPluginID(id string) string {
-	if h == nil || h.callbackContexts == nil {
-		return ""
-	}
-	return h.callbackContexts.pluginID(id)
 }
