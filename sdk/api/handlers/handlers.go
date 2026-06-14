@@ -1222,6 +1222,27 @@ func finalInterceptorHeaders(current, intercepted http.Header) http.Header {
 	return cloneHeader(intercepted)
 }
 
+func finalInterceptorHeadersWithClear(current, intercepted http.Header, clearHeaders []string) http.Header {
+	if intercepted == nil && len(clearHeaders) == 0 {
+		return current
+	}
+	out := make(http.Header)
+	if current != nil {
+		for key, values := range current {
+			out[key] = append([]string(nil), values...)
+		}
+	}
+	for _, key := range clearHeaders {
+		delete(out, key)
+	}
+	if intercepted != nil {
+		for key, values := range intercepted {
+			out[key] = append([]string(nil), values...)
+		}
+	}
+	return out
+}
+
 func downstreamHeadersFromExecutor(headers http.Header, passthrough bool) http.Header {
 	if !passthrough {
 		return nil
@@ -1301,7 +1322,7 @@ func (h *BaseAPIHandler) applyRequestInterceptors(ctx context.Context, handlerTy
 		Body:           cloneBytes(req.Payload),
 		Metadata:       opts.Metadata,
 	})
-	opts.Headers = finalInterceptorHeaders(opts.Headers, resp.Headers)
+	opts.Headers = finalInterceptorHeadersWithClear(opts.Headers, resp.Headers, resp.ClearHeaders)
 	if len(resp.Body) > 0 {
 		req.Payload = cloneBytes(resp.Body)
 		opts.OriginalRequest = cloneBytes(resp.Body)
@@ -1327,7 +1348,7 @@ func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, handlerT
 		StatusCode:      statusCode,
 		Metadata:        opts.Metadata,
 	})
-	responseHeaders = downstreamHeadersAfterInterceptors(rawResponseHeaders, finalInterceptorHeaders(rawResponseHeaders, resp.Headers), PassthroughHeadersEnabled(h.Cfg))
+	responseHeaders = downstreamHeadersAfterInterceptors(rawResponseHeaders, finalInterceptorHeadersWithClear(rawResponseHeaders, resp.Headers, resp.ClearHeaders), PassthroughHeadersEnabled(h.Cfg))
 	if len(resp.Body) > 0 {
 		body = cloneBytes(resp.Body)
 	}

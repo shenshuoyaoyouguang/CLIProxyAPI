@@ -14,6 +14,7 @@ PLUGIN_HEADER = $(basename $(PLUGIN_OUTPUT)).h
 .PHONY: build clean
 
 build:
+	mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -buildmode=c-shared -o $(PLUGIN_OUTPUT) .
 
 clean:
