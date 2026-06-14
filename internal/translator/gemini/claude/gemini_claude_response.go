@@ -119,9 +119,9 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 			if !thoughtSignatureResult.Exists() {
 				thoughtSignatureResult = partResult.Get("thought_signature")
 			}
-			hasThoughtSignature := thoughtSignatureResult.Exists() && thoughtSignatureResult.String() != ""
+			hasThoughtSignature := thoughtSignatureResult.Exists() && thoughtSignatureResult.String() != "" && !functionCallResult.Exists()
 
-			if hasThoughtSignature && !partTextResult.Exists() && !functionCallResult.Exists() {
+			if hasThoughtSignature && !partTextResult.Exists() {
 				appendSignatureDelta(thoughtSignatureResult.String())
 				continue
 			}

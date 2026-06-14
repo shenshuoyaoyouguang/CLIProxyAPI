@@ -221,7 +221,7 @@ func (h *Host) ServeManagementHTTP(w http.ResponseWriter, r *http.Request) bool 
 	if h == nil || w == nil || r == nil || r.URL == nil {
 		return false
 	}
-	key := managementRouteKey(r.Method, r.URL.Path)
+	key := managementRouteKey(r.Method, strings.TrimRight(r.URL.Path, "/"))
 	h.mu.Lock()
 	record, okRoute := h.managementRoutes[key]
 	h.mu.Unlock()
@@ -280,7 +280,7 @@ func (h *Host) ServeResourceHTTP(w http.ResponseWriter, r *http.Request) bool {
 	if !strings.EqualFold(r.Method, http.MethodGet) {
 		return false
 	}
-	key := managementRouteKey(http.MethodGet, r.URL.Path)
+	key := managementRouteKey(http.MethodGet, strings.TrimRight(r.URL.Path, "/"))
 	h.mu.Lock()
 	record, okRoute := h.resourceRoutes[key]
 	h.mu.Unlock()

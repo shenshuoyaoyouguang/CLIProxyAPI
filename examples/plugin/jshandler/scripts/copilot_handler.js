@@ -1,7 +1,9 @@
 function on_before_request(ctx) {
     try {
         var req = JSON.parse(ctx.body);
-        console.log("[" + ctx.id + "] message: " + ctx.body);
+        if (ctx.debug) {
+            console.log("[" + ctx.id + "] Request body length: " + ctx.body.length);
+        }
         if (req.messages) {
             for (var i = 0; i < req.messages.length; i++) {
                 if (typeof req.messages[i].content === "string") {
@@ -10,7 +12,9 @@ function on_before_request(ctx) {
             }
         }
         ctx.body = JSON.stringify(req);
-        console.log("[" + ctx.id + "] message: " + ctx.body);
+        if (ctx.debug) {
+            console.log("[" + ctx.id + "] Modified body length: " + ctx.body.length);
+        }
     } catch (e) {
         console.log("[" + ctx.id + "] Failed to parse request JSON, skipping payload modification: " + e.message);
     }
@@ -111,6 +115,10 @@ function on_after_stream_response(ctx) {
 }
 
 function on_after_nonstream_response(ctx) {
-    console.log("[" + ctx.id + "] Received non-streaming response. Response content: " + ctx.body);
+    if (ctx.debug) {
+        console.log("[" + ctx.id + "] Received non-streaming response. Response body length: " + (ctx.body ? ctx.body.length : 0));
+    } else {
+        console.log("[" + ctx.id + "] Received non-streaming response");
+    }
     return ctx;
 }
