@@ -190,8 +190,8 @@ type Server struct {
 	// handlers contains the API handlers for processing requests.
 	handlers *handlers.BaseAPIHandler
 
-	// cfg holds the current server configuration.
-	cfg *config.Config
+	// cfg holds the current server configuration (protected by atomic for safe concurrent access).
+	cfg atomic.Pointer[config.Config]
 
 	// oldConfigYaml stores a YAML snapshot of the previous configuration for change detection.
 	// This prevents issues when the config object is modified in place by Management API.
@@ -304,7 +304,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s := &Server{
 		engine:              engine,
 		handlers:            handlers.NewBaseAPIHandlers(effectiveSDKConfig(cfg), authManager),
-		cfg:                 cfg,
 		accessManager:       accessManager,
 		requestLogger:       requestLogger,
 		loggerToggle:        toggle,
@@ -314,6 +313,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
 	}
+	s.cfg.Store(cfg)
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.handlers.SetPluginHost(optionState.pluginHost)
 	if optionState.pluginHost != nil {
@@ -388,7 +388,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s == nil || s.cfg == nil || !s.cfg.Home.Enabled {
+		cfg := s.cfg.Load()
+		if s == nil || cfg == nil || !cfg.Home.Enabled {
 			c.Next()
 			return
 		}
@@ -500,7 +501,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "anthropic", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.Load().AuthDir, "anthropic", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -514,7 +515,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "codex", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.Load().AuthDir, "codex", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -528,7 +529,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "gemini", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.Load().AuthDir, "gemini", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -542,7 +543,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "antigravity", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.Load().AuthDir, "antigravity", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -556,7 +557,7 @@ func (s *Server) setupRoutes() {
 			errStr = c.Query("error_description")
 		}
 		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "xai", state, code, errStr)
+			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.Load().AuthDir, "xai", state, code, errStr)
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
@@ -763,11 +764,12 @@ func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) managementAvailable(c *gin.Context) bool {
-	if s == nil || s.cfg == nil {
+	cfg := s.cfg.Load()
+	if s == nil || cfg == nil {
 		c.AbortWithStatus(http.StatusNotFound)
 		return false
 	}
-	if s.cfg.Home.Enabled {
+	if cfg.Home.Enabled {
 		c.AbortWithStatus(http.StatusNotFound)
 		return false
 	}
@@ -848,7 +850,8 @@ func (s *Server) pluginResourceNoRoute(c *gin.Context) {
 		}
 		return
 	}
-	if s.cfg == nil || s.cfg.Home.Enabled || s.pluginHost == nil {
+	cfg := s.cfg.Load()
+	if cfg == nil || cfg.Home.Enabled || s.pluginHost == nil {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
@@ -860,7 +863,7 @@ func (s *Server) pluginResourceNoRoute(c *gin.Context) {
 }
 
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
-	cfg := s.cfg
+	cfg := s.cfg.Load()
 	if cfg == nil || cfg.Home.Enabled || cfg.RemoteManagement.DisableControlPanel {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
@@ -973,8 +976,9 @@ func (s *Server) watchKeepAlive() {
 // otherwise it routes to OpenAI handler.
 func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, claudeHandler *claude.ClaudeCodeAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		cfg := s.cfg.Load()
 		if _, ok := c.Request.URL.Query()["client_version"]; ok {
-			if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+			if s != nil && cfg != nil && cfg.Home.Enabled {
 				s.handleHomeCodexClientModels(c)
 				return
 			}
@@ -982,7 +986,7 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			return
 		}
 
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+		if s != nil && cfg != nil && cfg.Home.Enabled {
 			s.handleHomeModels(c)
 			return
 		}
@@ -1030,7 +1034,8 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context) {
 
 func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+		cfg := s.cfg.Load()
+		if s != nil && cfg != nil && cfg.Home.Enabled {
 			s.handleHomeGeminiModels(c)
 			return
 		}
@@ -1041,7 +1046,8 @@ func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin
 
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+		cfg := s.cfg.Load()
+		if s != nil && cfg != nil && cfg.Home.Enabled {
 			s.handleHomeGeminiModel(c)
 			return
 		}
@@ -1391,10 +1397,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
 
-	useTLS := s.cfg != nil && s.cfg.TLS.Enable
+	cfg := s.cfg.Load()
+	useTLS := cfg != nil && cfg.TLS.Enable
 	if useTLS {
-		certPath := strings.TrimSpace(s.cfg.TLS.Cert)
-		keyPath := strings.TrimSpace(s.cfg.TLS.Key)
+		certPath := strings.TrimSpace(cfg.TLS.Cert)
+		keyPath := strings.TrimSpace(cfg.TLS.Key)
 		if certPath == "" || keyPath == "" {
 			if errClose := listener.Close(); errClose != nil {
 				log.Errorf("failed to close listener after TLS validation failure: %v", errClose)
@@ -1688,7 +1695,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	redisqueue.SetEnabled(s.managementRoutesEnabled.Load() || (cfg != nil && cfg.Home.Enabled))
 
 	s.applyAccessConfig(oldCfg, cfg)
-	s.cfg = cfg
+	s.cfg.Store(cfg)
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)

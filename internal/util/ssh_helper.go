@@ -28,6 +28,7 @@ var ipServices = []string{
 // Returns:
 //   - string: The public IP address as a string
 //   - error: An error if all services fail, nil otherwise
+//
 // ipCheckClient is a shared HTTP client for IP detection services.
 var ipCheckClient = &http.Client{Timeout: 5 * time.Second}
 

@@ -8,51 +8,51 @@ import (
 
 func TestConvertOpenAIRequestToGemini_ReasoningEffortMapping(t *testing.T) {
 	tests := []struct {
-		name               string
-		reasoningEffort    string
-		expectThinkingConfig bool
-		expectThinkingLevel  string
-		expectThinkingBudget int64
+		name                  string
+		reasoningEffort       string
+		expectThinkingConfig  bool
+		expectThinkingLevel   string
+		expectThinkingBudget  int64
 		expectIncludeThoughts bool
 	}{
 		{
-			name:                "high",
-			reasoningEffort:     `"high"`,
-			expectThinkingConfig: true,
-			expectThinkingLevel:  "high",
+			name:                  "high",
+			reasoningEffort:       `"high"`,
+			expectThinkingConfig:  true,
+			expectThinkingLevel:   "high",
 			expectIncludeThoughts: true,
 		},
 		{
-			name:                "medium",
-			reasoningEffort:     `"medium"`,
-			expectThinkingConfig: true,
-			expectThinkingLevel:  "medium",
+			name:                  "medium",
+			reasoningEffort:       `"medium"`,
+			expectThinkingConfig:  true,
+			expectThinkingLevel:   "medium",
 			expectIncludeThoughts: true,
 		},
 		{
-			name:                "low",
-			reasoningEffort:     `"low"`,
-			expectThinkingConfig: true,
-			expectThinkingLevel:  "low",
+			name:                  "low",
+			reasoningEffort:       `"low"`,
+			expectThinkingConfig:  true,
+			expectThinkingLevel:   "low",
 			expectIncludeThoughts: true,
 		},
 		{
-			name:                "none",
-			reasoningEffort:     `"none"`,
-			expectThinkingConfig: true,
-			expectThinkingLevel:  "none",
+			name:                  "none",
+			reasoningEffort:       `"none"`,
+			expectThinkingConfig:  true,
+			expectThinkingLevel:   "none",
 			expectIncludeThoughts: false,
 		},
 		{
-			name:                "auto",
-			reasoningEffort:     `"auto"`,
-			expectThinkingConfig: true,
-			expectThinkingBudget: -1,
+			name:                  "auto",
+			reasoningEffort:       `"auto"`,
+			expectThinkingConfig:  true,
+			expectThinkingBudget:  -1,
 			expectIncludeThoughts: true,
 		},
 		{
-			name:                "no_reasoning_effort",
-			reasoningEffort:     ``,
+			name:                 "no_reasoning_effort",
+			reasoningEffort:      ``,
 			expectThinkingConfig: false,
 		},
 	}

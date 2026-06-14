@@ -263,10 +263,12 @@ func TestRedisProtocol_HomeEnabled_DisablesConnection(t *testing.T) {
 	if !server.managementRoutesEnabled.Load() {
 		t.Fatalf("expected managementRoutesEnabled to be true")
 	}
-	if server.cfg == nil {
+	if server.cfg.Load() == nil {
 		t.Fatalf("expected server cfg to be non-nil")
 	}
-	server.cfg.Home.Enabled = true
+	loadedCfg := server.cfg.Load()
+	loadedCfg.Home.Enabled = true
+	server.cfg.Store(loadedCfg)
 	redisqueue.SetEnabled(true)
 
 	addr, stop := startRedisMuxListener(t, server)

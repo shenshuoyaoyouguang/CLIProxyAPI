@@ -213,9 +213,11 @@ func TestManagementPluginsRouteRegistered(t *testing.T) {
 
 	server := newTestServer(t)
 	enabled := true
-	server.cfg.Plugins.Configs = map[string]proxyconfig.PluginInstanceConfig{
+	loadedCfg := server.cfg.Load()
+	loadedCfg.Plugins.Configs = map[string]proxyconfig.PluginInstanceConfig{
 		"sample": {Enabled: &enabled, Priority: 4},
 	}
+	server.cfg.Store(loadedCfg)
 	if errWrite := os.WriteFile(server.configFilePath, []byte("{}\n"), 0o600); errWrite != nil {
 		t.Fatalf("failed to write config file: %v", errWrite)
 	}
@@ -310,7 +312,9 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 
 	server := newTestServer(t)
-	server.cfg.Home.Enabled = true
+	loadedCfg := server.cfg.Load()
+	loadedCfg.Home.Enabled = true
+	server.cfg.Store(loadedCfg)
 
 	t.Run("management endpoints return 404", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
