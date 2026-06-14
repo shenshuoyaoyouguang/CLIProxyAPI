@@ -14,22 +14,23 @@ import (
 )
 
 type claudeToResponsesState struct {
-	Seq          int
-	ResponseID   string
-	CreatedAt    int64
-	CurrentMsgID string
-	CurrentFCID  string
-	InTextBlock  bool
-	InFuncBlock  bool
-	FuncArgsBuf  map[int]*strings.Builder // index -> args
+	Seq             int
+	ResponseID      string
+	CreatedAt       int64
+	CurrentMsgID    string
+	CurrentFCID     string
+	InTextBlock     bool
+	InFuncBlock     bool
+	MessageOpen     bool
+	ContentPartOpen bool
+	FuncArgsBuf     map[int]*strings.Builder // index -> args
 	// function call bookkeeping for output aggregation
-	FuncNames        map[int]string // index -> function name
-	FuncCallIDs      map[int]string // index -> call id
-	FuncIsToolSearch map[int]bool   // index -> tool_search_call
-	ToolSearchExecs  map[string]string
+	FuncNames   map[int]string // index -> function name
+	FuncCallIDs map[int]string // index -> call id
 	// message text aggregation
-	TextBuf        strings.Builder
-	CurrentTextBuf strings.Builder
+	TextBuf            strings.Builder
+	CurrentTextBuf     strings.Builder
+	MessageAnnotations []any
 	// reasoning state
 	ReasoningActive    bool
 	ReasoningItemID    string
@@ -38,12 +39,45 @@ type claudeToResponsesState struct {
 	ReasoningPartAdded bool
 	ReasoningIndex     int
 	// usage aggregation
-	InputTokens  int64
-	OutputTokens int64
-	UsageSeen    bool
+	Usage claudeResponsesUsageTokens
+}
+
+type claudeResponsesUsageTokens struct {
+	InputTokens              int64
+	OutputTokens             int64
+	CacheCreationInputTokens int64
+	CacheReadInputTokens     int64
+	HasUsage                 bool
 }
 
 var dataTag = []byte("data:")
+
+func (u *claudeResponsesUsageTokens) Merge(usage gjson.Result) {
+	if !usage.Exists() {
+		return
+	}
+	u.HasUsage = true
+	if inputTokens := usage.Get("input_tokens"); inputTokens.Exists() {
+		u.InputTokens = inputTokens.Int()
+	}
+	if outputTokens := usage.Get("output_tokens"); outputTokens.Exists() {
+		u.OutputTokens = outputTokens.Int()
+	}
+	if cacheCreationInputTokens := usage.Get("cache_creation_input_tokens"); cacheCreationInputTokens.Exists() {
+		u.CacheCreationInputTokens = cacheCreationInputTokens.Int()
+	}
+	if cacheReadInputTokens := usage.Get("cache_read_input_tokens"); cacheReadInputTokens.Exists() {
+		u.CacheReadInputTokens = cacheReadInputTokens.Int()
+	}
+}
+
+func (u claudeResponsesUsageTokens) OpenAIResponsesUsage() (inputTokens, outputTokens, totalTokens, cachedTokens int64) {
+	cachedTokens = u.CacheReadInputTokens
+	inputTokens = u.InputTokens + u.CacheCreationInputTokens + cachedTokens
+	outputTokens = u.OutputTokens
+	totalTokens = inputTokens + outputTokens
+	return inputTokens, outputTokens, totalTokens, cachedTokens
+}
 
 func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
 	if len(originalRequestRawJSON) > 0 && gjson.ValidBytes(originalRequestRawJSON) {
@@ -59,67 +93,61 @@ func emitEvent(event string, payload []byte) []byte {
 	return translatorcommon.SSEEventData(event, payload)
 }
 
-func responsesToolSearchExecutionsFromRequestBytes(reqBytes []byte) map[string]string {
-	out := map[string]string{}
-	if len(reqBytes) == 0 || !gjson.ValidBytes(reqBytes) {
-		return out
+func noSSEOutput(out [][]byte) [][]byte {
+	if out == nil {
+		return [][]byte{}
 	}
-	tools := gjson.GetBytes(reqBytes, "tools")
-	if !tools.Exists() || !tools.IsArray() {
-		return out
-	}
-	tools.ForEach(func(_, tool gjson.Result) bool {
-		if strings.TrimSpace(tool.Get("type").String()) != responsesToolSearchType {
-			return true
-		}
-		name := strings.TrimSpace(tool.Get("name").String())
-		if name == "" {
-			name = responsesToolSearchDefaultName
-		}
-		execution := strings.TrimSpace(tool.Get("execution").String())
-		if execution == "" {
-			execution = "server"
-		}
-		out[name] = execution
-		return true
-	})
 	return out
 }
 
-func responsesToolSearchExecutionForName(executions map[string]string, name string) (string, bool) {
-	if len(executions) == 0 {
-		return "", false
+func (st *claudeToResponsesState) appendMessageAnnotation(annotation any) {
+	if annotation == nil {
+		return
 	}
-	execution, ok := executions[name]
-	return execution, ok
+	st.MessageAnnotations = append(st.MessageAnnotations, annotation)
 }
 
-func responsesToolSearchArgumentsObject(args string) []byte {
-	args = strings.TrimSpace(args)
-	if args != "" && gjson.Valid(args) {
-		parsed := gjson.Parse(args)
-		if parsed.IsObject() {
-			return []byte(parsed.Raw)
-		}
+func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [][]byte {
+	if !st.MessageOpen {
+		return nil
 	}
-	return []byte(`{}`)
-}
+	fullText := st.TextBuf.String()
+	var out [][]byte
+	done := []byte(`{"type":"response.output_text.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"text":"","logprobs":[]}`)
+	done, _ = sjson.SetBytes(done, "sequence_number", nextSeq())
+	done, _ = sjson.SetBytes(done, "item_id", st.CurrentMsgID)
+	done, _ = sjson.SetBytes(done, "text", fullText)
+	out = append(out, emitEvent("response.output_text.done", done))
 
-func buildResponsesToolSearchCallItem(callID, args, execution string) []byte {
-	item := []byte(`{"id":"","type":"tool_search_call","status":"completed","arguments":{},"call_id":""}`)
-	item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("tsc_%s", callID))
-	item, _ = sjson.SetBytes(item, "call_id", callID)
-	item, _ = sjson.SetRawBytes(item, "arguments", responsesToolSearchArgumentsObject(args))
-	if execution != "" {
-		item, _ = sjson.SetBytes(item, "execution", execution)
+	partDone := []byte(`{"type":"response.content_part.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
+	partDone, _ = sjson.SetBytes(partDone, "sequence_number", nextSeq())
+	partDone, _ = sjson.SetBytes(partDone, "item_id", st.CurrentMsgID)
+	partDone, _ = sjson.SetBytes(partDone, "part.text", fullText)
+	if len(st.MessageAnnotations) > 0 {
+		partDone, _ = sjson.SetBytes(partDone, "part.annotations", st.MessageAnnotations)
 	}
-	return item
+	out = append(out, emitEvent("response.content_part.done", partDone))
+
+	final := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}}`)
+	final, _ = sjson.SetBytes(final, "sequence_number", nextSeq())
+	final, _ = sjson.SetBytes(final, "item.id", st.CurrentMsgID)
+	final, _ = sjson.SetBytes(final, "item.content.0.text", fullText)
+	if len(st.MessageAnnotations) > 0 {
+		final, _ = sjson.SetBytes(final, "item.content.0.annotations", st.MessageAnnotations)
+	}
+	out = append(out, emitEvent("response.output_item.done", final))
+
+	st.InTextBlock = false
+	st.MessageOpen = false
+	st.ContentPartOpen = false
+	st.CurrentTextBuf.Reset()
+	return out
 }
 
 // ConvertClaudeResponseToOpenAIResponses converts Claude SSE to OpenAI Responses SSE events.
 func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
-		*param = &claudeToResponsesState{FuncArgsBuf: make(map[int]*strings.Builder), FuncNames: make(map[int]string), FuncCallIDs: make(map[int]string), FuncIsToolSearch: make(map[int]bool)}
+		*param = &claudeToResponsesState{FuncArgsBuf: make(map[int]*strings.Builder), FuncNames: make(map[int]string), FuncCallIDs: make(map[int]string)}
 	}
 	st := (*param).(*claudeToResponsesState)
 
@@ -142,10 +170,13 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			// Reset per-message aggregation state
 			st.TextBuf.Reset()
 			st.CurrentTextBuf.Reset()
+			st.MessageAnnotations = nil
 			st.ReasoningBuf.Reset()
 			st.ReasoningActive = false
 			st.InTextBlock = false
 			st.InFuncBlock = false
+			st.MessageOpen = false
+			st.ContentPartOpen = false
 			st.CurrentMsgID = ""
 			st.CurrentFCID = ""
 			st.ReasoningItemID = ""
@@ -155,21 +186,8 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			st.FuncArgsBuf = make(map[int]*strings.Builder)
 			st.FuncNames = make(map[int]string)
 			st.FuncCallIDs = make(map[int]string)
-			st.FuncIsToolSearch = make(map[int]bool)
-			st.ToolSearchExecs = responsesToolSearchExecutionsFromRequestBytes(pickRequestJSON(originalRequestRawJSON, requestRawJSON))
-			st.InputTokens = 0
-			st.OutputTokens = 0
-			st.UsageSeen = false
-			if usage := msg.Get("usage"); usage.Exists() {
-				if v := usage.Get("input_tokens"); v.Exists() {
-					st.InputTokens = v.Int()
-					st.UsageSeen = true
-				}
-				if v := usage.Get("output_tokens"); v.Exists() {
-					st.OutputTokens = v.Int()
-					st.UsageSeen = true
-				}
-			}
+			st.Usage = claudeResponsesUsageTokens{}
+			st.Usage.Merge(msg.Get("usage"))
 			// response.created
 			created := []byte(`{"type":"response.created","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"in_progress","background":false,"error":null,"output":[]}}`)
 			created, _ = sjson.SetBytes(created, "sequence_number", nextSeq())
@@ -186,45 +204,39 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 	case "content_block_start":
 		cb := root.Get("content_block")
 		if !cb.Exists() {
-			return out
+			return noSSEOutput(out)
 		}
 		idx := int(root.Get("index").Int())
 		typ := cb.Get("type").String()
 		if typ == "text" {
-			// open message item + content part
 			st.InTextBlock = true
-			st.CurrentTextBuf.Reset()
-			st.CurrentMsgID = fmt.Sprintf("msg_%s_0", st.ResponseID)
-			item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"in_progress","content":[],"role":"assistant"}}`)
-			item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
-			item, _ = sjson.SetBytes(item, "item.id", st.CurrentMsgID)
-			out = append(out, emitEvent("response.output_item.added", item))
-
-			part := []byte(`{"type":"response.content_part.added","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
-			part, _ = sjson.SetBytes(part, "sequence_number", nextSeq())
-			part, _ = sjson.SetBytes(part, "item_id", st.CurrentMsgID)
-			out = append(out, emitEvent("response.content_part.added", part))
+			if st.CurrentMsgID == "" {
+				st.CurrentMsgID = fmt.Sprintf("msg_%s_0", st.ResponseID)
+			}
+			if !st.MessageOpen {
+				item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"in_progress","content":[],"role":"assistant"}}`)
+				item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
+				item, _ = sjson.SetBytes(item, "item.id", st.CurrentMsgID)
+				out = append(out, emitEvent("response.output_item.added", item))
+				st.MessageOpen = true
+			}
+			if !st.ContentPartOpen {
+				part := []byte(`{"type":"response.content_part.added","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
+				part, _ = sjson.SetBytes(part, "sequence_number", nextSeq())
+				part, _ = sjson.SetBytes(part, "item_id", st.CurrentMsgID)
+				out = append(out, emitEvent("response.content_part.added", part))
+				st.ContentPartOpen = true
+			}
 		} else if typ == "tool_use" {
 			st.InFuncBlock = true
 			st.CurrentFCID = cb.Get("id").String()
 			name := cb.Get("name").String()
-			execution, isToolSearch := responsesToolSearchExecutionForName(st.ToolSearchExecs, name)
-			var item []byte
-			if isToolSearch {
-				item = []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":""}}`)
-				item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("tsc_%s", st.CurrentFCID))
-				item, _ = sjson.SetBytes(item, "item.call_id", st.CurrentFCID)
-				if execution != "" {
-					item, _ = sjson.SetBytes(item, "item.execution", execution)
-				}
-			} else {
-				item = []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`)
-				item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("fc_%s", st.CurrentFCID))
-				item, _ = sjson.SetBytes(item, "item.call_id", st.CurrentFCID)
-				item, _ = sjson.SetBytes(item, "item.name", name)
-			}
+			item := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`)
 			item, _ = sjson.SetBytes(item, "sequence_number", nextSeq())
 			item, _ = sjson.SetBytes(item, "output_index", idx)
+			item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("fc_%s", st.CurrentFCID))
+			item, _ = sjson.SetBytes(item, "item.call_id", st.CurrentFCID)
+			item, _ = sjson.SetBytes(item, "item.name", name)
 			out = append(out, emitEvent("response.output_item.added", item))
 			if st.FuncArgsBuf[idx] == nil {
 				st.FuncArgsBuf[idx] = &strings.Builder{}
@@ -232,7 +244,6 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			// record function metadata for aggregation
 			st.FuncCallIDs[idx] = st.CurrentFCID
 			st.FuncNames[idx] = name
-			st.FuncIsToolSearch[idx] = isToolSearch
 		} else if typ == "thinking" {
 			// start reasoning item
 			st.ReasoningActive = true
@@ -260,7 +271,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 	case "content_block_delta":
 		d := root.Get("delta")
 		if !d.Exists() {
-			return out
+			return noSSEOutput(out)
 		}
 		dt := d.Get("type").String()
 		if dt == "text_delta" {
@@ -275,15 +286,15 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				st.CurrentTextBuf.WriteString(t.String())
 			}
 		} else if dt == "input_json_delta" {
+			if !st.InFuncBlock || st.CurrentFCID == "" {
+				return [][]byte{}
+			}
 			idx := int(root.Get("index").Int())
 			if pj := d.Get("partial_json"); pj.Exists() {
 				if st.FuncArgsBuf[idx] == nil {
 					st.FuncArgsBuf[idx] = &strings.Builder{}
 				}
 				st.FuncArgsBuf[idx].WriteString(pj.String())
-				if st.FuncIsToolSearch[idx] {
-					return out
-				}
 				msg := []byte(`{"type":"response.function_call_arguments.delta","sequence_number":0,"item_id":"","output_index":0,"delta":""}`)
 				msg, _ = sjson.SetBytes(msg, "sequence_number", nextSeq())
 				msg, _ = sjson.SetBytes(msg, "item_id", fmt.Sprintf("fc_%s", st.CurrentFCID))
@@ -309,26 +320,16 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 					st.ReasoningSignature = signature.String()
 				}
 			}
+			return [][]byte{}
+		} else if dt == "citations_delta" {
+			if citation := d.Get("citation"); citation.Exists() {
+				st.appendMessageAnnotation(citation.Value())
+			}
+			return [][]byte{}
 		}
 	case "content_block_stop":
 		idx := int(root.Get("index").Int())
 		if st.InTextBlock {
-			fullText := st.CurrentTextBuf.String()
-			done := []byte(`{"type":"response.output_text.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"text":"","logprobs":[]}`)
-			done, _ = sjson.SetBytes(done, "sequence_number", nextSeq())
-			done, _ = sjson.SetBytes(done, "item_id", st.CurrentMsgID)
-			done, _ = sjson.SetBytes(done, "text", fullText)
-			out = append(out, emitEvent("response.output_text.done", done))
-			partDone := []byte(`{"type":"response.content_part.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`)
-			partDone, _ = sjson.SetBytes(partDone, "sequence_number", nextSeq())
-			partDone, _ = sjson.SetBytes(partDone, "item_id", st.CurrentMsgID)
-			partDone, _ = sjson.SetBytes(partDone, "part.text", fullText)
-			out = append(out, emitEvent("response.content_part.done", partDone))
-			final := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"completed","content":[{"type":"output_text","text":""}],"role":"assistant"}}`)
-			final, _ = sjson.SetBytes(final, "sequence_number", nextSeq())
-			final, _ = sjson.SetBytes(final, "item.id", st.CurrentMsgID)
-			final, _ = sjson.SetBytes(final, "item.content.0.text", fullText)
-			out = append(out, emitEvent("response.output_item.done", final))
 			st.InTextBlock = false
 		} else if st.InFuncBlock {
 			args := "{}"
@@ -337,27 +338,19 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 					args = buf.String()
 				}
 			}
-			itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
+			fcDone := []byte(`{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`)
+			fcDone, _ = sjson.SetBytes(fcDone, "sequence_number", nextSeq())
+			fcDone, _ = sjson.SetBytes(fcDone, "item_id", fmt.Sprintf("fc_%s", st.CurrentFCID))
+			fcDone, _ = sjson.SetBytes(fcDone, "output_index", idx)
+			fcDone, _ = sjson.SetBytes(fcDone, "arguments", args)
+			out = append(out, emitEvent("response.function_call_arguments.done", fcDone))
+			itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`)
 			itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
 			itemDone, _ = sjson.SetBytes(itemDone, "output_index", idx)
-			if st.FuncIsToolSearch[idx] {
-				execution, _ := responsesToolSearchExecutionForName(st.ToolSearchExecs, st.FuncNames[idx])
-				itemDone, _ = sjson.SetRawBytes(itemDone, "item", buildResponsesToolSearchCallItem(st.CurrentFCID, args, execution))
-			} else {
-				fcDone := []byte(`{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`)
-				fcDone, _ = sjson.SetBytes(fcDone, "sequence_number", nextSeq())
-				fcDone, _ = sjson.SetBytes(fcDone, "item_id", fmt.Sprintf("fc_%s", st.CurrentFCID))
-				fcDone, _ = sjson.SetBytes(fcDone, "output_index", idx)
-				fcDone, _ = sjson.SetBytes(fcDone, "arguments", args)
-				out = append(out, emitEvent("response.function_call_arguments.done", fcDone))
-
-				functionItem := []byte(`{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`)
-				functionItem, _ = sjson.SetBytes(functionItem, "id", fmt.Sprintf("fc_%s", st.CurrentFCID))
-				functionItem, _ = sjson.SetBytes(functionItem, "arguments", args)
-				functionItem, _ = sjson.SetBytes(functionItem, "call_id", st.CurrentFCID)
-				functionItem, _ = sjson.SetBytes(functionItem, "name", st.FuncNames[idx])
-				itemDone, _ = sjson.SetRawBytes(itemDone, "item", functionItem)
-			}
+			itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("fc_%s", st.CurrentFCID))
+			itemDone, _ = sjson.SetBytes(itemDone, "item.arguments", args)
+			itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.CurrentFCID)
+			itemDone, _ = sjson.SetBytes(itemDone, "item.name", st.FuncNames[idx])
 			out = append(out, emitEvent("response.output_item.done", itemDone))
 			st.InFuncBlock = false
 		} else if st.ReasoningActive {
@@ -388,18 +381,12 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			st.ReasoningActive = false
 			st.ReasoningPartAdded = false
 		}
+		return noSSEOutput(out)
 	case "message_delta":
-		if usage := root.Get("usage"); usage.Exists() {
-			if v := usage.Get("output_tokens"); v.Exists() {
-				st.OutputTokens = v.Int()
-				st.UsageSeen = true
-			}
-			if v := usage.Get("input_tokens"); v.Exists() {
-				st.InputTokens = v.Int()
-				st.UsageSeen = true
-			}
-		}
+		st.Usage.Merge(root.Get("usage"))
+		return [][]byte{}
 	case "message_stop":
+		out = append(out, st.finalizeAssistantMessage(nextSeq)...)
 
 		completed := []byte(`{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null}}`)
 		completed, _ = sjson.SetBytes(completed, "sequence_number", nextSeq())
@@ -491,6 +478,9 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			item := []byte(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
 			item, _ = sjson.SetBytes(item, "id", st.CurrentMsgID)
 			item, _ = sjson.SetBytes(item, "content.0.text", st.TextBuf.String())
+			if len(st.MessageAnnotations) > 0 {
+				item, _ = sjson.SetBytes(item, "content.0.annotations", st.MessageAnnotations)
+			}
 			outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, "arr.-1", item)
 		}
 		// function_call items (in ascending index order for determinism)
@@ -518,17 +508,11 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				if callID == "" && st.CurrentFCID != "" {
 					callID = st.CurrentFCID
 				}
-				var item []byte
-				if st.FuncIsToolSearch[idx] {
-					execution, _ := responsesToolSearchExecutionForName(st.ToolSearchExecs, name)
-					item = buildResponsesToolSearchCallItem(callID, args, execution)
-				} else {
-					item = []byte(`{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`)
-					item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("fc_%s", callID))
-					item, _ = sjson.SetBytes(item, "arguments", args)
-					item, _ = sjson.SetBytes(item, "call_id", callID)
-					item, _ = sjson.SetBytes(item, "name", name)
-				}
+				item := []byte(`{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`)
+				item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("fc_%s", callID))
+				item, _ = sjson.SetBytes(item, "arguments", args)
+				item, _ = sjson.SetBytes(item, "call_id", callID)
+				item, _ = sjson.SetBytes(item, "name", name)
 				outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, "arr.-1", item)
 			}
 		}
@@ -540,23 +524,23 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		if st.ReasoningBuf.Len() > 0 {
 			reasoningTokens = int64(st.ReasoningBuf.Len() / 4)
 		}
-		usagePresent := st.UsageSeen || reasoningTokens > 0
+		usagePresent := st.Usage.HasUsage || reasoningTokens > 0
 		if usagePresent {
-			completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens", st.InputTokens)
-			completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens_details.cached_tokens", 0)
-			completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens", st.OutputTokens)
+			inputTokens, outputTokens, totalTokens, cachedTokens := st.Usage.OpenAIResponsesUsage()
+			completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens", inputTokens)
+			completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens_details.cached_tokens", cachedTokens)
+			completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens", outputTokens)
 			if reasoningTokens > 0 {
 				completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens_details.reasoning_tokens", reasoningTokens)
 			}
-			total := st.InputTokens + st.OutputTokens
-			if total > 0 || st.UsageSeen {
-				completed, _ = sjson.SetBytes(completed, "response.usage.total_tokens", total)
+			if totalTokens > 0 || st.Usage.HasUsage {
+				completed, _ = sjson.SetBytes(completed, "response.usage.total_tokens", totalTokens)
 			}
 		}
 		out = append(out, emitEvent("response.completed", completed))
 	}
 
-	return out
+	return noSSEOutput(out)
 }
 
 // ConvertClaudeResponseToOpenAIResponsesNonStream aggregates Claude SSE into a single OpenAI Responses JSON.
@@ -584,8 +568,6 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 
 	// Base OpenAI Responses (non-stream) object
 	out := []byte(`{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null,"incomplete_details":null,"output":[],"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{},"total_tokens":0}}`)
-	reqBytes := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
-	toolSearchExecs := responsesToolSearchExecutionsFromRequestBytes(reqBytes)
 
 	// Aggregation state
 	var (
@@ -598,17 +580,15 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		reasoningActive bool
 		reasoningItemID string
 		reasoningSig    string
-		inputTokens     int64
-		outputTokens    int64
+		annotations     []any
+		usageTokens     claudeResponsesUsageTokens
 	)
 
 	// Per-index tool call aggregation
 	type toolState struct {
-		id           string
-		name         string
-		isToolSearch bool
-		execution    string
-		args         strings.Builder
+		id   string
+		name string
+		args strings.Builder
 	}
 	toolCalls := make(map[int]*toolState)
 
@@ -622,9 +602,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			if msg := root.Get("message"); msg.Exists() {
 				responseID = msg.Get("id").String()
 				createdAt = time.Now().Unix()
-				if usage := msg.Get("usage"); usage.Exists() {
-					inputTokens = usage.Get("input_tokens").Int()
-				}
+				usageTokens.Merge(msg.Get("usage"))
 			}
 
 		case "content_block_start":
@@ -640,14 +618,11 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			case "tool_use":
 				currentFCID = cb.Get("id").String()
 				name := cb.Get("name").String()
-				execution, isToolSearch := responsesToolSearchExecutionForName(toolSearchExecs, name)
 				if toolCalls[idx] == nil {
-					toolCalls[idx] = &toolState{id: currentFCID, name: name, isToolSearch: isToolSearch, execution: execution}
+					toolCalls[idx] = &toolState{id: currentFCID, name: name}
 				} else {
 					toolCalls[idx].id = currentFCID
 					toolCalls[idx].name = name
-					toolCalls[idx].isToolSearch = isToolSearch
-					toolCalls[idx].execution = execution
 				}
 			case "thinking":
 				reasoningActive = true
@@ -689,6 +664,10 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 						reasoningSig = signature.String()
 					}
 				}
+			case "citations_delta":
+				if citation := d.Get("citation"); citation.Exists() {
+					annotations = append(annotations, citation.Value())
+				}
 			}
 
 		case "content_block_stop":
@@ -696,9 +675,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			_ = root
 
 		case "message_delta":
-			if usage := root.Get("usage"); usage.Exists() {
-				outputTokens = usage.Get("output_tokens").Int()
-			}
+			usageTokens.Merge(root.Get("usage"))
 		}
 	}
 
@@ -707,6 +684,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	out, _ = sjson.SetBytes(out, "created_at", createdAt)
 
 	// Inject request echo fields as top-level (similar to streaming variant)
+	reqBytes := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
 	if len(reqBytes) > 0 {
 		req := gjson.ParseBytes(reqBytes)
 		if v := req.Get("instructions"); v.Exists() {
@@ -788,6 +766,9 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		item := []byte(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
 		item, _ = sjson.SetBytes(item, "id", currentMsgID)
 		item, _ = sjson.SetBytes(item, "content.0.text", textBuf.String())
+		if len(annotations) > 0 {
+			item, _ = sjson.SetBytes(item, "content.0.annotations", annotations)
+		}
 		outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, "arr.-1", item)
 	}
 	if len(toolCalls) > 0 {
@@ -809,16 +790,11 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			if args == "" {
 				args = "{}"
 			}
-			var item []byte
-			if st.isToolSearch {
-				item = buildResponsesToolSearchCallItem(st.id, args, st.execution)
-			} else {
-				item = []byte(`{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`)
-				item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("fc_%s", st.id))
-				item, _ = sjson.SetBytes(item, "arguments", args)
-				item, _ = sjson.SetBytes(item, "call_id", st.id)
-				item, _ = sjson.SetBytes(item, "name", st.name)
-			}
+			item := []byte(`{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`)
+			item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("fc_%s", st.id))
+			item, _ = sjson.SetBytes(item, "arguments", args)
+			item, _ = sjson.SetBytes(item, "call_id", st.id)
+			item, _ = sjson.SetBytes(item, "name", st.name)
 			outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, "arr.-1", item)
 		}
 	}
@@ -827,10 +803,11 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	}
 
 	// Usage
-	total := inputTokens + outputTokens
+	inputTokens, outputTokens, totalTokens, cachedTokens := usageTokens.OpenAIResponsesUsage()
 	out, _ = sjson.SetBytes(out, "usage.input_tokens", inputTokens)
+	out, _ = sjson.SetBytes(out, "usage.input_tokens_details.cached_tokens", cachedTokens)
 	out, _ = sjson.SetBytes(out, "usage.output_tokens", outputTokens)
-	out, _ = sjson.SetBytes(out, "usage.total_tokens", total)
+	out, _ = sjson.SetBytes(out, "usage.total_tokens", totalTokens)
 	if reasoningBuf.Len() > 0 {
 		// Rough estimate similar to chat completions
 		reasoningTokens := int64(len(reasoningBuf.String()) / 4)
