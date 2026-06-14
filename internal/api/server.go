@@ -375,8 +375,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create HTTP server
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler: engine,
+		Addr:           fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:        engine,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   60 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	return s
@@ -1408,6 +1412,7 @@ func (s *Server) Start() error {
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{certPair},
 			NextProtos:   []string{"h2", "http/1.1"},
+			MinVersion:   tls.VersionTLS12,
 		}
 		s.server.TLSConfig = tlsConfig
 		if errHTTP2 := http2.ConfigureServer(s.server, &http2.Server{}); errHTTP2 != nil {
@@ -1534,30 +1539,9 @@ func corsMiddleware() gin.HandlerFunc {
 
 // managementCORSMiddleware restricts CORS for management API routes to localhost origins only.
 func managementCORSMiddleware() gin.HandlerFunc {
-	allowedOrigins := map[string]bool{
-		"http://localhost":       true,
-		"http://127.0.0.1":       true,
-		"http://[::1]":           true,
-		"http://localhost:3000":  true,
-		"http://localhost:5173":  true,
-		"http://localhost:8080":  true,
-		"http://127.0.0.1:3000":  true,
-		"http://127.0.0.1:5173":  true,
-		"http://127.0.0.1:8080":  true,
-		"https://localhost":      true,
-		"https://127.0.0.1":      true,
-		"https://[::1]":          true,
-		"https://localhost:3000": true,
-		"https://localhost:5173": true,
-		"https://localhost:8080": true,
-		"https://127.0.0.1:3000": true,
-		"https://127.0.0.1:5173": true,
-		"https://127.0.0.1:8080": true,
-	}
-
 	return func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
-		if origin != "" && allowedOrigins[origin] {
+		if origin != "" && isLocalhostOrigin(origin) {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Management-Key")
@@ -1571,6 +1555,23 @@ func managementCORSMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// isLocalhostOrigin checks whether an HTTP Origin header value points to localhost,
+// allowing any port.
+func isLocalhostOrigin(origin string) bool {
+	if !strings.HasPrefix(origin, "http://") && !strings.HasPrefix(origin, "https://") {
+		return false
+	}
+	rest := origin[strings.Index(origin, "://")+3:]
+	if idx := strings.IndexByte(rest, '/'); idx >= 0 {
+		rest = rest[:idx]
+	}
+	if idx := strings.LastIndexByte(rest, ':'); idx >= 0 {
+		rest = rest[:idx]
+	}
+	rest = strings.Trim(rest, "[]")
+	return rest == "localhost" || rest == "127.0.0.1" || rest == "::1"
 }
 
 func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) {

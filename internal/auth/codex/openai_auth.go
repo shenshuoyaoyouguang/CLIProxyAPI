@@ -125,17 +125,17 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 		return nil, fmt.Errorf("token exchange request failed: %w", err)
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token response: %w", err)
 	}
-	// log.Debugf("Token response: %s", string(body))
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, truncateBody(body, 256))
 	}
 
 	// Parse token response
@@ -195,7 +195,9 @@ func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Co
 	}
 
 	result, err, _ := codexRefreshGroup.Do(refreshToken, func() (interface{}, error) {
-		return o.refreshTokensSingleFlight(context.WithoutCancel(ctx), refreshToken)
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return o.refreshTokensSingleFlight(refreshCtx, refreshToken)
 	})
 	if err != nil {
 		return nil, err
@@ -228,18 +230,19 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 		return nil, fmt.Errorf("token refresh request failed: %w", errDo)
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.Errorf("token refresh response body close error: %v", errClose)
 		}
 	}()
 
-	body, errRead := io.ReadAll(resp.Body)
+	body, errRead := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if errRead != nil {
 		return nil, fmt.Errorf("failed to read refresh response: %w", errRead)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, truncateBody(body, 256))
 	}
 
 	var tokenResp struct {
@@ -343,4 +346,13 @@ func (o *CodexAuth) UpdateTokenStorage(storage *CodexTokenStorage, tokenData *Co
 	storage.LastRefresh = time.Now().Format(time.RFC3339)
 	storage.Email = tokenData.Email
 	storage.Expire = tokenData.Expire
+}
+
+// truncateBody truncates a byte slice to maxLen characters for safe inclusion in error messages.
+func truncateBody(body []byte, maxLen int) string {
+	s := string(body)
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }

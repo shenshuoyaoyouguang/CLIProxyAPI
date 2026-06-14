@@ -28,6 +28,7 @@ var nativeProviderAppliers = map[string]ProviderApplier{
 	"antigravity": nil,
 	"kimi":        nil,
 	"xai":         nil,
+	"deepseek":    nil,
 }
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.

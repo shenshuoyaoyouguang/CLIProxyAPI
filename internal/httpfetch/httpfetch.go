@@ -20,12 +20,13 @@ type Doer interface {
 // the body is rejected once it exceeds maxSize bytes.
 func GetBytes(ctx context.Context, client Doer, requestURL string, headers map[string]string, maxSize int64) ([]byte, error) {
 	if client == nil {
-		client = http.DefaultClient
+		return nil, fmt.Errorf("http client is required")
 	}
 	req, errRequest := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if errRequest != nil {
 		return nil, fmt.Errorf("create request: %w", errRequest)
 	}
+	req.Header.Set("User-Agent", "CLIProxyAPI/1.0")
 	for key, value := range headers {
 		if value != "" {
 			req.Header.Set(key, value)
@@ -43,7 +44,10 @@ func GetBytes(ctx context.Context, client Doer, requestURL string, headers map[s
 	}()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, errRead := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if errRead != nil {
+			log.WithError(errRead).Debug("failed to read error response body")
+		}
 		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 

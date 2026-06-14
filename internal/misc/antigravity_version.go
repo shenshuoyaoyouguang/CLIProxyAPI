@@ -31,8 +31,8 @@ type antigravityRelease struct {
 
 // antigravityFetchClient is a long-lived HTTP client reused across periodic version fetches.
 var (
-	antigravityFetchClient *http.Client
-	antigravityFetchOnce    sync.Once
+	antigravityFetchClient   *http.Client
+	antigravityFetchClientMu sync.Mutex
 )
 
 var (
@@ -181,10 +181,12 @@ func fetchAntigravityLatestVersion(ctx context.Context) (string, error) {
 		ctx = context.Background()
 	}
 
-	antigravityFetchOnce.Do(func() {
+	antigravityFetchClientMu.Lock()
+	if antigravityFetchClient == nil {
 		antigravityFetchClient = &http.Client{Timeout: antigravityFetchTimeout}
-	})
+	}
 	client := antigravityFetchClient
+	antigravityFetchClientMu.Unlock()
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodGet, antigravityReleasesURL, nil)
 	if errReq != nil {
@@ -206,7 +208,7 @@ func fetchAntigravityLatestVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("antigravity releases API returned status %d", resp.StatusCode)
 	}
 
-	bodyBytes, errRead := io.ReadAll(resp.Body)
+	bodyBytes, errRead := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if errRead != nil {
 		return "", fmt.Errorf("read antigravity releases response: %w", errRead)
 	}

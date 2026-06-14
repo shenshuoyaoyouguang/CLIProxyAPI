@@ -111,16 +111,17 @@ func (a *XAIAuth) Discover(ctx context.Context) (*Discovery, error) {
 		return nil, fmt.Errorf("xai discovery: request failed: %w", err)
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.Errorf("xai discovery: close response body error: %v", errClose)
 		}
 	}()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<14))
 	if err != nil {
 		return nil, fmt.Errorf("xai discovery: read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("xai discovery failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("xai discovery failed with status %d: %s", resp.StatusCode, truncateBody(body, 256))
 	}
 	var payload struct {
 		AuthorizationEndpoint string `json:"authorization_endpoint"`
@@ -196,8 +197,11 @@ func (a *XAIAuth) RefreshTokens(ctx context.Context, refreshToken, tokenEndpoint
 	}
 	tokenEndpoint = strings.TrimSpace(tokenEndpoint)
 
-	result, err, _ := xaiRefreshGroup.Do(refreshToken, func() (interface{}, error) {
-		return a.refreshTokensSingleFlight(context.WithoutCancel(ctx), refreshToken, tokenEndpoint)
+	key := refreshToken + "|" + tokenEndpoint
+	result, err, _ := xaiRefreshGroup.Do(key, func() (interface{}, error) {
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return a.refreshTokensSingleFlight(refreshCtx, refreshToken, tokenEndpoint)
 	})
 	if err != nil {
 		return nil, err
@@ -233,16 +237,17 @@ func (a *XAIAuth) postTokenForm(ctx context.Context, tokenEndpoint string, form 
 		return nil, fmt.Errorf("xai token request failed: %w", err)
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.Errorf("xai token request: close response body error: %v", errClose)
 		}
 	}()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
 		return nil, fmt.Errorf("xai token response: read body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("xai token request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("xai token request failed with status %d: %s", resp.StatusCode, truncateBody(body, 256))
 	}
 	var payload struct {
 		AccessToken  string `json:"access_token"`
@@ -296,16 +301,19 @@ func (a *XAIAuth) CreateTokenStorage(bundle *AuthBundle) *TokenStorage {
 func parseJWTIdentity(token string) (email string, subject string) {
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
+		log.Debug("xai: parseJWTIdentity: token has fewer than 2 parts")
 		return "", ""
 	}
 	payload := parts[1]
 	payload += strings.Repeat("=", (4-len(payload)%4)%4)
 	raw, err := base64.URLEncoding.DecodeString(payload)
 	if err != nil {
+		log.Debugf("xai: parseJWTIdentity: failed to decode payload: %v", err)
 		return "", ""
 	}
 	var claims map[string]any
 	if err = json.Unmarshal(raw, &claims); err != nil {
+		log.Debugf("xai: parseJWTIdentity: failed to unmarshal claims: %v", err)
 		return "", ""
 	}
 	if v, ok := claims["email"].(string); ok {
@@ -315,6 +323,15 @@ func parseJWTIdentity(token string) (email string, subject string) {
 		subject = strings.TrimSpace(v)
 	}
 	return email, subject
+}
+
+// truncateBody truncates a byte slice to maxLen characters for safe inclusion in error messages.
+func truncateBody(body []byte, maxLen int) string {
+	s := string(body)
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }
 
 func firstNonEmpty(values ...string) string {

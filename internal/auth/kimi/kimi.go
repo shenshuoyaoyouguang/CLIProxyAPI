@@ -125,7 +125,7 @@ func NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg *config.Config, deviceID str
 
 	resolvedDeviceID := strings.TrimSpace(deviceID)
 	if resolvedDeviceID == "" {
-		resolvedDeviceID = getOrCreateDeviceID()
+		resolvedDeviceID = generateDeviceID()
 	}
 	return &DeviceFlowClient{
 		httpClient: client,
@@ -134,8 +134,8 @@ func NewDeviceFlowClientWithDeviceIDAndProxyURL(cfg *config.Config, deviceID str
 	}
 }
 
-// getOrCreateDeviceID returns an in-memory device ID for the current authentication flow.
-func getOrCreateDeviceID() string {
+// generateDeviceID generates a new UUID-based device ID.
+func generateDeviceID() string {
 	return uuid.New().String()
 }
 
@@ -196,18 +196,19 @@ func (c *DeviceFlowClient) RequestDeviceCode(ctx context.Context) (*DeviceCodeRe
 		return nil, fmt.Errorf("kimi: device code request failed: %w", err)
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.Errorf("kimi device code: close body error: %v", errClose)
 		}
 	}()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
 		return nil, fmt.Errorf("kimi: failed to read device code response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("kimi: device code request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("kimi: device code request failed with status %d: %s", resp.StatusCode, truncateBody(bodyBytes, 256))
 	}
 
 	var deviceCode DeviceCodeResponse
@@ -284,12 +285,13 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 		return nil, fmt.Errorf("kimi: token request failed: %w", err), false
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.Errorf("kimi token exchange: close body error: %v", errClose)
 		}
 	}()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
 		return nil, fmt.Errorf("kimi: failed to read token response: %w", err), false
 	}
@@ -353,7 +355,9 @@ func (c *DeviceFlowClient) RefreshToken(ctx context.Context, refreshToken string
 	refreshToken = strings.TrimSpace(refreshToken)
 
 	result, err, _ := kimiRefreshGroup.Do(refreshToken, func() (interface{}, error) {
-		return c.refreshTokenSingleFlight(context.WithoutCancel(ctx), refreshToken)
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return c.refreshTokenSingleFlight(refreshCtx, refreshToken)
 	})
 	if err != nil {
 		return nil, err
@@ -386,12 +390,13 @@ func (c *DeviceFlowClient) refreshTokenSingleFlight(ctx context.Context, refresh
 		return nil, fmt.Errorf("kimi: refresh request failed: %w", err)
 	}
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.Errorf("kimi refresh token: close body error: %v", errClose)
 		}
 	}()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
 		return nil, fmt.Errorf("kimi: failed to read refresh response: %w", err)
 	}
@@ -401,7 +406,7 @@ func (c *DeviceFlowClient) refreshTokenSingleFlight(ctx context.Context, refresh
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("kimi: refresh failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("kimi: refresh failed with status %d: %s", resp.StatusCode, truncateBody(bodyBytes, 256))
 	}
 
 	var tokenResp struct {
@@ -432,4 +437,13 @@ func (c *DeviceFlowClient) refreshTokenSingleFlight(ctx context.Context, refresh
 		ExpiresAt:    expiresAt,
 		Scope:        tokenResp.Scope,
 	}, nil
+}
+
+// truncateBody truncates a byte slice to maxLen characters for safe inclusion in error messages.
+func truncateBody(body []byte, maxLen int) string {
+	s := string(body)
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }

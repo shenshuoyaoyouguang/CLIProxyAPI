@@ -111,21 +111,20 @@ func runAutoUpdater(ctx context.Context) {
 	}
 }
 
-
 func autoUpdateSkipReason(cfg *config.Config) (string, bool) {
-if cfg == nil {
-return "config not yet available", true
-}
-if cfg.Home.Enabled {
-return "cluster mode enabled", true
-}
-if cfg.RemoteManagement.DisableControlPanel {
-return "control panel disabled", true
-}
-if cfg.RemoteManagement.DisableAutoUpdatePanel {
-return "disable-auto-update-panel is enabled", true
-}
-return "", false
+	if cfg == nil {
+		return "config not yet available", true
+	}
+	if cfg.Home.Enabled {
+		return "cluster mode enabled", true
+	}
+	if cfg.RemoteManagement.DisableControlPanel {
+		return "control panel disabled", true
+	}
+	if cfg.RemoteManagement.DisableAutoUpdatePanel {
+		return "disable-auto-update-panel is enabled", true
+	}
+	return "", false
 }
 
 // assetHTTPClient is a long-lived HTTP client reused for management asset downloads.
@@ -185,6 +184,8 @@ func StaticDir(configFilePath string) string {
 		return ""
 	}
 
+	// configFilePath may be a file or a directory. If it is a directory, use it
+	// directly as the base; otherwise use its parent directory.
 	base := filepath.Dir(configFilePath)
 	fileInfo, err := os.Stat(configFilePath)
 	if err == nil {
@@ -479,9 +480,12 @@ func atomicWriteFile(path string, data []byte) error {
 	}
 
 	tmpName := tmpFile.Name()
+	var renameSucceeded bool
 	defer func() {
 		_ = tmpFile.Close()
-		_ = os.Remove(tmpName)
+		if !renameSucceeded {
+			_ = os.Remove(tmpName)
+		}
 	}()
 
 	if _, err = tmpFile.Write(data); err != nil {
@@ -499,7 +503,7 @@ func atomicWriteFile(path string, data []byte) error {
 	if err = os.Rename(tmpName, path); err != nil {
 		return err
 	}
-
+	renameSucceeded = true
 	return nil
 }
 
