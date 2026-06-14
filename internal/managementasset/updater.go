@@ -104,6 +104,23 @@ func runAutoUpdater(ctx context.Context) {
 	}
 }
 
+
+func autoUpdateSkipReason(cfg *config.Config) (string, bool) {
+if cfg == nil {
+return "config not yet available", true
+}
+if cfg.Home.Enabled {
+return "cluster mode enabled", true
+}
+if cfg.RemoteManagement.DisableControlPanel {
+return "control panel disabled", true
+}
+if cfg.RemoteManagement.DisableAutoUpdatePanel {
+return "disable-auto-update-panel is enabled", true
+}
+return "", false
+}
+
 func autoUpdateSkipReason(cfg *config.Config) (string, bool) {
 	if cfg == nil {
 		return "config not yet available", true

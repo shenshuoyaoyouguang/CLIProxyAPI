@@ -235,11 +235,47 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 	}
 
 	if !hasThinkingConfig(config) {
+		// When a model supports thinking but the user did not specify any
+		// thinking configuration, inject a default so that the upstream
+		// provider returns thought/reasoning content.
+		//
+		// For level-based models (Gemini 3.x), default to the lowest level.
+		// For budget-based models (Gemini 2.5), default to auto (budget=-1).
+		if modelInfo.Thinking != nil {
+			if len(modelInfo.Thinking.Levels) > 0 {
+				// Use the first (lowest) non-special level as default.
+				// Skip "none" and "auto" which are special values that disable
+				// or delegate thinking control rather than enabling a specific level.
+				for _, lvl := range modelInfo.Thinking.Levels {
+					level := ThinkingLevel(lvl)
+					if level == LevelNone || level == LevelAuto {
+						continue
+					}
+					config = ThinkingConfig{Mode: ModeLevel, Level: level}
+					break
+				}
+			} else if modelInfo.Thinking.DynamicAllowed {
+				config = ThinkingConfig{Mode: ModeAuto, Budget: -1}
+			} else if modelInfo.Thinking.Min > 0 {
+				config = ThinkingConfig{Mode: ModeBudget, Budget: modelInfo.Thinking.Min}
+			}
+		}
+
+		if !hasThinkingConfig(config) {
+			log.WithFields(log.Fields{
+				"provider": providerFormat,
+				"model":    modelInfo.ID,
+			}).Debug("thinking: no config found, passthrough |")
+			return body, nil
+		}
+
 		log.WithFields(log.Fields{
 			"provider": providerFormat,
 			"model":    modelInfo.ID,
-		}).Debug("thinking: no config found, passthrough |")
-		return body, nil
+			"mode":     config.Mode,
+			"budget":   config.Budget,
+			"level":    config.Level,
+		}).Debug("thinking: no config found, applying default |")
 	}
 
 	// 5. Validate and normalize configuration
@@ -419,7 +455,7 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 		return extractOpenAIConfig(body)
 	case "codex", "xai":
 		return extractCodexConfig(body)
-	case "kimi":
+	case "kimi", "deepseek":
 		// Kimi uses OpenAI-compatible reasoning_effort format
 		return extractOpenAIConfig(body)
 	default:
@@ -620,10 +656,14 @@ func extractOpenAIConfig(body []byte) ThinkingConfig {
 	// Check reasoning_effort (OpenAI Chat Completions format)
 	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
 		value := effort.String()
-		if value == "none" {
+		switch value {
+		case "none":
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "auto":
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		default:
+			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
 		}
-		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
 	}
 
 	return ThinkingConfig{}

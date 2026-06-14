@@ -241,10 +241,15 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	executionSessionID := executionSessionIDFromOptions(opts)
 	var sess *codexWebsocketSession
+	reqMuUnlocked := false
 	if executionSessionID != "" {
 		sess = e.getOrCreateSession(executionSessionID)
 		sess.reqMu.Lock()
-		defer sess.reqMu.Unlock()
+		defer func() {
+			if !reqMuUnlocked {
+				sess.reqMu.Unlock()
+			}
+		}()
 	}
 
 	wsReqBody := buildCodexWebsocketRequestBody(upstreamBody)
@@ -268,6 +273,10 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
 		}
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
+			if sess != nil {
+				reqMuUnlocked = true
+				sess.reqMu.Unlock()
+			}
 			return e.CodexExecutor.Execute(ctx, auth, req, opts)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
@@ -490,9 +499,15 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			helps.RecordAPIWebsocketUpgradeRejection(ctx, e.cfg, websocketUpgradeRequestLog(wsReqLog), respHS.StatusCode, respHS.Header.Clone(), bodyErr)
 		}
 		if respHS != nil && respHS.StatusCode == http.StatusUpgradeRequired {
+			if sess != nil {
+				sess.reqMu.Unlock()
+			}
 			return e.CodexExecutor.ExecuteStream(ctx, auth, req, opts)
 		}
 		if respHS != nil && respHS.StatusCode > 0 {
+			if sess != nil {
+				sess.reqMu.Unlock()
+			}
 			return nil, statusErr{code: respHS.StatusCode, msg: string(bodyErr)}
 		}
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "dial", errDial)
@@ -650,15 +665,35 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return
 			}
 
-			payload = normalizeCodexWebsocketCompletion(payload)
 			eventType := gjson.GetBytes(payload, "type").String()
+			isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
+			if cliproxyexecutor.DownstreamWebsocket(ctx) {
+				if eventType == "response.completed" || eventType == "response.done" {
+					if detail, ok := helps.ParseCodexUsage(payload); ok {
+						reporter.Publish(ctx, detail)
+					}
+				}
+				if !send(cliproxyexecutor.StreamChunk{Payload: clientPayload}) {
+					terminateReason = "context_done"
+					terminateErr = ctx.Err()
+					return
+				}
+				if isTerminalEvent {
+					return
+				}
+				continue
+			}
+
+			payload = normalizeCodexWebsocketCompletion(payload)
+			eventType = gjson.GetBytes(payload, "type").String()
 			if eventType == "response.completed" || eventType == "response.done" {
 				if detail, ok := helps.ParseCodexUsage(payload); ok {
 					reporter.Publish(ctx, detail)
 				}
 			}
 
-			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
+			clientPayload = applyCodexIdentityExposeResponsePayload(payload, identityState)
 			line := encodeCodexWebsocketAsSSE(clientPayload)
 			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, clientBody, clientBody, line, &param)
 			for i := range chunks {
@@ -1297,9 +1332,10 @@ func closeHTTPResponseBody(resp *http.Response, logPrefix string) {
 	if resp == nil || resp.Body == nil {
 		return
 	}
-	if errClose := resp.Body.Close(); errClose != nil {
-		log.Errorf("%s: %v", logPrefix, errClose)
-	}
+	// Drain remaining body data so the connection can return to the
+	// idle pool for reuse. Without this, HTTP/1.1 connections are
+	// silently discarded by the Transport.
+	proxyutil.DrainAndClose(resp)
 }
 
 func executionSessionIDFromOptions(opts cliproxyexecutor.Options) string {
