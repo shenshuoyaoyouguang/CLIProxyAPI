@@ -70,3 +70,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 ### [merge-divergence] main 与 origin/main 深度分叉
 本地 main 与 origin/main 有 113 个共同修改文件但不同的提交 SHA（两边都对同一批上游内容做了 merge）。推送前必须先 `git merge origin/main` 解决冲突。不要直接 `git push --force`。
 → 详见: `.omc/reports/merge-audit-2026-06-15.md`
+
+### [compilation-bug] origin/main conductor.go 有预存编译错误
+`origin/main` 的 `sdk/cliproxy/auth/conductor.go:3631,3797` 调用了 `selector.Strategy()`，但 `Selector` 接口没有定义 `Strategy()` 方法，且所有 selector 实现也都没有此方法。这是上游 commit `6296f79e` 引入的 bug。合并 origin/main 后需 revert conductor.go 到本地版本。
+→ 详见: `.omc/reports/merge-audit-2026-06-15.md`

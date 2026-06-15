@@ -74,6 +74,82 @@ func BuildOpenAIUsageJSON(count int64) []byte {
 	return []byte(fmt.Sprintf(`{"usage":{"prompt_tokens":%d,"completion_tokens":0,"total_tokens":%d}}`, count, count))
 }
 
+// ExtractResponseText extracts the output text from an OpenAI-compatible response body.
+// It handles Chat Completions (choices[].message.content), Responses (response.output[].content[].text),
+// and legacy Completions (choices[].text) formats. Content from multiple choices is joined with "\n".
+func ExtractResponseText(body []byte) string {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return ""
+	}
+	root := gjson.ParseBytes(body)
+	var segments []string
+
+	// Chat Completions: choices[].message.content / choices[].delta.content
+	if choices := root.Get("choices"); choices.Exists() && choices.IsArray() {
+		choices.ForEach(func(_, choice gjson.Result) bool {
+			if msg := choice.Get("message"); msg.Exists() {
+				collectResponseTextContent(msg, &segments)
+			} else if delta := choice.Get("delta"); delta.Exists() {
+				collectResponseTextContent(delta, &segments)
+			} else if text := choice.Get("text"); text.Exists() && text.Type == gjson.String {
+				segments = append(segments, text.String())
+			}
+			return true
+		})
+	}
+
+	// OpenAI Responses: response.output[].content[].text
+	if output := root.Get("response.output"); output.Exists() && output.IsArray() {
+		output.ForEach(func(_, item gjson.Result) bool {
+			if content := item.Get("content"); content.Exists() && content.IsArray() {
+				content.ForEach(func(_, c gjson.Result) bool {
+					if c.Get("type").String() == "output_text" || c.Get("type").String() == "text" {
+						segments = append(segments, c.Get("text").String())
+					}
+					return true
+				})
+			}
+			return true
+		})
+	}
+
+	return strings.Join(segments, "\n")
+}
+
+// collectResponseTextContent extracts text content from a message or delta object.
+func collectResponseTextContent(node gjson.Result, segments *[]string) {
+	if content := node.Get("content"); content.Exists() {
+		if content.Type == gjson.String {
+			*segments = append(*segments, content.String())
+		} else if content.IsArray() {
+			content.ForEach(func(_, part gjson.Result) bool {
+				if part.Get("type").String() == "text" || part.Get("type").String() == "output_text" {
+					*segments = append(*segments, part.Get("text").String())
+				}
+				return true
+			})
+		}
+	}
+}
+
+// EstimateResponseOutputTokens estimates the number of output tokens in an OpenAI-compatible response.
+// It uses tiktoken on the extracted response text. Returns 0 if the body is empty or invalid.
+func EstimateResponseOutputTokens(body []byte) int64 {
+	text := ExtractResponseText(body)
+	if text == "" {
+		return 0
+	}
+	enc, err := tokenizer.Get(tokenizer.O200kBase)
+	if err != nil {
+		return 0
+	}
+	count, err := enc.Count(text)
+	if err != nil {
+		return 0
+	}
+	return int64(count)
+}
+
 func collectOpenAIMessages(messages gjson.Result, segments *[]string) {
 	if !messages.Exists() || !messages.IsArray() {
 		return

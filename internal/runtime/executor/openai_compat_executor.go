@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
@@ -208,9 +209,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
-	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
-	// Ensure we at least record the request even if upstream doesn't return usage
-	reporter.EnsurePublished(ctx)
+	detail := helps.ParseOpenAIUsage(body)
+	detail = helps.EstimateOpenAIUsage(detail, translated, body, baseModel)
+	reporter.Publish(ctx, detail)
 	// Translate response back to source format when needed
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, body, &param)
@@ -302,8 +303,9 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 		return resp, err
 	}
 
-	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
-	reporter.EnsurePublished(ctx)
+	detail := helps.ParseOpenAIUsage(body)
+	detail = helps.EstimateOpenAIUsage(detail, payload, body, baseModel)
+	reporter.Publish(ctx, detail)
 	resp = cliproxyexecutor.Response{Payload: body, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
@@ -488,7 +490,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			}
 		}
 		// Ensure we record the request if no usage chunk was ever seen
-		reporter.EnsurePublished(ctx)
+		reporter.Publish(ctx, helps.EstimateOpenAIUsage(usage.Detail{}, translated, nil, baseModel))
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
@@ -579,7 +581,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 		defer close(out)
 		defer func() {
 			proxyutil.DrainAndClose(httpResp)
-			reporter.EnsurePublished(ctx)
+			reporter.Publish(ctx, helps.EstimateOpenAIUsage(usage.Detail{}, payload, nil, baseModel))
 		}()
 		buffer := make([]byte, 32*1024)
 		for {

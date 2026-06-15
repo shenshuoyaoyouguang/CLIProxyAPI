@@ -315,3 +315,71 @@ type TestUsageExecutor struct{}
 func (TestUsageExecutor) Identifier() string {
 	return "test-provider"
 }
+
+func TestEstimateOpenAIUsage_SkipsWhenUpstreamHasInput(t *testing.T) {
+	// If upstream returned InputTokens, trust upstream entirely — no estimation.
+	detail := usage.Detail{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
+	got := EstimateOpenAIUsage(detail, []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`), []byte(`{"choices":[{"message":{"content":"hello"}}]}`), "gpt-4o")
+	if got.InputTokens != 10 || got.OutputTokens != 5 || got.TotalTokens != 15 {
+		t.Fatalf("EstimateOpenAIUsage = %+v, want original upstream detail", got)
+	}
+}
+
+func TestEstimateOpenAIUsage_SkipsWhenUpstreamHasPartialInputOnly(t *testing.T) {
+	// If upstream returned only InputTokens (no OutputTokens, TotalTokens=0),
+	// trust upstream and fill in TotalTokens.
+	detail := usage.Detail{InputTokens: 10, OutputTokens: 0, TotalTokens: 0}
+	got := EstimateOpenAIUsage(detail, []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`), []byte(`{"choices":[{"message":{"content":"hello"}}]}`), "gpt-4o")
+	if got.InputTokens != 10 {
+		t.Fatalf("InputTokens = %d, want 10 (upstream value)", got.InputTokens)
+	}
+	if got.TotalTokens != 10 {
+		t.Fatalf("TotalTokens = %d, want 10 (InputTokens + OutputTokens)", got.TotalTokens)
+	}
+	// OutputTokens should NOT be overwritten by estimation since upstream had InputTokens
+	if got.OutputTokens != 0 {
+		t.Fatalf("OutputTokens = %d, want 0 (upstream value should be preserved)", got.OutputTokens)
+	}
+}
+
+func TestEstimateOpenAIUsage_EstimatesWhenUpstreamOmits(t *testing.T) {
+	// No upstream usage at all → should estimate both input and output.
+	detail := usage.Detail{}
+	requestPayload := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"Say hello"}]}`)
+	responseBody := []byte(`{"id":"chatcmpl_1","choices":[{"index":0,"message":{"role":"assistant","content":"Hello world"},"finish_reason":"stop"}]}`)
+	got := EstimateOpenAIUsage(detail, requestPayload, responseBody, "gpt-4o")
+	if got.InputTokens == 0 {
+		t.Fatal("expected estimated InputTokens > 0, got 0")
+	}
+	if got.OutputTokens == 0 {
+		t.Fatal("expected estimated OutputTokens > 0, got 0")
+	}
+	if got.TotalTokens != got.InputTokens+got.OutputTokens {
+		t.Fatalf("TotalTokens = %d, want Input(%d)+Output(%d)=%d", got.TotalTokens, got.InputTokens, got.OutputTokens, got.InputTokens+got.OutputTokens)
+	}
+}
+
+func TestEstimateOpenAIUsage_NoEstimationForEmptyPayload(t *testing.T) {
+	// Empty request payload and response body → no estimation possible.
+	detail := usage.Detail{}
+	got := EstimateOpenAIUsage(detail, nil, nil, "gpt-4o")
+	if got.InputTokens != 0 || got.OutputTokens != 0 || got.TotalTokens != 0 {
+		t.Fatalf("EstimateOpenAIUsage(empty) = %+v, want zero detail", got)
+	}
+}
+
+func TestEstimateOpenAIUsage_StreamNoResponseBody(t *testing.T) {
+	// Streaming: no response body available → only input tokens estimated.
+	detail := usage.Detail{}
+	requestPayload := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
+	got := EstimateOpenAIUsage(detail, requestPayload, nil, "gpt-4o")
+	if got.InputTokens == 0 {
+		t.Fatal("expected estimated InputTokens > 0 for stream, got 0")
+	}
+	if got.OutputTokens != 0 {
+		t.Fatalf("OutputTokens = %d, want 0 (no response body in stream)", got.OutputTokens)
+	}
+	if got.TotalTokens != got.InputTokens {
+		t.Fatalf("TotalTokens = %d, want %d (InputTokens only)", got.TotalTokens, got.InputTokens)
+	}
+}

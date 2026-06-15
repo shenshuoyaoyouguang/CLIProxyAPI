@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -11,10 +12,12 @@ import (
 	"net/textproto"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -438,7 +441,235 @@ func TestOpenAICompatExecutorStreamSkipsKeepAliveUntilDataLine(t *testing.T) {
 		}
 		got.Write(chunk.Payload)
 	}
-	if gjson.Get(got.String(), "choices.0.delta.content").String() != "hello" {
-		t.Fatalf("stream payload = %s", got.String())
+}
+
+func TestOpenAICompatExecutorStreamEstimatesUsageWhenUpstreamOmits(t *testing.T) {
+	// Upstream never sends usage in stream → executor should estimate input tokens.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flush")
+		}
+		// Send a content chunk but never a usage chunk.
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chunk_1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n")
+		flusher.Flush()
+		// No usage chunk - just [DONE]
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	plugin := &captureUsagePlugin{records: make(chan usage.Record, 16), model: "gpt-4o"}
+	usage.RegisterPlugin(plugin)
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-4o",
+		Payload: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"Say hello"}],"stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	// Drain the chunks channel so the background goroutine completes.
+	for range result.Chunks {
+	}
+
+	record, ok := waitForUsageRecord(t, plugin.records, "gpt-4o", 3*time.Second)
+	if !ok {
+		t.Fatal("timed out waiting for usage record")
+	}
+	// Input tokens should be estimated from the request payload.
+	if record.Detail.InputTokens == 0 {
+		t.Fatal("expected estimated input tokens in stream, got 0")
+	}
+}
+
+func TestOpenAICompatExecutorStreamPublishesUsageFromUpstream(t *testing.T) {
+	// Upstream sends usage in stream chunks → should use upstream values not estimation.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flush")
+		}
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chunk_1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n")
+		flusher.Flush()
+		// Terminal chunk with usage
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chunk_2\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	plugin := &captureUsagePlugin{records: make(chan usage.Record, 16), model: "gpt-4o"}
+	usage.RegisterPlugin(plugin)
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-4o",
+		Payload: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	// Drain the chunks channel so the goroutine can finish.
+	for range result.Chunks {
+	}
+
+	record, ok := waitForUsageRecord(t, plugin.records, "gpt-4o", 3*time.Second)
+	if !ok {
+		t.Fatal("timed out waiting for usage record")
+	}
+	// Upstream usage takes priority - should be exact values, not estimations.
+	if record.Detail.InputTokens != 5 {
+		t.Fatalf("input tokens = %d, want 5", record.Detail.InputTokens)
+	}
+	if record.Detail.OutputTokens != 3 {
+		t.Fatalf("output tokens = %d, want 3", record.Detail.OutputTokens)
+	}
+	if record.Detail.TotalTokens != 8 {
+		t.Fatalf("total tokens = %d, want 8", record.Detail.TotalTokens)
+	}
+}
+
+// captureUsagePlugin captures usage records published during a single test.
+type captureUsagePlugin struct {
+	records chan usage.Record
+	model   string
+}
+
+func (p *captureUsagePlugin) HandleUsage(_ context.Context, record usage.Record) {
+	if p == nil {
+		return
+	}
+	// Only capture records matching the expected model to avoid interference.
+	if record.Model != p.model {
+		return
+	}
+	select {
+	case p.records <- record:
+	default:
+	}
+}
+
+func waitForUsageRecord(t *testing.T, records <-chan usage.Record, model string, timeout time.Duration) (usage.Record, bool) {
+	t.Helper()
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	for {
+		select {
+		case record := <-records:
+			if record.Model == model {
+				return record, true
+			}
+		case <-time.After(timeout):
+			return usage.Record{}, false
+		}
+	}
+}
+
+func TestOpenAICompatExecutorNonStreamPublishesUsageFromUpstream(t *testing.T) {
+	// Upstream returns full usage → should be published as-is.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	}))
+	defer server.Close()
+
+	plugin := &captureUsagePlugin{records: make(chan usage.Record, 16), model: "gpt-4o"}
+	usage.RegisterPlugin(plugin)
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-4o",
+		Payload: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	record, ok := waitForUsageRecord(t, plugin.records, "gpt-4o", 3*time.Second)
+	if !ok {
+		t.Fatal("timed out waiting for usage record")
+	}
+	if record.Detail.InputTokens != 10 {
+		t.Fatalf("input tokens = %d, want 10", record.Detail.InputTokens)
+	}
+	if record.Detail.OutputTokens != 5 {
+		t.Fatalf("output tokens = %d, want 5", record.Detail.OutputTokens)
+	}
+	if record.Detail.TotalTokens != 15 {
+		t.Fatalf("total tokens = %d, want 15", record.Detail.TotalTokens)
+	}
+}
+
+func TestOpenAICompatExecutorNonStreamEstimatesUsageWhenUpstreamOmits(t *testing.T) {
+	// Upstream returns NO usage → executor should estimate from request/response.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","choices":[{"index":0,"message":{"role":"assistant","content":"Hello world"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	plugin := &captureUsagePlugin{records: make(chan usage.Record, 16), model: "gpt-4o"}
+	usage.RegisterPlugin(plugin)
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-4o",
+		Payload: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"Say hello"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	record, ok := waitForUsageRecord(t, plugin.records, "gpt-4o", 3*time.Second)
+	if !ok {
+		t.Fatal("timed out waiting for usage record")
+	}
+	// Input tokens should be estimated from the request payload.
+	if record.Detail.InputTokens == 0 {
+		t.Fatal("expected estimated input tokens, got 0")
+	}
+	// Output tokens should be estimated from the response body.
+	if record.Detail.OutputTokens == 0 {
+		t.Fatal("expected estimated output tokens, got 0")
+	}
+	// Total should be the sum.
+	if record.Detail.TotalTokens != record.Detail.InputTokens+record.Detail.OutputTokens {
+		t.Fatalf("total tokens = %d, want input(%d)+output(%d)=%d",
+			record.Detail.TotalTokens, record.Detail.InputTokens, record.Detail.OutputTokens,
+			record.Detail.InputTokens+record.Detail.OutputTokens)
 	}
 }

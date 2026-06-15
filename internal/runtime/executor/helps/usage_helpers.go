@@ -539,6 +539,37 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 	return parseOpenAIStyleUsageNode(usageNode), true
 }
 
+// EstimateOpenAIUsage estimates input and output tokens when the upstream response
+// does not include usage fields. Input tokens are estimated from the request payload
+// using tiktoken; output tokens are estimated from the response body text.
+// If the upstream already provided any usage fields (InputTokens or OutputTokens > 0),
+// the upstream values are trusted and estimation is skipped for that field.
+// Returns the original detail unchanged if estimation is not possible.
+func EstimateOpenAIUsage(detail usage.Detail, requestPayload, responseBody []byte, model string) usage.Detail {
+	// Trust upstream usage entirely if either field is present — even partial
+	// upstream data (e.g. only prompt_tokens) is more reliable than estimation.
+	if detail.InputTokens > 0 || detail.OutputTokens > 0 {
+		if detail.TotalTokens == 0 && (detail.InputTokens > 0 || detail.OutputTokens > 0) {
+			detail.TotalTokens = detail.InputTokens + detail.OutputTokens
+		}
+		return detail
+	}
+	enc, err := TokenizerForModel(model)
+	if err != nil {
+		return detail
+	}
+	if inputTokens, errCount := CountOpenAIChatTokens(enc, requestPayload); errCount == nil && inputTokens > 0 {
+		detail.InputTokens = inputTokens
+	}
+	if outputTokens := EstimateResponseOutputTokens(responseBody); outputTokens > 0 {
+		detail.OutputTokens = outputTokens
+	}
+	if detail.InputTokens > 0 || detail.OutputTokens > 0 {
+		detail.TotalTokens = detail.InputTokens + detail.OutputTokens
+	}
+	return detail
+}
+
 func ParseClaudeUsage(data []byte) usage.Detail {
 	usageNode := gjson.ParseBytes(data).Get("usage")
 	if !usageNode.Exists() {
