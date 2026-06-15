@@ -103,6 +103,10 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	}
 	var requestBytes []byte
 	if request != nil && requestLen > 0 {
+		if requestLen > C.size_t(^uint32(0)>>1) {
+			writeResponse(response, errorEnvelope("request_too_large", "request length exceeds maximum allowed size"))
+			return 1
+		}
 		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
 	raw, errHandle := handleMethod(C.GoString(method), requestBytes)

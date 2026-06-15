@@ -12,7 +12,7 @@ if (-not (Test-Path "$goroot\src\net\http")) {
     Write-Host "ERROR: GOROOT ($goroot) is missing standard library sources." -ForegroundColor Red
     Write-Host "This usually means the auto-downloaded toolchain cache is incomplete." -ForegroundColor Yellow
     Write-Host "Fix: Delete the broken cache and let the build use the system Go:" -ForegroundColor Yellow
-    $gopath = go env GOPATH
+$gopath = go env GOPATH
     $fixCmd = "Remove-Item -Recurse -Force `"$gopath\pkg\mod\golang.org\toolchain@*`""
     Write-Host "  $fixCmd" -ForegroundColor White
     Write-Host "Or ensure GOTOOLCHAIN=local is set in the environment." -ForegroundColor Yellow

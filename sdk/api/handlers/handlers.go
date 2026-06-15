@@ -1263,6 +1263,27 @@ func finalInterceptorHeaders(current, intercepted http.Header) http.Header {
 	return cloneHeader(intercepted)
 }
 
+func finalInterceptorHeadersWithClear(current, intercepted http.Header, clearHeaders []string) http.Header {
+	if intercepted == nil && len(clearHeaders) == 0 {
+		return current
+	}
+	out := make(http.Header)
+	if current != nil {
+		for key, values := range current {
+			out[key] = append([]string(nil), values...)
+		}
+	}
+	for _, key := range clearHeaders {
+		delete(out, key)
+	}
+	if intercepted != nil {
+		for key, values := range intercepted {
+			out[key] = append([]string(nil), values...)
+		}
+	}
+	return out
+}
+
 func downstreamHeadersFromExecutor(headers http.Header, passthrough bool) http.Header {
 	if !passthrough {
 		return nil
@@ -1456,8 +1477,8 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 		Headers:        cloneHeader(opts.Headers),
 		Body:           cloneBytes(req.Payload),
 		Metadata:       opts.Metadata,
-	}, skipPluginID)
-	opts.Headers = finalInterceptorHeaders(opts.Headers, resp.Headers)
+}, skipPluginID)
+	opts.Headers = finalInterceptorHeadersWithClear(opts.Headers, resp.Headers, resp.ClearHeaders)
 	if len(resp.Body) > 0 {
 		req.Payload = cloneBytes(resp.Body)
 		opts.OriginalRequest = cloneBytes(resp.Body)
@@ -1517,8 +1538,8 @@ func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, handlerT
 		Body:            cloneBytes(body),
 		StatusCode:      statusCode,
 		Metadata:        opts.Metadata,
-	}, skipPluginID)
-	responseHeaders = downstreamHeadersAfterInterceptors(rawResponseHeaders, finalInterceptorHeaders(rawResponseHeaders, resp.Headers), PassthroughHeadersEnabled(h.Cfg))
+}, skipPluginID)
+	responseHeaders = downstreamHeadersAfterInterceptors(rawResponseHeaders, finalInterceptorHeadersWithClear(rawResponseHeaders, resp.Headers, resp.ClearHeaders), PassthroughHeadersEnabled(h.Cfg))
 	if len(resp.Body) > 0 {
 		body = cloneBytes(resp.Body)
 	}
