@@ -806,25 +806,9 @@ func cloneSchedulerAnyMap(src map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(src))
 	for key, value := range src {
-		if isJSONSerializable(value) {
-			out[key] = value
-		}
+		out[key] = value
 	}
 	return out
-}
-
-func isJSONSerializable(v any) bool {
-	if v == nil {
-		return true
-	}
-	switch v.(type) {
-	case bool, string, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-		return true
-	case []any, map[string]any:
-		return true
-	default:
-		return false
-	}
 }
 
 func cloneAuthSlice(auths []*Auth) []*Auth {
@@ -3628,15 +3612,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		return nil, nil, errPick
 	}
 	if !handled {
-		selected, handled, errPick = m.pickViaBuiltinScheduler(ctx, selector.Strategy(), provider, []string{provider}, model, opts, tried)
+		selected, errPick = selector.Pick(ctx, provider, selectionArgForSelector(selector, model), opts, available)
 		if errPick != nil {
 			return nil, nil, errPick
-		}
-		if !handled {
-			selected, errPick = selector.Pick(ctx, provider, selectionArgForSelector(selector, model), opts, available)
-			if errPick != nil {
-				return nil, nil, errPick
-			}
 		}
 	}
 	if selected == nil {
@@ -3794,15 +3772,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		return nil, nil, "", errPick
 	}
 	if !handled {
-		selected, handled, errPick = m.pickViaBuiltinScheduler(ctx, selector.Strategy(), "mixed", providers, model, opts, tried)
+		selected, errPick = selector.Pick(ctx, "mixed", selectionArgForSelector(selector, model), opts, available)
 		if errPick != nil {
 			return nil, nil, "", errPick
-		}
-		if !handled {
-			selected, errPick = selector.Pick(ctx, "mixed", selectionArgForSelector(selector, model), opts, available)
-			if errPick != nil {
-				return nil, nil, "", errPick
-			}
 		}
 	}
 	if selected == nil {
