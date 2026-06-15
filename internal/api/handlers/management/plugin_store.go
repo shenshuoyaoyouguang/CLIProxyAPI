@@ -300,6 +300,7 @@ func (h *Handler) installPluginFromStore(c *gin.Context, goos, goarch string) {
 // the rest of the plugin's raw configuration. Callers must hold h.mu.
 func (h *Handler) enablePluginConfigLocked(id string) error {
 	ensurePluginConfigMap(h.cfg)
+	h.cfg.Plugins.Configs = clonePluginConfigMap(h.cfg.Plugins.Configs)
 	node := pluginConfigNode(h.cfg.Plugins.Configs[id])
 	setYAMLMappingValue(node, "enabled", boolYAMLNode(true))
 	updated, errConfig := pluginInstanceConfigFromNode(node)

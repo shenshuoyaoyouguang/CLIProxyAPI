@@ -204,9 +204,13 @@ func (h *Handler) APICall(c *gin.Context) {
 		}
 	}()
 
-	respBody, errReadAll := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB limit for API call responses
+	respBody, errReadAll := io.ReadAll(io.LimitReader(resp.Body, 10<<20+1)) // 10MB limit for API call responses
 	if errReadAll != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
+		return
+	}
+	if int64(len(respBody)) > 10<<20 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "response_too_large", "message": "response exceeds maximum allowed size of 10485760 bytes"})
 		return
 	}
 
@@ -778,13 +782,4 @@ func resolveOpenAICompatAPIKeyProxyURL(cfg *config.Config, auth *coreauth.Auth, 
 		}
 	}
 	return ""
-}
-
-func buildProxyTransport(proxyStr string) *http.Transport {
-	transport, _, errBuild := proxyutil.BuildHTTPTransport(proxyStr)
-	if errBuild != nil {
-		log.WithError(errBuild).Debug("build proxy transport failed")
-		return nil
-	}
-	return transport
 }

@@ -24,7 +24,7 @@ From this directory:
 ```bash
 cd go
 go build -buildmode=c-shared -o host-callback-auth-files.dylib .
-rm -f host-callback-auth-files.dylib host-callback-auth-files.h
+rm -f host-callback-auth-files.h
 ```
 
 Use the platform extension expected by your target system:

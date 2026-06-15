@@ -68,9 +68,13 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		return
 	}
 
-	bodyBytes, errRead := io.ReadAll(resp.Body)
+	bodyBytes, errRead := io.ReadAll(io.LimitReader(resp.Body, 1<<20+1))
 	if errRead != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "read_failed", "message": errRead.Error()})
+		return
+	}
+	if int64(len(bodyBytes)) > 1<<20 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "response_too_large", "message": "latest release response exceeds maximum allowed size of 1048576 bytes"})
 		return
 	}
 	var info releaseInfo
@@ -109,9 +113,13 @@ func WriteConfig(path string, data []byte) error {
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 2<<20)) // 2MB limit for config YAML
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 2<<20+1)) // 2MB limit for config YAML
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
+		return
+	}
+	if int64(len(body)) > 2<<20 {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "payload_too_large", "message": "config YAML exceeds maximum allowed size of 2097152 bytes"})
 		return
 	}
 	var cfg config.Config

@@ -37,6 +37,9 @@ func GetBytes(ctx context.Context, client Doer, requestURL string, headers map[s
 	if errDo != nil {
 		return nil, fmt.Errorf("request failed: %w", errDo)
 	}
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("empty response body")
+	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.WithError(errClose).Debug("failed to close response body")

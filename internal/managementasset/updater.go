@@ -85,6 +85,10 @@ func runAutoUpdater(ctx context.Context) {
 			log.Debug("management asset auto-updater skipped: config not yet available")
 			return
 		}
+		if cfg.Home.Enabled {
+			log.Debug("management asset auto-updater skipped: cluster mode enabled")
+			return
+		}
 		if cfg.RemoteManagement.DisableControlPanel {
 			log.Debug("management asset auto-updater skipped: control panel disabled")
 			return

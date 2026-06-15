@@ -169,13 +169,14 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 		// Restore the body for the actual request processing
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-		// Truncate only the log copy to 512KB
-		logBody := bodyBytes
+		// Decode compressed body first, then truncate the decoded result
+		encoding := c.Request.Header.Get("Content-Encoding")
+		decodedBody := decodeCapturedRequestBodyForLog(bodyBytes, encoding)
 		const maxLogBodySize = 512 << 10
-		if len(logBody) > maxLogBodySize {
-			logBody = logBody[:maxLogBodySize]
+		if len(decodedBody) > maxLogBodySize {
+			decodedBody = decodedBody[:maxLogBodySize]
 		}
-		body = decodeCapturedRequestBodyForLog(logBody, c.Request.Header.Get("Content-Encoding"))
+		body = decodedBody
 	}
 
 	return &RequestInfo{

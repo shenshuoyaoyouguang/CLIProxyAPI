@@ -4,8 +4,8 @@ This directory contains standard dynamic library plugin examples for the CLIProx
 
 ## Layout
 
-- `simple/`- : Go-only plugin resource that calls host auth file callbacks (, , , ).
-- : full provider-native skeleton that declares every supported capability.
+- `simple/`: Go-only plugin resource that calls host auth file callbacks.
+- `provider/`: full provider-native skeleton that declares every supported capability.
 - `model/`: model capability only.
 - `auth/`: auth provider capability only.
 - `frontend-auth/`: frontend auth provider capability only.

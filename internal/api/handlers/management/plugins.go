@@ -217,6 +217,7 @@ func (h *Handler) PatchPluginEnabled(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	ensurePluginConfigMap(h.cfg)
+	h.cfg.Plugins.Configs = clonePluginConfigMap(h.cfg.Plugins.Configs)
 	item := h.cfg.Plugins.Configs[id]
 	node := pluginConfigNode(item)
 	setYAMLMappingValue(node, "enabled", boolYAMLNode(*body.Enabled))
@@ -253,6 +254,7 @@ func (h *Handler) PutPluginConfig(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	ensurePluginConfigMap(h.cfg)
+	h.cfg.Plugins.Configs = clonePluginConfigMap(h.cfg.Plugins.Configs)
 	h.cfg.Plugins.Configs[id] = updated
 	h.persistLocked(c)
 }
@@ -271,6 +273,7 @@ func (h *Handler) PatchPluginConfig(c *gin.Context) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	ensurePluginConfigMap(h.cfg)
+	h.cfg.Plugins.Configs = clonePluginConfigMap(h.cfg.Plugins.Configs)
 	node := pluginConfigNode(h.cfg.Plugins.Configs[id])
 	keys := make([]string, 0, len(body))
 	for key := range body {
@@ -353,6 +356,7 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 	}
 
 	h.mu.Lock()
+	h.cfg.Plugins.Configs = clonePluginConfigMap(h.cfg.Plugins.Configs)
 	delete(h.cfg.Plugins.Configs, id)
 	if configured {
 		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
@@ -498,6 +502,17 @@ func ensurePluginConfigMap(cfg *config.Config) {
 		return
 	}
 	cfg.NormalizePluginsConfig()
+}
+
+// clonePluginConfigMap returns a shallow copy of the plugins configs map.
+// It guarantees the returned map is never nil; the source must be non-nil
+// (the caller should call ensurePluginConfigMap first).
+func clonePluginConfigMap(src map[string]config.PluginInstanceConfig) map[string]config.PluginInstanceConfig {
+	dst := make(map[string]config.PluginInstanceConfig, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 func pluginConfigNode(item config.PluginInstanceConfig) *yaml.Node {

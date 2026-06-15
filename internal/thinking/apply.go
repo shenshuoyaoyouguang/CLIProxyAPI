@@ -43,7 +43,7 @@ func GetProviderApplier(provider string) ProviderApplier {
 	}
 	providerAppliersMu.RLock()
 	defer providerAppliersMu.RUnlock()
-	if nativeApplier, okNative := nativeProviderAppliers[provider]; okNative {
+	if nativeApplier, okNative := nativeProviderAppliers[provider]; okNative && nativeApplier != nil {
 		return nativeApplier
 	}
 	return pluginProviderAppliers[provider].applier
