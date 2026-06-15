@@ -2023,12 +2023,13 @@ func TestClaudeExecutor_ExperimentalCCHSigningDisabledByDefaultKeepsLegacyHeader
 		t.Fatal("expected request body to be captured")
 	}
 
+	// Non-Anthropic upstream without CCH signing: billing header should be stripped.
 	billingHeader := gjson.GetBytes(seenBody, "system.0.text").String()
-	if !strings.HasPrefix(billingHeader, "x-anthropic-billing-header:") {
-		t.Fatalf("system.0.text = %q, want billing header", billingHeader)
+	if strings.HasPrefix(billingHeader, "x-anthropic-billing-header:") {
+		t.Fatalf("system.0.text = %q, billing header should be stripped for non-Anthropic upstream", billingHeader)
 	}
-	if strings.Contains(billingHeader, "cch=00000;") {
-		t.Fatalf("legacy mode should not forward cch placeholder, got %q", billingHeader)
+	if !strings.Contains(billingHeader, "Claude Code") {
+		t.Fatalf("system.0.text = %q, want agent identifier after billing header removal", billingHeader)
 	}
 }
 
@@ -2320,3 +2321,186 @@ func TestRestoreClaudeOAuthToolNamesFromStreamLine_MixedCaseWithPrefix(t *testin
 		t.Fatalf("Glob should be restored to glob, got: %s", string(out))
 	}
 }
+
+
+func TestStripBillingHeaderForNonAnthropic_AnthropicUpstream_KeepsHeader(t *testing.T) {
+	payload := []byte(`{
+		"system": [
+			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63.abc; cc_entrypoint=cli; cch=a3f2b;"},
+			{"type":"text","text":"You are Claude Code"},
+			{"type":"text","text":"System instructions"}
+		],
+		"messages": [{"role":"user","content":[{"type":"text","text":"hello"}]}]
+	}`)
+
+	out := stripBillingHeaderForNonAnthropic(payload, "https://api.anthropic.com")
+
+	system := gjson.GetBytes(out, "system")
+	if !system.IsArray() {
+		t.Fatalf("system should remain an array")
+	}
+	blocks := system.Array()
+	if len(blocks) != 3 {
+		t.Fatalf("Anthropic upstream: expected 3 system blocks, got %d", len(blocks))
+	}
+	if got := blocks[0].Get("text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header:") {
+		t.Fatalf("Anthropic upstream: billing header should be preserved, got %q", got)
+	}
+}
+
+func TestStripBillingHeaderForNonAnthropic_ThirdPartyUpstream_StripsHeader(t *testing.T) {
+	payload := []byte(`{
+		"system": [
+			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63.abc; cc_entrypoint=cli; cch=a3f2b;"},
+			{"type":"text","text":"You are Claude Code"},
+			{"type":"text","text":"System instructions"}
+		],
+		"messages": [{"role":"user","content":[{"type":"text","text":"hello"}]}]
+	}`)
+
+	out := stripBillingHeaderForNonAnthropic(payload, "https://api.openai.com")
+
+	system := gjson.GetBytes(out, "system")
+	if !system.IsArray() {
+		t.Fatalf("system should remain an array")
+	}
+	blocks := system.Array()
+	if len(blocks) != 2 {
+		t.Fatalf("Third-party upstream: expected 2 system blocks (billing removed), got %d", len(blocks))
+	}
+	if got := blocks[0].Get("text").String(); !strings.Contains(got, "Claude Code") {
+		t.Fatalf("Third-party upstream: first block should be the agent identifier, got %q", got)
+	}
+	if got := blocks[1].Get("text").String(); !strings.Contains(got, "System instructions") {
+		t.Fatalf("Third-party upstream: second block should be system instructions, got %q", got)
+	}
+}
+
+func TestStripBillingHeaderForNonAnthropic_StringSystem_NoChange(t *testing.T) {
+	payload := []byte(`{
+		"system": "x-anthropic-billing-header: cc_version=2.1.63.abc; cch=a3f2b;",
+		"messages": [{"role":"user","content":[{"type":"text","text":"hello"}]}]
+	}`)
+
+	out := stripBillingHeaderForNonAnthropic(payload, "https://api.openai.com")
+
+	if got := gjson.GetBytes(out, "system").String(); !strings.HasPrefix(got, "x-anthropic-billing-header:") {
+		t.Fatalf("String system: billing header should be preserved (not an array), got %q", got)
+	}
+}
+
+func TestStripBillingHeaderForNonAnthropic_NoBillingHeader_NoChange(t *testing.T) {
+	payload := []byte(`{
+		"system": [
+			{"type":"text","text":"You are Claude Code"},
+			{"type":"text","text":"System instructions"}
+		],
+		"messages": [{"role":"user","content":[{"type":"text","text":"hello"}]}]
+	}`)
+
+	out := stripBillingHeaderForNonAnthropic(payload, "https://api.openai.com")
+
+	blocks := gjson.GetBytes(out, "system").Array()
+	if len(blocks) != 2 {
+		t.Fatalf("No billing header: expected 2 blocks unchanged, got %d", len(blocks))
+	}
+}
+
+func TestStripBillingHeaderForNonAnthropic_SingleBillingBlock_ClearsSystem(t *testing.T) {
+	payload := []byte(`{
+		"system": [
+			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63.abc; cc_entrypoint=cli; cch=a3f2b;"}
+		],
+		"messages": [{"role":"user","content":[{"type":"text","text":"hello"}]}]
+	}`)
+
+	out := stripBillingHeaderForNonAnthropic(payload, "https://api.openai.com")
+
+	system := gjson.GetBytes(out, "system")
+	if !system.IsArray() {
+		t.Fatalf("system should remain an array")
+	}
+	blocks := system.Array()
+	if len(blocks) != 0 {
+		t.Fatalf("Only billing header: expected empty system array, got %d blocks", len(blocks))
+	}
+}
+
+// TestClaudeExecutor_OpenAIToClaude_NonAnthropicUpstream_StripsBillingHeader verifies that
+// OpenAI-format requests translated to Claude format and sent to a non-Anthropic upstream
+// have the billing header stripped. This is the critical path for third-party API caching:
+// the billing header's cch field varies per request and would destroy cache hit rates.
+func TestClaudeExecutor_OpenAIToClaude_NonAnthropicUpstream_StripsBillingHeader(t *testing.T) {
+	var seenBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = bytes.Clone(body)
+		// OpenAI→Claude uses streaming translation (from != to), so return valid SSE stream.
+		w.Header().Set("Content-Type", "text/event-stream")
+		sseMsg := strings.Join([]string{
+			"event: message_start",
+			"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-3-5-sonnet-20241022\"}}",
+			"event: content_block_start",
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+			"event: content_block_delta",
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}",
+			"event: content_block_stop",
+			"data: {\"type\":\"content_block_stop\",\"index\":0}",
+			"event: message_delta",
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}",
+			"event: message_stop",
+			"data: {\"type\":\"message_stop\"}",
+			"",
+		}, "\n")
+		_, _ = w.Write([]byte(sseMsg))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	// OpenAI-format request: system message as a regular message
+	payload := []byte(`{
+		"model": "claude-3-5-sonnet-20241022",
+		"messages": [
+			{"role": "system", "content": "You are a helpful assistant."},
+			{"role": "user", "content": "hello"}
+		]
+	}`)
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(seenBody) == 0 {
+		t.Fatal("expected request body to be captured")
+	}
+
+	// The payload goes through:
+	// 1. ConvertOpenAIRequestToClaude → system in messages[] moved to top-level system
+	// 2. applyCloaking → checkSystemInstructionsWithSigningMode injects billing header as system[0]
+	// 3. stripBillingHeaderForNonAnthropic → removes system[0] for non-Anthropic upstream
+	system := gjson.GetBytes(seenBody, "system")
+	if !system.IsArray() {
+		t.Fatalf("system should be an array after cloaking, got type %s", system.Type)
+	}
+
+	// Verify billing header is NOT present
+	firstText := gjson.GetBytes(seenBody, "system.0.text").String()
+	if strings.HasPrefix(firstText, "x-anthropic-billing-header:") {
+		t.Fatalf("billing header should be stripped for non-Anthropic upstream, got %q", firstText)
+	}
+
+	// Verify the agent identifier is now system[0] and user's system message is preserved
+	if !strings.Contains(firstText, "Claude Code") {
+		t.Fatalf("system[0] should be agent identifier after billing removal, got %q", firstText)
+	}
+}
+

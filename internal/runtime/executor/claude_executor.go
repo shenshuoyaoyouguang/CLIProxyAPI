@@ -237,6 +237,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
 		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
 	}
+	// Strip billing header for non-Anthropic upstreams to prevent cache key churn.
+	// Skip when cch signing is explicitly enabled (OAuth or experimental flag).
+	if !oauthToken && !experimentalCCHSigningEnabled(e.cfg, auth) {
+		bodyForUpstream = stripBillingHeaderForNonAnthropic(bodyForUpstream, baseURL)
+	}
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
@@ -419,6 +424,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// Enable cch signing by default for OAuth tokens (not just experimental flag).
 	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
 		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
+	}
+	// Strip billing header for non-Anthropic upstreams to prevent cache key churn.
+	// Skip when cch signing is explicitly enabled (OAuth or experimental flag).
+	if !oauthToken && !experimentalCCHSigningEnabled(e.cfg, auth) {
+		bodyForUpstream = stripBillingHeaderForNonAnthropic(bodyForUpstream, baseURL)
 	}
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
 
@@ -2460,4 +2470,53 @@ func ensureModelMaxTokens(body []byte, modelID string) []byte {
 	}
 
 	return body
+}
+
+// stripBillingHeaderForNonAnthropic removes the x-anthropic-billing-header system block
+// when the upstream is not api.anthropic.com. Third-party APIs include the billing
+// header's cch field in their cache key, causing cache misses on every request
+// because cch varies with payload content.
+func stripBillingHeaderForNonAnthropic(payload []byte, baseURL string) []byte {
+	if strings.Contains(baseURL, "api.anthropic.com") {
+		return payload
+	}
+
+	system := gjson.GetBytes(payload, "system")
+	if !system.IsArray() {
+		return payload
+	}
+
+	firstText := gjson.GetBytes(payload, "system.0.text").String()
+	if !strings.HasPrefix(firstText, "x-anthropic-billing-header:") {
+		return payload
+	}
+
+	// Remove system[0] and shift remaining elements forward
+	count := int(system.Get("#").Int())
+	if count <= 1 {
+		result, err := sjson.SetRawBytes(payload, "system", []byte("[]"))
+		if err != nil {
+			return payload
+		}
+		return result
+	}
+
+	newSystem := make([]gjson.Result, 0, count-1)
+	system.ForEach(func(idx, item gjson.Result) bool {
+		if int(idx.Int()) > 0 {
+			newSystem = append(newSystem, item)
+		}
+		return true
+	})
+
+	var parts []string
+	for _, item := range newSystem {
+		parts = append(parts, item.Raw)
+	}
+	newSystemRaw := "[" + strings.Join(parts, ",") + "]"
+	result, err := sjson.SetRawBytes(payload, "system", []byte(newSystemRaw))
+	if err != nil {
+		return payload
+	}
+	return result
 }
