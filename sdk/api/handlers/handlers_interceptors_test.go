@@ -201,10 +201,10 @@ func TestHandlerRequestInterceptorRewritesExecutorRequest(t *testing.T) {
 			headers := cloneHeader(req.Headers)
 			headers.Set("X-Original", "plugin")
 			headers.Set("X-Plugin", "1")
-			headers.Del("X-Remove")
 			return pluginapi.RequestInterceptResponse{
-				Headers: headers,
-				Body:    []byte(fmt.Sprintf(`{"model":%q,"plugin":true}`, model)),
+				Headers:      headers,
+				Body:         []byte(fmt.Sprintf(`{"model":%q,"plugin":true}`, model)),
+				ClearHeaders: []string{"X-Remove"},
 			}
 		},
 	})
@@ -382,10 +382,10 @@ func TestHandlerResponseInterceptorRewritesSuccessfulNonStreamResponse(t *testin
 			headers := cloneHeader(req.ResponseHeaders)
 			headers.Set("X-Upstream", "2")
 			headers.Set("X-Plugin", "response")
-			headers.Del("X-Clear")
 			return pluginapi.ResponseInterceptResponse{
-				Headers: headers,
-				Body:    []byte("plugin-body"),
+				Headers:      headers,
+				Body:         []byte("plugin-body"),
+				ClearHeaders: []string{"X-Clear"},
 			}
 		},
 	})

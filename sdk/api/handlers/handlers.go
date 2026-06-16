@@ -1268,18 +1268,24 @@ func finalInterceptorHeadersWithClear(current, intercepted http.Header, clearHea
 		return current
 	}
 	out := make(http.Header)
-	if current != nil {
+	if intercepted != nil {
+		for key, values := range intercepted {
+			out[key] = append([]string(nil), values...)
+		}
+		if current != nil {
+			for key, values := range current {
+				if _, ok := intercepted[key]; !ok {
+					out[key] = append([]string(nil), values...)
+				}
+			}
+		}
+	} else if current != nil {
 		for key, values := range current {
 			out[key] = append([]string(nil), values...)
 		}
 	}
 	for _, key := range clearHeaders {
 		delete(out, key)
-	}
-	if intercepted != nil {
-		for key, values := range intercepted {
-			out[key] = append([]string(nil), values...)
-		}
 	}
 	return out
 }
@@ -1416,14 +1422,14 @@ func mergeRequestInterceptorHeaders(current, updates http.Header, clear []string
 	if out == nil && (len(updates) > 0 || len(clear) > 0) {
 		out = make(http.Header)
 	}
-	for _, key := range clear {
-		out.Del(key)
-	}
 	for key, values := range updates {
 		out.Del(key)
 		for _, value := range values {
 			out.Add(key, value)
 		}
+	}
+	for _, key := range clear {
+		out.Del(key)
 	}
 	return out
 }
@@ -1477,7 +1483,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 		Headers:        cloneHeader(opts.Headers),
 		Body:           cloneBytes(req.Payload),
 		Metadata:       opts.Metadata,
-}, skipPluginID)
+	}, skipPluginID)
 	opts.Headers = finalInterceptorHeadersWithClear(opts.Headers, resp.Headers, resp.ClearHeaders)
 	if len(resp.Body) > 0 {
 		req.Payload = cloneBytes(resp.Body)
@@ -1538,7 +1544,7 @@ func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, handlerT
 		Body:            cloneBytes(body),
 		StatusCode:      statusCode,
 		Metadata:        opts.Metadata,
-}, skipPluginID)
+	}, skipPluginID)
 	responseHeaders = downstreamHeadersAfterInterceptors(rawResponseHeaders, finalInterceptorHeadersWithClear(rawResponseHeaders, resp.Headers, resp.ClearHeaders), PassthroughHeadersEnabled(h.Cfg))
 	if len(resp.Body) > 0 {
 		body = cloneBytes(resp.Body)

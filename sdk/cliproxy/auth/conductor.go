@@ -1745,14 +1745,14 @@ func mergeRequestHeaders(current, updates http.Header, clear []string) http.Head
 	if out == nil && (len(updates) > 0 || len(clear) > 0) {
 		out = make(http.Header)
 	}
-	for _, key := range clear {
-		out.Del(key)
-	}
 	for key, values := range updates {
 		out.Del(key)
 		for _, value := range values {
 			out.Add(key, value)
 		}
+	}
+	for _, key := range clear {
+		out.Del(key)
 	}
 	return out
 }

@@ -2155,14 +2155,14 @@ func mergeHeaders(current, updates http.Header, clear []string) http.Header {
 	if out == nil {
 		out = make(http.Header)
 	}
-	for _, key := range clear {
-		out.Del(key)
-	}
 	for key, values := range updates {
 		out.Del(key)
 		for _, value := range values {
 			out.Add(key, value)
 		}
+	}
+	for _, key := range clear {
+		out.Del(key)
 	}
 	return out
 }
