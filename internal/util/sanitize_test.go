@@ -1,6 +1,7 @@
 package util
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -178,5 +179,23 @@ func TestRestoreSanitizedToolName(t *testing.T) {
 	}
 	if got := RestoreSanitizedToolName(m, ""); got != "" {
 		t.Errorf("expected empty for empty name, got %q", got)
+	}
+}
+
+func TestFixJSONEscapesUnknownBackslashSequences(t *testing.T) {
+	got := FixJSON(`{'path':'C:\Users\alice','pattern':'\p{L}+'}`)
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("FixJSON output is invalid JSON: %s", got)
+	}
+
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("unmarshal fixed JSON: %v", err)
+	}
+	if decoded["path"] != `C:\Users\alice` {
+		t.Fatalf("path = %q, want %q", decoded["path"], `C:\Users\alice`)
+	}
+	if decoded["pattern"] != `\p{L}+` {
+		t.Fatalf("pattern = %q, want %q", decoded["pattern"], `\p{L}+`)
 	}
 }

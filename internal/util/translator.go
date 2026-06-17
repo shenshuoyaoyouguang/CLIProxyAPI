@@ -178,7 +178,9 @@ func FixJSON(input string) string {
 						}
 					}
 				default:
-					// Unknown escape: preserve the backslash and the char
+					// Unknown escape: keep the characters as literal string content
+					// so the converted output remains valid JSON.
+					out.WriteByte('\\')
 					out.WriteByte('\\')
 					out.WriteRune(r)
 				}
