@@ -167,7 +167,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					case "thinking":
 						// Only map thinking to reasoning_content for assistant messages (security: prevent injection)
 						if role == "assistant" {
-							if !shouldMapClaudeThinkingToGPTReasoning(part) {
+							if !shouldMapClaudeThinkingToOpenAIReasoning(modelName, part) {
 								return true
 							}
 							thinkingText := thinking.GetThinkingText(part)
@@ -352,13 +352,21 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	return out
 }
 
-func shouldMapClaudeThinkingToGPTReasoning(part gjson.Result) bool {
-	signature := part.Get("signature")
-	if !signature.Exists() || strings.TrimSpace(signature.String()) == "" {
-		return false
+func shouldMapClaudeThinkingToOpenAIReasoning(modelName string, part gjson.Result) bool {
+	if isDeepSeekReasoningTarget(modelName) {
+		return true
 	}
-	_, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderGPT, signature.String())
-	return ok
+
+	signature := part.Get("signature")
+	if signature.Exists() && strings.TrimSpace(signature.String()) != "" {
+		_, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderGPT, signature.String())
+		return ok
+	}
+	return false
+}
+
+func isDeepSeekReasoningTarget(modelName string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek-")
 }
 
 func convertClaudeContentPart(part gjson.Result) (string, bool) {

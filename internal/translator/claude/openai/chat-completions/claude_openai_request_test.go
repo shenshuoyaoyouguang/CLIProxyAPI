@@ -1,9 +1,11 @@
 package chat_completions
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/tidwall/gjson"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 func TestConvertOpenAIRequestToClaude_ToolResultTextAndBase64Image(t *testing.T) {
@@ -136,6 +138,66 @@ func TestConvertOpenAIRequestToClaude_ToolResultURLImageOnly(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIRequestToClaude_AssistantReasoningContentBecomesThinking(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"messages": [
+			{"role": "user", "content": "question"},
+			{
+				"role": "assistant",
+				"reasoning_content": "prior reasoning",
+				"content": "visible answer"
+			}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	assistant := gjson.GetBytes(result, "messages.1")
+
+	if got := assistant.Get("content.0.type").String(); got != "thinking" {
+		t.Fatalf("content.0.type = %q, want thinking. Output: %s", got, string(result))
+	}
+	if got := assistant.Get("content.0.thinking").String(); got != "prior reasoning" {
+		t.Fatalf("thinking = %q, want prior reasoning. Output: %s", got, string(result))
+	}
+	if assistant.Get("content.0.signature").Exists() {
+		t.Fatalf("unsigned reasoning_content should not synthesize a signature. Output: %s", string(result))
+	}
+	if got := assistant.Get("content.1.text").String(); got != "visible answer" {
+		t.Fatalf("visible answer = %q, want visible answer. Output: %s", got, string(result))
+	}
+}
+
+func TestConvertOpenAIRequestToClaude_AssistantReasoningContentPreservesClaudeSignature(t *testing.T) {
+	signature := validClaudeChatThinkingSignature()
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"messages": [
+			{
+				"role": "assistant",
+				"reasoning_content": {
+					"text": "signed reasoning",
+					"signature": "claude#` + signature + `"
+				},
+				"content": "visible answer"
+			}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	thinking := gjson.GetBytes(result, "messages.0.content.0")
+
+	if got := thinking.Get("type").String(); got != "thinking" {
+		t.Fatalf("content.0.type = %q, want thinking. Output: %s", got, string(result))
+	}
+	if got := thinking.Get("thinking").String(); got != "signed reasoning" {
+		t.Fatalf("thinking = %q, want signed reasoning. Output: %s", got, string(result))
+	}
+	if got := thinking.Get("signature").String(); got != signature {
+		t.Fatalf("signature = %q, want normalized %q. Output: %s", got, signature, string(result))
+	}
+}
+
 func TestConvertOpenAIRequestToClaude_SystemRoleBecomesTopLevelSystem(t *testing.T) {
 	inputJSON := `{
 		"model": "gpt-4.1",
@@ -172,6 +234,27 @@ func TestConvertOpenAIRequestToClaude_SystemRoleBecomesTopLevelSystem(t *testing
 	if got := messages[0].Get("content.0.text").String(); got != "Hello" {
 		t.Fatalf("Expected user text %q, got %q", "Hello", got)
 	}
+}
+
+func validClaudeChatThinkingSignature() string {
+	channelBlock := []byte{}
+	channelBlock = protowire.AppendTag(channelBlock, 1, protowire.VarintType)
+	channelBlock = protowire.AppendVarint(channelBlock, 12)
+	channelBlock = protowire.AppendTag(channelBlock, 2, protowire.VarintType)
+	channelBlock = protowire.AppendVarint(channelBlock, 2)
+	channelBlock = protowire.AppendTag(channelBlock, 6, protowire.BytesType)
+	channelBlock = protowire.AppendString(channelBlock, "claude-sonnet-4-6")
+
+	container := []byte{}
+	container = protowire.AppendTag(container, 1, protowire.BytesType)
+	container = protowire.AppendBytes(container, channelBlock)
+
+	payload := []byte{}
+	payload = protowire.AppendTag(payload, 2, protowire.BytesType)
+	payload = protowire.AppendBytes(payload, container)
+	payload = protowire.AppendTag(payload, 3, protowire.VarintType)
+	payload = protowire.AppendVarint(payload, 1)
+	return base64.StdEncoding.EncodeToString(payload)
 }
 
 func TestConvertOpenAIRequestToClaude_MultipleSystemMessagesMergedIntoTopLevelSystem(t *testing.T) {

@@ -3,11 +3,13 @@ package claude
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 type sseEvent struct {
@@ -550,6 +552,76 @@ func TestStreamingNoOutputChunkDoesNotFallbackToRawOpenAI(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponseToClaude_NonStreamReasoningContentDoesNotSynthesizeSignature(t *testing.T) {
+	resp := []byte(`{"id":"r1","model":"deepseek-reasoner","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","reasoning_content":"plain reasoning","content":"answer"}}]}`)
+
+	var param any
+	out := ConvertOpenAIResponseToClaudeNonStream(context.Background(), "deepseek-reasoner", nil, nil, resp, &param)
+	thinking := firstThinkingBlock(out)
+
+	if got := thinking.Get("type").String(); got != "thinking" {
+		t.Fatalf("thinking block type = %q, want thinking. Output: %s", got, string(out))
+	}
+	if got := thinking.Get("thinking").String(); got != "plain reasoning" {
+		t.Fatalf("thinking = %q, want plain reasoning. Output: %s", got, string(out))
+	}
+	if thinking.Get("signature").Exists() {
+		t.Fatalf("plain reasoning_content must not synthesize signature. Output: %s", string(out))
+	}
+}
+
+func TestOpenAIResponseToClaude_NonStreamReasoningContentPreservesClaudeSignature(t *testing.T) {
+	signature := validClaudeResponseThinkingSignature()
+	resp := []byte(`{
+		"id":"r1",
+		"model":"m",
+		"choices":[{
+			"index":0,
+			"finish_reason":"stop",
+			"message":{
+				"role":"assistant",
+				"reasoning_content":{"text":"signed reasoning","signature":"claude#` + signature + `"},
+				"content":"answer"
+			}
+		}]
+	}`)
+
+	var param any
+	out := ConvertOpenAIResponseToClaudeNonStream(context.Background(), "m", nil, nil, resp, &param)
+	thinking := firstThinkingBlock(out)
+
+	if got := thinking.Get("thinking").String(); got != "signed reasoning" {
+		t.Fatalf("thinking = %q, want signed reasoning. Output: %s", got, string(out))
+	}
+	if got := thinking.Get("signature").String(); got != signature {
+		t.Fatalf("signature = %q, want normalized %q. Output: %s", got, signature, string(out))
+	}
+}
+
+func TestOpenAIResponseToClaude_StreamReasoningContentPreservesClaudeSignatureDelta(t *testing.T) {
+	signature := validClaudeResponseThinkingSignature()
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":{"text":"signed","signature":"claude#`+signature+`"}}}]}`,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	var sawSignature bool
+	for _, event := range events {
+		if event.Type != "content_block_delta" {
+			continue
+		}
+		if gjson.Get(event.Payload, "delta.type").String() == "signature_delta" {
+			sawSignature = true
+			if got := gjson.Get(event.Payload, "delta.signature").String(); got != signature {
+				t.Fatalf("signature_delta = %q, want %q", got, signature)
+			}
+		}
+	}
+	if !sawSignature {
+		t.Fatalf("expected signature_delta event, got %+v", events)
+	}
+}
+
 // nonStreamToolUses extracts tool_use content blocks from a non-streaming
 // Anthropic message payload.
 func nonStreamToolUses(payload []byte) []gjson.Result {
@@ -557,6 +629,18 @@ func nonStreamToolUses(payload []byte) []gjson.Result {
 	gjson.GetBytes(payload, "content").ForEach(func(_, block gjson.Result) bool {
 		if block.Get("type").String() == "tool_use" {
 			out = append(out, block)
+		}
+		return true
+	})
+	return out
+}
+
+func firstThinkingBlock(payload []byte) gjson.Result {
+	var out gjson.Result
+	gjson.GetBytes(payload, "content").ForEach(func(_, block gjson.Result) bool {
+		if block.Get("type").String() == "thinking" {
+			out = block
+			return false
 		}
 		return true
 	})
@@ -617,6 +701,27 @@ func TestNonStreamingTool_EmptyNameAndEmptyArgsSkipped(t *testing.T) {
 	if tools := nonStreamToolUses(out); len(tools) != 0 {
 		t.Fatalf("expected empty-name empty-args tool_use to be skipped, got %d (out=%s)", len(tools), string(out))
 	}
+}
+
+func validClaudeResponseThinkingSignature() string {
+	channelBlock := []byte{}
+	channelBlock = protowire.AppendTag(channelBlock, 1, protowire.VarintType)
+	channelBlock = protowire.AppendVarint(channelBlock, 12)
+	channelBlock = protowire.AppendTag(channelBlock, 2, protowire.VarintType)
+	channelBlock = protowire.AppendVarint(channelBlock, 2)
+	channelBlock = protowire.AppendTag(channelBlock, 6, protowire.BytesType)
+	channelBlock = protowire.AppendString(channelBlock, "claude-sonnet-4-6")
+
+	container := []byte{}
+	container = protowire.AppendTag(container, 1, protowire.BytesType)
+	container = protowire.AppendBytes(container, channelBlock)
+
+	payload := []byte{}
+	payload = protowire.AppendTag(payload, 2, protowire.BytesType)
+	payload = protowire.AppendBytes(payload, container)
+	payload = protowire.AppendTag(payload, 3, protowire.VarintType)
+	payload = protowire.AppendVarint(payload, 1)
+	return base64.StdEncoding.EncodeToString(payload)
 }
 
 func TestStreamFalseDispatch_EmptyNameInferred(t *testing.T) {

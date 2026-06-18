@@ -347,6 +347,32 @@ func TestConvertClaudeRequestToOpenAI_UnsignedThinkingOnlyMessageDropped(t *test
 	}
 }
 
+func TestConvertClaudeRequestToOpenAI_DeepSeekKeepsUnsignedThinkingAsReasoningContent(t *testing.T) {
+	inputJSON := `{
+		"model": "claude-3-opus",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "What is 2+2?"}]},
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "thinking", "thinking": "DeepSeek requires this reasoning on replay."},
+					{"type": "text", "text": "4"}
+				]
+			}
+		]
+	}`
+
+	result := ConvertClaudeRequestToOpenAI("deepseek-reasoner", []byte(inputJSON), false)
+	assistant := gjson.GetBytes(result, "messages.1")
+
+	if got := assistant.Get("reasoning_content").String(); got != "DeepSeek requires this reasoning on replay." {
+		t.Fatalf("reasoning_content = %q, want DeepSeek replay reasoning. Output: %s", got, string(result))
+	}
+	if got := assistant.Get("content.0.text").String(); got != "4" {
+		t.Fatalf("visible content = %q, want 4. Output: %s", got, string(result))
+	}
+}
+
 func validGPTChatReasoningSignature() string {
 	raw := make([]byte, 1+8+16+16+32)
 	raw[0] = 0x80

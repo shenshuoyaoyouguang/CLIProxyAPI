@@ -12,8 +12,9 @@ go build -o cli-proxy-api ./cmd/server # Build
 go run ./cmd/server # Run dev server
 go test ./... # Run all tests
 go test -v -run TestName ./path/to/pkg # Run single test
-go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRED after changes)
+go build -o test-output ./cmd/server # Verify compile (REQUIRED after changes)
 ```
+- Remove `test-output` using your current shell after verification
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
 ## Config
@@ -25,7 +26,6 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 ## Architecture
 - `cmd/server/` — Server entrypoint
 - `internal/api/` — Gin HTTP API (routes, middleware, modules)
-- `internal/api/modules/amp/` — Amp integration (Amp-style routes + reverse proxy)
 - `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
 - `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket)
 - `internal/translator/` — Provider protocol translators (and shared `common`)
@@ -57,20 +57,3 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
 - Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
 
-## Known Pitfalls
-
-### [nil-applier] nativeProviderAppliers 包含 nil 初始值
-`internal/thinking/apply.go:22-32` — 所有内置 provider 在 `nativeProviderAppliers` 中的初始值为 nil，只有通过 `RegisterProvider` 注册后才变为非 nil。`GetProviderApplier()` 曾直接返回 nil 值，如果 applier 尚未注册就被调用，调用方可能因 nil 接口调用而 panic。已于 2026-06-15 修复：添加 `&& nativeApplier != nil` 检查。
-→ 详见: `.omc/reports/merge-audit-2026-06-15.md`
-
-### [LimitReader-inconsistency] LimitReader 使用模式不统一
-`80ccf125` 提交在 8 处添加了 `io.LimitReader`，但工作区未提交修改中的 3 处使用了 `N+1` 模式（`1<<20+1` + 显式超限检查），其他位置没有显式超限检查。如果未来 LimitReader 实现有 bug，可能静默失败。建议统一使用 helper函数 `readLimited()`。
-→ 详见: `.omc/reports/merge-audit-2026-06-15.md`
-
-### [merge-divergence] main 与 origin/main 深度分叉
-本地 main 与 origin/main 有 113 个共同修改文件但不同的提交 SHA（两边都对同一批上游内容做了 merge）。推送前必须先 `git merge origin/main` 解决冲突。不要直接 `git push --force`。
-→ 详见: `.omc/reports/merge-audit-2026-06-15.md`
-
-### [compilation-bug] origin/main conductor.go 有预存编译错误
-`origin/main` 的 `sdk/cliproxy/auth/conductor.go:3631,3797` 调用了 `selector.Strategy()`，但 `Selector` 接口没有定义 `Strategy()` 方法，且所有 selector 实现也都没有此方法。这是上游 commit `6296f79e` 引入的 bug。合并 origin/main 后需 revert conductor.go 到本地版本。
-→ 详见: `.omc/reports/merge-audit-2026-06-15.md`
