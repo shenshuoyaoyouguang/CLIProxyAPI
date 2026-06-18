@@ -682,6 +682,9 @@ func convertResponsesToolToClaudeTools(tool gjson.Result, toolNameMap map[string
 			return [][]byte{tJSON}
 		}
 	default:
+		if isOpenAIResponsesApplyPatchCustomTool(toolType, tool) {
+			return nil
+		}
 		if isUnsupportedOpenAIBuiltinToolType(toolType) {
 			return nil
 		}
@@ -690,6 +693,10 @@ func convertResponsesToolToClaudeTools(tool gjson.Result, toolNameMap map[string
 		}
 	}
 	return nil
+}
+
+func isOpenAIResponsesApplyPatchCustomTool(toolType string, tool gjson.Result) bool {
+	return toolType == "custom" && strings.TrimSpace(tool.Get("name").String()) == "apply_patch"
 }
 
 func convertResponsesNamespaceToolToClaude(tool gjson.Result, toolNameMap map[string]string) [][]byte {
