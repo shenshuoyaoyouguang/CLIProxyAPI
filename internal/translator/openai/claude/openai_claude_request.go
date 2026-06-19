@@ -8,8 +8,10 @@ package claude
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	translatorreasoning "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/reasoning"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -156,7 +158,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			// Handle content
 			if contentResult.Exists() && contentResult.IsArray() {
 				contentItems := make([][]byte, 0)
-				var reasoningParts []string // Accumulate thinking text for reasoning_content
+				var reasoningParts []translatorreasoning.OpenAIReasoningPart
 				var toolCalls []interface{}
 				toolResults := make([][]byte, 0) // Collect tool_result messages to emit after the main message
 
@@ -167,13 +169,8 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					case "thinking":
 						// Only map thinking to reasoning_content for assistant messages (security: prevent injection)
 						if role == "assistant" {
-							if !shouldMapClaudeThinkingToOpenAIReasoning(modelName, part) {
-								return true
-							}
-							thinkingText := thinking.GetThinkingText(part)
-							// Skip empty or whitespace-only thinking
-							if strings.TrimSpace(thinkingText) != "" {
-								reasoningParts = append(reasoningParts, thinkingText)
+							if reasoningPart, ok := claudeThinkingToOpenAIReasoningPart(modelName, part); ok {
+								reasoningParts = append(reasoningParts, reasoningPart)
 							}
 						}
 						// Ignore thinking in user/system roles (AC4)
@@ -218,14 +215,8 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					return true
 				})
 
-				// Build reasoning content string
-				reasoningContent := ""
-				if len(reasoningParts) > 0 {
-					reasoningContent = strings.Join(reasoningParts, "\n\n")
-				}
-
 				hasContent := len(contentItems) > 0
-				hasReasoning := reasoningContent != ""
+				hasReasoning := len(reasoningParts) > 0
 				hasToolCalls := len(toolCalls) > 0
 				hasToolResults := len(toolResults) > 0
 
@@ -256,7 +247,11 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 						// Add reasoning_content if present
 						if hasReasoning {
-							msgJSON, _ = sjson.SetBytes(msgJSON, "reasoning_content", reasoningContent)
+							if modelkind.IsDeepSeekModel(modelName) {
+								msgJSON, _ = sjson.SetBytes(msgJSON, "reasoning_content", joinOpenAIReasoningTexts(reasoningParts))
+							} else {
+								msgJSON, _ = sjson.SetRawBytes(msgJSON, "reasoning_content", marshalOpenAIReasoningParts(reasoningParts))
+							}
 						}
 
 						// Add tool_calls if present (in same message as content)
@@ -352,21 +347,53 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	return out
 }
 
-func shouldMapClaudeThinkingToOpenAIReasoning(modelName string, part gjson.Result) bool {
-	if isDeepSeekReasoningTarget(modelName) {
-		return true
+func claudeThinkingToOpenAIReasoningPart(modelName string, part gjson.Result) (translatorreasoning.OpenAIReasoningPart, bool) {
+	thinkingText := thinking.GetThinkingText(part)
+	if strings.TrimSpace(thinkingText) == "" {
+		return translatorreasoning.OpenAIReasoningPart{}, false
+	}
+	if modelkind.IsDeepSeekModel(modelName) {
+		return translatorreasoning.OpenAIReasoningPart{Text: thinkingText}, true
 	}
 
-	signature := part.Get("signature")
-	if signature.Exists() && strings.TrimSpace(signature.String()) != "" {
-		_, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderGPT, signature.String())
-		return ok
+	signature := translatorreasoning.CompatibleSignature(
+		sigcompat.SignatureProviderGPT,
+		part.Get("signature").String(),
+		sigcompat.SignatureBlockKindUnknown,
+	)
+	if signature == "" {
+		return translatorreasoning.OpenAIReasoningPart{}, false
 	}
-	return false
+	return translatorreasoning.OpenAIReasoningPart{Text: thinkingText, Signature: signature}, true
 }
 
-func isDeepSeekReasoningTarget(modelName string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek-")
+func joinOpenAIReasoningTexts(parts []translatorreasoning.OpenAIReasoningPart) string {
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		texts = append(texts, part.Text)
+	}
+	return strings.Join(texts, "\n\n")
+}
+
+func marshalOpenAIReasoningParts(parts []translatorreasoning.OpenAIReasoningPart) []byte {
+	if len(parts) == 1 {
+		return marshalOpenAIReasoningPart(parts[0])
+	}
+
+	out := []byte(`[]`)
+	for _, part := range parts {
+		out, _ = sjson.SetRawBytes(out, "-1", marshalOpenAIReasoningPart(part))
+	}
+	return out
+}
+
+func marshalOpenAIReasoningPart(part translatorreasoning.OpenAIReasoningPart) []byte {
+	out := []byte(`{"text":""}`)
+	out, _ = sjson.SetBytes(out, "text", part.Text)
+	if part.Signature != "" {
+		out, _ = sjson.SetBytes(out, "signature", part.Signature)
+	}
+	return out
 }
 
 func convertClaudeContentPart(part gjson.Result) (string, bool) {

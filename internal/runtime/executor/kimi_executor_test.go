@@ -178,6 +178,23 @@ func TestNormalizeKimiToolMessageLinks_PreservesExistingAssistantReasoning(t *te
 	}
 }
 
+func TestNormalizeKimiToolMessageLinks_PreservesStructuredAssistantReasoning(t *testing.T) {
+	body := []byte(`{
+		"messages":[
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list_directory","arguments":"{}"}}],"reasoning_content":{"text":"keep me","signature":"gpt#abc"}}
+		]
+	}`)
+
+	out, err := normalizeKimiToolMessageLinks(body)
+	if err != nil {
+		t.Fatalf("normalizeKimiToolMessageLinks() error = %v", err)
+	}
+
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content.text").String(); got != "keep me" {
+		t.Fatalf("messages.0.reasoning_content.text = %q, want %q", got, "keep me")
+	}
+}
+
 func TestNormalizeKimiToolMessageLinks_RepairsIDsAndReasoningTogether(t *testing.T) {
 	body := []byte(`{
 		"messages":[

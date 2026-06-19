@@ -251,31 +251,30 @@ func TestConvertClaudeRequestToOpenAI_SignedThinkingCompatibility(t *testing.T) 
 	tests := []struct {
 		name                    string
 		signature               string
-		wantReasoningContent    string
+		wantReasoningText       string
+		wantReasoningSignature  string
 		wantHasReasoningContent bool
 	}{
 		{
 			name:                    "GPT-compatible signature keeps reasoning_content",
 			signature:               validGPTChatReasoningSignature(),
-			wantReasoningContent:    "provider state",
+			wantReasoningText:       "provider state",
+			wantReasoningSignature:  validGPTChatReasoningSignature(),
 			wantHasReasoningContent: true,
 		},
 		{
 			name:                    "Claude signature drops reasoning_content",
 			signature:               "claude#EjQ=",
-			wantReasoningContent:    "",
 			wantHasReasoningContent: false,
 		},
 		{
 			name:                    "Gemini signature drops reasoning_content",
 			signature:               "gemini#EjQKMgEMOdbHO0Gd+c9Mxk4ELwPGbpCEcp2mFfYYLix2UVtBH3fL8GECc4+JITVnHF4qZDsA",
-			wantReasoningContent:    "",
 			wantHasReasoningContent: false,
 		},
 		{
 			name:                    "Unknown signature drops reasoning_content",
 			signature:               "not-a-provider-signature",
-			wantReasoningContent:    "",
 			wantHasReasoningContent: false,
 		},
 	}
@@ -295,19 +294,61 @@ func TestConvertClaudeRequestToOpenAI_SignedThinkingCompatibility(t *testing.T) 
 
 			result := ConvertClaudeRequestToOpenAI("gpt-5", []byte(inputJSON), false)
 			assistantMsg := gjson.GetBytes(result, "messages.0")
-			gotReasoningContent := assistantMsg.Get("reasoning_content").String()
-			gotHasReasoningContent := assistantMsg.Get("reasoning_content").Exists()
+			reasoningContent := assistantMsg.Get("reasoning_content")
+			gotHasReasoningContent := reasoningContent.Exists()
 
 			if gotHasReasoningContent != tt.wantHasReasoningContent {
 				t.Fatalf("reasoning_content exists = %v, want %v. Output: %s", gotHasReasoningContent, tt.wantHasReasoningContent, string(result))
 			}
-			if gotReasoningContent != tt.wantReasoningContent {
-				t.Fatalf("reasoning_content = %q, want %q. Output: %s", gotReasoningContent, tt.wantReasoningContent, string(result))
+			if tt.wantHasReasoningContent {
+				if got := reasoningContent.Get("text").String(); got != tt.wantReasoningText {
+					t.Fatalf("reasoning_content.text = %q, want %q. Output: %s", got, tt.wantReasoningText, string(result))
+				}
+				if got := reasoningContent.Get("signature").String(); got != tt.wantReasoningSignature {
+					t.Fatalf("reasoning_content.signature = %q, want %q. Output: %s", got, tt.wantReasoningSignature, string(result))
+				}
 			}
 			if got := assistantMsg.Get("content.0.text").String(); got != "visible answer" {
 				t.Fatalf("visible content = %q, want visible answer. Output: %s", got, string(result))
 			}
 		})
+	}
+}
+
+func TestConvertClaudeRequestToOpenAI_MultipleSignedThinkingPartsPreserveSignatures(t *testing.T) {
+	signature1 := validGPTChatReasoningSignature()
+	signature2 := "gpt#" + validGPTChatReasoningSignature()
+	inputJSON := `{
+		"model": "claude-3-opus",
+		"messages": [{
+			"role": "assistant",
+			"content": [
+				{"type": "thinking", "thinking": "first provider state", "signature": "` + signature1 + `"},
+				{"type": "thinking", "thinking": "second provider state", "signature": "` + signature2 + `"},
+				{"type": "text", "text": "visible answer"}
+			]
+		}]
+	}`
+
+	result := ConvertClaudeRequestToOpenAI("gpt-5", []byte(inputJSON), false)
+	reasoning := gjson.GetBytes(result, "messages.0.reasoning_content")
+
+	if !reasoning.IsArray() {
+		t.Fatalf("reasoning_content should be an array for multiple signed parts. Output: %s", string(result))
+	}
+	parts := reasoning.Array()
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 reasoning parts, got %d. Output: %s", len(parts), string(result))
+	}
+	wantTexts := []string{"first provider state", "second provider state"}
+	wantSignatures := []string{signature1, validGPTChatReasoningSignature()}
+	for i := range parts {
+		if got := parts[i].Get("text").String(); got != wantTexts[i] {
+			t.Fatalf("reasoning_content.%d.text = %q, want %q. Output: %s", i, got, wantTexts[i], string(result))
+		}
+		if got := parts[i].Get("signature").String(); got != wantSignatures[i] {
+			t.Fatalf("reasoning_content.%d.signature = %q, want %q. Output: %s", i, got, wantSignatures[i], string(result))
+		}
 	}
 }
 
@@ -370,6 +411,32 @@ func TestConvertClaudeRequestToOpenAI_DeepSeekKeepsUnsignedThinkingAsReasoningCo
 	}
 	if got := assistant.Get("content.0.text").String(); got != "4" {
 		t.Fatalf("visible content = %q, want 4. Output: %s", got, string(result))
+	}
+}
+
+func TestConvertClaudeRequestToOpenAI_DeepSeekDropsThinkingSignature(t *testing.T) {
+	inputJSON := `{
+		"model": "claude-3-opus",
+		"messages": [{
+			"role": "assistant",
+			"content": [
+				{"type": "thinking", "thinking": "DeepSeek replay text.", "signature": "` + validGPTChatReasoningSignature() + `"},
+				{"type": "text", "text": "answer"}
+			]
+		}]
+	}`
+
+	result := ConvertClaudeRequestToOpenAI("deepseek-reasoner", []byte(inputJSON), false)
+	reasoning := gjson.GetBytes(result, "messages.0.reasoning_content")
+
+	if reasoning.Type != gjson.String {
+		t.Fatalf("DeepSeek reasoning_content should remain a string. Output: %s", string(result))
+	}
+	if got := reasoning.String(); got != "DeepSeek replay text." {
+		t.Fatalf("reasoning_content = %q, want DeepSeek replay text. Output: %s", got, string(result))
+	}
+	if reasoning.Get("signature").Exists() {
+		t.Fatalf("DeepSeek reasoning_content must not carry a signature. Output: %s", string(result))
 	}
 }
 

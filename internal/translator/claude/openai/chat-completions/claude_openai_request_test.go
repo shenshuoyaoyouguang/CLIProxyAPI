@@ -198,6 +198,81 @@ func TestConvertOpenAIRequestToClaude_AssistantReasoningContentPreservesClaudeSi
 	}
 }
 
+func TestConvertOpenAIRequestToClaude_KeepsTopLevelAndContentReasoning(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"messages": [{
+			"role": "assistant",
+			"reasoning_content": "top-level reasoning",
+			"content": [
+				{"type": "reasoning", "text": "content reasoning"},
+				{"type": "text", "text": "visible answer"}
+			]
+		}]
+	}`
+
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	content := gjson.GetBytes(result, "messages.0.content")
+
+	if got := content.Get("0.type").String(); got != "thinking" {
+		t.Fatalf("content.0.type = %q, want thinking. Output: %s", got, string(result))
+	}
+	if got := content.Get("0.thinking").String(); got != "top-level reasoning" {
+		t.Fatalf("content.0.thinking = %q, want top-level reasoning. Output: %s", got, string(result))
+	}
+	if got := content.Get("1.type").String(); got != "thinking" {
+		t.Fatalf("content.1.type = %q, want thinking. Output: %s", got, string(result))
+	}
+	if got := content.Get("1.thinking").String(); got != "content reasoning" {
+		t.Fatalf("content.1.thinking = %q, want content reasoning. Output: %s", got, string(result))
+	}
+	if got := content.Get("2.text").String(); got != "visible answer" {
+		t.Fatalf("content.2.text = %q, want visible answer. Output: %s", got, string(result))
+	}
+}
+
+func TestConvertOpenAIRequestToClaude_NumericReasoningContentUsesRawFallback(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"messages": [{
+			"role": "assistant",
+			"reasoning_content": 12345,
+			"content": "visible answer"
+		}]
+	}`
+
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	thinking := gjson.GetBytes(result, "messages.0.content.0")
+
+	if got := thinking.Get("type").String(); got != "thinking" {
+		t.Fatalf("content.0.type = %q, want thinking. Output: %s", got, string(result))
+	}
+	if got := thinking.Get("thinking").String(); got != "12345" {
+		t.Fatalf("thinking = %q, want 12345. Output: %s", got, string(result))
+	}
+}
+
+func TestConvertOpenAIRequestToClaude_NullReasoningContentIsIgnored(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"messages": [{
+			"role": "assistant",
+			"reasoning_content": null,
+			"content": "visible answer"
+		}]
+	}`
+
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	content := gjson.GetBytes(result, "messages.0.content")
+
+	if len(content.Array()) != 1 {
+		t.Fatalf("expected only visible content block, got %s", content.Raw)
+	}
+	if got := content.Get("0.type").String(); got != "text" {
+		t.Fatalf("content.0.type = %q, want text. Output: %s", got, string(result))
+	}
+}
+
 func TestConvertOpenAIRequestToClaude_SystemRoleBecomesTopLevelSystem(t *testing.T) {
 	inputJSON := `{
 		"model": "gpt-4.1",

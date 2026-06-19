@@ -622,6 +622,118 @@ func TestOpenAIResponseToClaude_StreamReasoningContentPreservesClaudeSignatureDe
 	}
 }
 
+func TestOpenAIResponseToClaude_StreamSignatureOnlyReasoningEmitsThinkingBlock(t *testing.T) {
+	signature := validClaudeResponseThinkingSignature()
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":{"signature":"claude#`+signature+`"}}}]}`,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	var got []string
+	var gotSignature string
+	for _, event := range events {
+		switch event.Type {
+		case "content_block_start":
+			if gjson.Get(event.Payload, "content_block.type").String() == "thinking" {
+				got = append(got, "thinking_start")
+			}
+		case "content_block_delta":
+			switch gjson.Get(event.Payload, "delta.type").String() {
+			case "thinking_delta":
+				got = append(got, "thinking_delta")
+			case "signature_delta":
+				got = append(got, "signature_delta")
+				gotSignature = gjson.Get(event.Payload, "delta.signature").String()
+			}
+		case "content_block_stop":
+			got = append(got, "thinking_stop")
+		}
+	}
+
+	if gotSignature != signature {
+		t.Fatalf("signature_delta = %q, want %q. Events: %+v", gotSignature, signature, events)
+	}
+	if gotJoined := strings.Join(got, ","); gotJoined != "thinking_start,signature_delta,thinking_stop" {
+		t.Fatalf("event sequence = %s, want thinking_start,signature_delta,thinking_stop. Events: %+v", gotJoined, events)
+	}
+}
+
+func TestOpenAIResponseToClaude_StreamEmitsSignatureBeforeTextSwitch(t *testing.T) {
+	signature := validClaudeResponseThinkingSignature()
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thinking text"}}]}`,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{"reasoning_content":{"signature":"claude#`+signature+`"}}}]}`,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{"content":"visible answer"}}]}`,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	var got []string
+	for _, event := range events {
+		switch event.Type {
+		case "content_block_start":
+			switch gjson.Get(event.Payload, "content_block.type").String() {
+			case "thinking":
+				got = append(got, "thinking_start")
+			case "text":
+				got = append(got, "text_start")
+			}
+		case "content_block_delta":
+			switch gjson.Get(event.Payload, "delta.type").String() {
+			case "thinking_delta":
+				got = append(got, "thinking_delta")
+			case "signature_delta":
+				got = append(got, "signature_delta")
+			case "text_delta":
+				got = append(got, "text_delta")
+			}
+		case "content_block_stop":
+			got = append(got, "block_stop")
+		}
+	}
+
+	want := "thinking_start,thinking_delta,signature_delta,block_stop,text_start,text_delta,block_stop"
+	if gotJoined := strings.Join(got, ","); gotJoined != want {
+		t.Fatalf("event sequence = %s, want %s. Events: %+v", gotJoined, want, events)
+	}
+}
+
+func TestOpenAIResponseToClaude_StreamMultipleSignedReasoningPartsKeepEachSignature(t *testing.T) {
+	signature1 := validClaudeResponseThinkingSignatureForModel("claude-sonnet-4-6-a")
+	signature2 := validClaudeResponseThinkingSignatureForModel("claude-sonnet-4-6-b")
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":[{"text":"first","signature":"claude#`+signature1+`"},{"text":"second","signature":"claude#`+signature2+`"}]}}]}`,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	var signatures []string
+	for _, event := range events {
+		if event.Type != "content_block_delta" || gjson.Get(event.Payload, "delta.type").String() != "signature_delta" {
+			continue
+		}
+		signatures = append(signatures, gjson.Get(event.Payload, "delta.signature").String())
+	}
+
+	if len(signatures) != 2 {
+		t.Fatalf("expected 2 signature_delta events, got %d (%v). Events: %+v", len(signatures), signatures, events)
+	}
+	if signatures[0] != signature1 || signatures[1] != signature2 {
+		t.Fatalf("signatures = %v, want [%s %s]. Events: %+v", signatures, signature1, signature2, events)
+	}
+}
+
+func TestOpenAIResponseToClaude_StreamNullReasoningContentDoesNotEmitThinking(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":null,"content":"visible"}}]}`,
+		`{"id":"c1","model":"m","created":1,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	for _, event := range events {
+		if event.Type == "content_block_delta" && gjson.Get(event.Payload, "delta.type").String() == "thinking_delta" {
+			t.Fatalf("null reasoning_content should not emit thinking_delta: %+v", events)
+		}
+	}
+}
+
 // nonStreamToolUses extracts tool_use content blocks from a non-streaming
 // Anthropic message payload.
 func nonStreamToolUses(payload []byte) []gjson.Result {
@@ -704,13 +816,17 @@ func TestNonStreamingTool_EmptyNameAndEmptyArgsSkipped(t *testing.T) {
 }
 
 func validClaudeResponseThinkingSignature() string {
+	return validClaudeResponseThinkingSignatureForModel("claude-sonnet-4-6")
+}
+
+func validClaudeResponseThinkingSignatureForModel(model string) string {
 	channelBlock := []byte{}
 	channelBlock = protowire.AppendTag(channelBlock, 1, protowire.VarintType)
 	channelBlock = protowire.AppendVarint(channelBlock, 12)
 	channelBlock = protowire.AppendTag(channelBlock, 2, protowire.VarintType)
 	channelBlock = protowire.AppendVarint(channelBlock, 2)
 	channelBlock = protowire.AppendTag(channelBlock, 6, protowire.BytesType)
-	channelBlock = protowire.AppendString(channelBlock, "claude-sonnet-4-6")
+	channelBlock = protowire.AppendString(channelBlock, model)
 
 	container := []byte{}
 	container = protowire.AppendTag(container, 1, protowire.BytesType)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	translatorreasoning "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/reasoning"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -58,7 +59,7 @@ func preserveReasoningContent(original, translated []byte) ([]byte, error) {
 
 	out := translated
 	assistantOrdinal := 0
-	patches := make(map[int]string)
+	patches := make(map[int]gjson.Result)
 	for i, msg := range transMsgArr {
 		if strings.TrimSpace(msg.Get("role").String()) != "assistant" {
 			continue
@@ -77,7 +78,7 @@ func preserveReasoningContent(original, translated []byte) ([]byte, error) {
 		for i, msg := range transMsgArr {
 			msgBytes := []byte(msg.Raw)
 			if rc, ok := patches[i]; ok {
-				patched, err := sjson.SetBytes(msgBytes, reasoningContentKey, rc)
+				patched, err := setJSONResult(msgBytes, reasoningContentKey, rc)
 				if err != nil {
 					return translated, fmt.Errorf("preserveReasoningContent: failed to set reasoning_content at index %d: %w", i, err)
 				}
@@ -161,8 +162,8 @@ func convertReasoningToThinkingContent(payload []byte) ([]byte, error) {
 		if !rc.Exists() {
 			continue
 		}
-		reasoningText := rc.String()
-		if strings.TrimSpace(reasoningText) == "" {
+		reasoningParts := openAIReasoningPartsForExecutor(rc)
+		if len(reasoningParts) == 0 {
 			continue
 		}
 		needsRewrite = true
@@ -187,7 +188,8 @@ func convertReasoningToThinkingContent(payload []byte) ([]byte, error) {
 		}
 
 		rc := msg.Get(reasoningContentKey)
-		if !rc.Exists() || strings.TrimSpace(rc.String()) == "" {
+		reasoningParts := openAIReasoningPartsForExecutor(rc)
+		if !rc.Exists() || len(reasoningParts) == 0 {
 			var errAppend error
 			outMsgs, errAppend = sjson.SetRawBytes(outMsgs, "-1", msgBytes)
 			if errAppend != nil {
@@ -196,58 +198,10 @@ func convertReasoningToThinkingContent(payload []byte) ([]byte, error) {
 			continue
 		}
 
-		reasoningText := rc.String()
-
-		thinkingBlock := []byte(`{"type":"thinking","thinking":""}`)
-		var errSet error
-		thinkingBlock, errSet = sjson.SetBytes(thinkingBlock, "thinking", reasoningText)
-		if errSet != nil {
-			return payload, fmt.Errorf("convertReasoningToThinkingContent: failed to set thinking text: %w", errSet)
-		}
-
 		content := msg.Get("content")
-		var newContent []byte
-
-		if content.Exists() && content.IsArray() {
-			newContent = []byte("[]")
-			var errAppend error
-			newContent, errAppend = sjson.SetRawBytes(newContent, "-1", thinkingBlock)
-			if errAppend != nil {
-				return payload, fmt.Errorf("convertReasoningToThinkingContent: failed to append thinking block to content array: %w", errAppend)
-			}
-			for _, part := range content.Array() {
-				newContent, errAppend = sjson.SetRawBytes(newContent, "-1", []byte(part.Raw))
-				if errAppend != nil {
-					return payload, fmt.Errorf("convertReasoningToThinkingContent: failed to append content part: %w", errAppend)
-				}
-			}
-		} else if content.Exists() && content.Type == gjson.String {
-			text := content.String()
-			newContent = []byte("[]")
-			var errAppend error
-			newContent, errAppend = sjson.SetRawBytes(newContent, "-1", thinkingBlock)
-			if errAppend != nil {
-				return payload, fmt.Errorf("convertReasoningToThinkingContent: failed to append thinking block to string content: %w", errAppend)
-			}
-			if text != "" {
-				textBlock := []byte(`{"type":"text","text":""}`)
-				var errSetText error
-				textBlock, errSetText = sjson.SetBytes(textBlock, "text", text)
-				if errSetText != nil {
-					return payload, fmt.Errorf("convertReasoningToThinkingContent: failed to set text block: %w", errSetText)
-				}
-				newContent, errAppend = sjson.SetRawBytes(newContent, "-1", textBlock)
-				if errAppend != nil {
-					return payload, fmt.Errorf("convertReasoningToThinkingContent: failed to append text block: %w", errAppend)
-				}
-			}
-		} else {
-			newContent = []byte("[]")
-			var errAppend error
-			newContent, errAppend = sjson.SetRawBytes(newContent, "-1", thinkingBlock)
-			if errAppend != nil {
-				return payload, fmt.Errorf("convertReasoningToThinkingContent: failed to append thinking block to empty content: %w", errAppend)
-			}
+		newContent, err := prependThinkingBlocksToContent(content, reasoningParts)
+		if err != nil {
+			return payload, err
 		}
 
 		updated, err := sjson.SetRawBytes(msgBytes, "content", newContent)
@@ -289,17 +243,86 @@ func isThinkingModeActive(payload []byte) bool {
 // collectAssistantReasoning extracts reasoning_content from assistant messages,
 // keyed by their ordinal position in the assistant-only sequence (0, 1, 2, ...).
 // Empty-string reasoning_content is preserved because DeepSeek requires it.
-func collectAssistantReasoning(messages []gjson.Result) map[int]string {
-	reasoning := make(map[int]string)
+func collectAssistantReasoning(messages []gjson.Result) map[int]gjson.Result {
+	reasoning := make(map[int]gjson.Result)
 	ordinal := 0
 	for _, msg := range messages {
 		if strings.TrimSpace(msg.Get("role").String()) != "assistant" {
 			continue
 		}
 		if rc := msg.Get(reasoningContentKey); rc.Exists() {
-			reasoning[ordinal] = rc.String()
+			reasoning[ordinal] = rc
 		}
 		ordinal++
 	}
 	return reasoning
+}
+
+func openAIReasoningPartsForExecutor(node gjson.Result) []translatorreasoning.OpenAIReasoningPart {
+	return translatorreasoning.CollectOpenAIReasoningParts(node, translatorreasoning.OpenAIReasoningOptions{
+		IncludeJSONRawFallback: true,
+	})
+}
+
+func openAIReasoningTextForExecutor(node gjson.Result) string {
+	return translatorreasoning.JoinOpenAIReasoningTexts(openAIReasoningPartsForExecutor(node))
+}
+
+func prependThinkingBlocksToContent(content gjson.Result, reasoningParts []translatorreasoning.OpenAIReasoningPart) ([]byte, error) {
+	newContent := []byte("[]")
+	for _, part := range reasoningParts {
+		if strings.TrimSpace(part.Text) == "" {
+			continue
+		}
+		thinkingBlock := []byte(`{"type":"thinking","thinking":""}`)
+		var errSet error
+		thinkingBlock, errSet = sjson.SetBytes(thinkingBlock, "thinking", part.Text)
+		if errSet != nil {
+			return nil, fmt.Errorf("convertReasoningToThinkingContent: failed to set thinking text: %w", errSet)
+		}
+		var errAppend error
+		newContent, errAppend = sjson.SetRawBytes(newContent, "-1", thinkingBlock)
+		if errAppend != nil {
+			return nil, fmt.Errorf("convertReasoningToThinkingContent: failed to append thinking block to content array: %w", errAppend)
+		}
+	}
+
+	if content.Exists() && content.IsArray() {
+		for _, part := range content.Array() {
+			var errAppend error
+			newContent, errAppend = sjson.SetRawBytes(newContent, "-1", []byte(part.Raw))
+			if errAppend != nil {
+				return nil, fmt.Errorf("convertReasoningToThinkingContent: failed to append content part: %w", errAppend)
+			}
+		}
+		return newContent, nil
+	}
+
+	if content.Exists() && content.Type == gjson.String {
+		text := content.String()
+		if text != "" {
+			textBlock := []byte(`{"type":"text","text":""}`)
+			var errSetText error
+			textBlock, errSetText = sjson.SetBytes(textBlock, "text", text)
+			if errSetText != nil {
+				return nil, fmt.Errorf("convertReasoningToThinkingContent: failed to set text block: %w", errSetText)
+			}
+			var errAppend error
+			newContent, errAppend = sjson.SetRawBytes(newContent, "-1", textBlock)
+			if errAppend != nil {
+				return nil, fmt.Errorf("convertReasoningToThinkingContent: failed to append text block: %w", errAppend)
+			}
+		}
+	}
+
+	return newContent, nil
+}
+
+func setJSONResult(payload []byte, path string, value gjson.Result) ([]byte, error) {
+	switch value.Type {
+	case gjson.String:
+		return sjson.SetBytes(payload, path, value.String())
+	default:
+		return sjson.SetRawBytes(payload, path, []byte(value.Raw))
+	}
 }

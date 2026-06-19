@@ -36,6 +36,35 @@ func TestPreserveReasoningContent_PreservesEmptyStringReasoning(t *testing.T) {
 	}
 }
 
+func TestPreserveReasoningContent_PreservesStructuredReasoningRaw(t *testing.T) {
+	original := []byte(`{
+		"messages":[
+			{"role":"assistant","content":"answer","reasoning_content":{"text":"signed reasoning","signature":"gpt#abc"}}
+		]
+	}`)
+	translated := []byte(`{
+		"messages":[
+			{"role":"assistant","content":"answer"}
+		]
+	}`)
+
+	out, err := preserveReasoningContent(original, translated)
+	if err != nil {
+		t.Fatalf("preserveReasoningContent() error = %v", err)
+	}
+
+	reasoning := gjson.GetBytes(out, "messages.0.reasoning_content")
+	if !reasoning.IsObject() {
+		t.Fatalf("reasoning_content should remain an object, got %s", reasoning.Raw)
+	}
+	if got := reasoning.Get("text").String(); got != "signed reasoning" {
+		t.Fatalf("reasoning_content.text = %q, want %q", got, "signed reasoning")
+	}
+	if got := reasoning.Get("signature").String(); got != "gpt#abc" {
+		t.Fatalf("reasoning_content.signature = %q, want %q", got, "gpt#abc")
+	}
+}
+
 func TestPreserveReasoningContent_DoesNotInheritReasoningForMissingMessages(t *testing.T) {
 	original := []byte(`{
 		"messages":[
@@ -556,5 +585,44 @@ func TestConvertReasoningToThinkingContent_SkipsNonAssistantMessages(t *testing.
 	assistantThinking := gjson.GetBytes(out, "messages.1.content.0.thinking").String()
 	if assistantThinking != "valid reasoning" {
 		t.Fatalf("assistant thinking = %q, want %q", assistantThinking, "valid reasoning")
+	}
+}
+
+func TestConvertReasoningToThinkingContent_UsesStructuredReasoningTextOnly(t *testing.T) {
+	payload := []byte(`{
+		"reasoning_effort":"high",
+		"messages":[
+			{"role":"assistant","content":"answer","reasoning_content":{"text":"signed reasoning","signature":"gpt#abc"}}
+		]
+	}`)
+
+	out, err := convertReasoningToThinkingContent(payload)
+	if err != nil {
+		t.Fatalf("convertReasoningToThinkingContent() returned error = %v", err)
+	}
+
+	if got := gjson.GetBytes(out, "messages.0.content.0.thinking").String(); got != "signed reasoning" {
+		t.Fatalf("thinking text = %q, want %q", got, "signed reasoning")
+	}
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content.signature").String(); got != "gpt#abc" {
+		t.Fatalf("reasoning_content.signature = %q, want %q", got, "gpt#abc")
+	}
+}
+
+func TestConvertReasoningToThinkingContent_SkipsStructuredReasoningWithoutText(t *testing.T) {
+	payload := []byte(`{
+		"reasoning_effort":"high",
+		"messages":[
+			{"role":"assistant","content":"answer","reasoning_content":{"signature":"gpt#abc"}}
+		]
+	}`)
+
+	out, err := convertReasoningToThinkingContent(payload)
+	if err != nil {
+		t.Fatalf("convertReasoningToThinkingContent() returned error = %v", err)
+	}
+
+	if gjson.GetBytes(out, "messages.0.content").IsArray() {
+		t.Fatalf("signature-only reasoning should not create a thinking content block")
 	}
 }

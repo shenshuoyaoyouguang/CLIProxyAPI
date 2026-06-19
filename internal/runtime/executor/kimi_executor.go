@@ -374,7 +374,7 @@ func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {
 		case "assistant":
 			reasoning := msg.Get("reasoning_content")
 			if reasoning.Exists() {
-				reasoningText := reasoning.String()
+				reasoningText := openAIReasoningTextForExecutor(reasoning)
 				if strings.TrimSpace(reasoningText) != "" {
 					latestReasoning = reasoningText
 					hasLatestReasoning = true
@@ -386,7 +386,7 @@ func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {
 				continue
 			}
 
-			if !reasoning.Exists() || strings.TrimSpace(reasoning.String()) == "" {
+			if !reasoning.Exists() || strings.TrimSpace(openAIReasoningTextForExecutor(reasoning)) == "" {
 				reasoningText := fallbackAssistantReasoning(msg, hasLatestReasoning, latestReasoning)
 				path := fmt.Sprintf("messages.%d.reasoning_content", msgIdx)
 				next, err := sjson.SetBytes(out, path, reasoningText)
@@ -504,7 +504,7 @@ func hasKimiLegacyFunctionCall(msg gjson.Result) bool {
 
 func hasKimiAssistantReasoning(msg gjson.Result) bool {
 	reasoning := msg.Get("reasoning_content")
-	return reasoning.Exists() && strings.TrimSpace(reasoning.String()) != ""
+	return reasoning.Exists() && strings.TrimSpace(openAIReasoningTextForExecutor(reasoning)) != ""
 }
 
 func isKimiAssistantContentEmpty(content gjson.Result) bool {

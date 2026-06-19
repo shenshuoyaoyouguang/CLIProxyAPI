@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	translatorreasoning "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/reasoning"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -191,7 +192,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				msg, _ = sjson.SetBytes(msg, "role", role)
 
 				if role == "assistant" {
-					for _, reasoningPart := range collectOpenAIReasoningParts(contentResult, message.Get("reasoning_content")) {
+					for _, reasoningPart := range translatorreasoning.CollectOpenAIReasoningPartsFromMessage(contentResult, message.Get("reasoning_content"), claudeReasoningOptions()) {
 						if reasoningPart.Text == "" && reasoningPart.Signature == "" {
 							continue
 						}
@@ -374,82 +375,12 @@ func convertOpenAIContentPartToClaudePart(part gjson.Result) string {
 	return ""
 }
 
-type openAIReasoningPart struct {
-	Text      string
-	Signature string
-}
-
-func collectOpenAIReasoningParts(content, reasoning gjson.Result) []openAIReasoningPart {
-	parts := collectOpenAIReasoningPartsFromNode(reasoning)
-	if len(parts) > 0 {
-		return parts
+func claudeReasoningOptions() translatorreasoning.OpenAIReasoningOptions {
+	return translatorreasoning.OpenAIReasoningOptions{
+		TargetProvider:         sigcompat.SignatureProviderClaude,
+		SignatureBlockKind:     sigcompat.SignatureBlockKindClaudeThinking,
+		IncludeJSONRawFallback: true,
 	}
-	if !content.IsArray() {
-		return nil
-	}
-
-	var out []openAIReasoningPart
-	content.ForEach(func(_, part gjson.Result) bool {
-		switch part.Get("type").String() {
-		case "reasoning", "thinking":
-			out = append(out, collectOpenAIReasoningPartsFromNode(part)...)
-		}
-		return true
-	})
-	return out
-}
-
-func collectOpenAIReasoningPartsFromNode(node gjson.Result) []openAIReasoningPart {
-	var parts []openAIReasoningPart
-	if !node.Exists() {
-		return parts
-	}
-
-	if node.IsArray() {
-		node.ForEach(func(_, value gjson.Result) bool {
-			parts = append(parts, collectOpenAIReasoningPartsFromNode(value)...)
-			return true
-		})
-		return parts
-	}
-
-	switch node.Type {
-	case gjson.String:
-		if text := node.String(); text != "" {
-			parts = append(parts, openAIReasoningPart{Text: text})
-		}
-	case gjson.JSON:
-		text := firstStringValue(node, "text", "thinking", "content")
-		signature := compatibleClaudeThinkingSignature(firstStringValue(node, "signature", "encrypted_content"))
-		if text != "" || signature != "" {
-			parts = append(parts, openAIReasoningPart{Text: text, Signature: signature})
-		}
-	}
-	return parts
-}
-
-func firstStringValue(node gjson.Result, paths ...string) string {
-	for _, path := range paths {
-		value := node.Get(path)
-		if value.Exists() && value.Type == gjson.String {
-			if text := value.String(); text != "" {
-				return text
-			}
-		}
-	}
-	return ""
-}
-
-func compatibleClaudeThinkingSignature(rawSignature string) string {
-	signature, ok := sigcompat.CompatibleSignatureForProviderBlock(
-		sigcompat.SignatureProviderClaude,
-		rawSignature,
-		sigcompat.SignatureBlockKindClaudeThinking,
-	)
-	if !ok {
-		return ""
-	}
-	return signature
 }
 
 func convertOpenAIImageURLToClaudePart(imageURL string) string {

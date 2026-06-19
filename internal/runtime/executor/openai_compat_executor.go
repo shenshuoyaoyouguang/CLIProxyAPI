@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -105,7 +106,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("openai")
 	thinkingTarget := to.String()
-	if isDeepSeekModel(baseModel) {
+	if modelkind.IsDeepSeekModel(baseModel) {
 		thinkingTarget = "deepseek"
 	}
 	endpoint := "/chat/completions"
@@ -134,7 +135,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 
-	if !isDeepSeekModel(baseModel) {
+	if !modelkind.IsDeepSeekModel(baseModel) {
 		translated, err = convertReasoningToThinkingContent(translated)
 		if err != nil {
 			return resp, err
@@ -330,7 +331,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("openai")
 	thinkingTarget := to.String()
-	if isDeepSeekModel(baseModel) {
+	if modelkind.IsDeepSeekModel(baseModel) {
 		thinkingTarget = "deepseek"
 	}
 	endpoint := "/chat/completions"
@@ -359,7 +360,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		return nil, err
 	}
 
-	if !isDeepSeekModel(baseModel) {
+	if !modelkind.IsDeepSeekModel(baseModel) {
 		translated, err = convertReasoningToThinkingContent(translated)
 		if err != nil {
 			return nil, err
@@ -622,7 +623,7 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 	modelForCounting := baseModel
 
 	thinkingTarget := to.String()
-	if isDeepSeekModel(baseModel) {
+	if modelkind.IsDeepSeekModel(baseModel) {
 		thinkingTarget = "deepseek"
 	}
 	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTarget, e.Identifier())
@@ -842,9 +843,3 @@ func (e statusErr) Error() string {
 }
 func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
-
-// isDeepSeekModel reports whether the model name indicates a DeepSeek model.
-// DeepSeek models use the "deepseek-" prefix (case-insensitive).
-func isDeepSeekModel(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-")
-}

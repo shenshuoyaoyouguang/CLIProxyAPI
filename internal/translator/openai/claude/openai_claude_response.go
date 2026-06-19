@@ -14,6 +14,7 @@ import (
 
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
+	translatorreasoning "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/reasoning"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -191,30 +192,18 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 		// Handle reasoning content delta
 		if reasoning := delta.Get("reasoning_content"); reasoning.Exists() {
 			for _, reasoningPart := range collectOpenAIReasoningParts(reasoning) {
-				if reasoningPart.Signature != "" {
-					param.ThinkingSignature = reasoningPart.Signature
-				}
-				if reasoningPart.Text == "" {
+				if reasoningPart.Text == "" && reasoningPart.Signature == "" {
 					continue
 				}
 				stopTextContentBlock(param, &results)
-				if !param.ThinkingContentBlockStarted {
-					if param.ThinkingContentBlockIndex == -1 {
-						param.ThinkingContentBlockIndex = param.NextContentBlockIndex
-						param.NextContentBlockIndex++
-					}
-					contentBlockStartJSON := `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`
-					contentBlockStartJSONBytes := []byte(contentBlockStartJSON)
-					contentBlockStartJSONBytes, _ = sjson.SetBytes(contentBlockStartJSONBytes, "index", param.ThinkingContentBlockIndex)
-					results = append(results, translatorcommon.AppendSSEEventBytes(nil, "content_block_start", contentBlockStartJSONBytes, 2))
-					param.ThinkingContentBlockStarted = true
+				startThinkingContentBlock(param, &results)
+				if reasoningPart.Text != "" {
+					emitThinkingDelta(param, reasoningPart.Text, &results)
 				}
-
-				thinkingDeltaJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}`
-				thinkingDeltaJSONBytes := []byte(thinkingDeltaJSON)
-				thinkingDeltaJSONBytes, _ = sjson.SetBytes(thinkingDeltaJSONBytes, "index", param.ThinkingContentBlockIndex)
-				thinkingDeltaJSONBytes, _ = sjson.SetBytes(thinkingDeltaJSONBytes, "delta.thinking", reasoningPart.Text)
-				results = append(results, translatorcommon.AppendSSEEventBytes(nil, "content_block_delta", thinkingDeltaJSONBytes, 2))
+				if reasoningPart.Signature != "" {
+					param.ThinkingSignature = reasoningPart.Signature
+					stopThinkingContentBlock(param, &results)
+				}
 			}
 		}
 
@@ -325,14 +314,7 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 		}
 
 		// Send content_block_stop for thinking content if needed
-		if param.ThinkingContentBlockStarted {
-			emitThinkingSignatureDelta(param, &results)
-			contentBlockStopJSON := []byte(`{"type":"content_block_stop","index":0}`)
-			contentBlockStopJSON, _ = sjson.SetBytes(contentBlockStopJSON, "index", param.ThinkingContentBlockIndex)
-			results = append(results, translatorcommon.AppendSSEEventBytes(nil, "content_block_stop", contentBlockStopJSON, 2))
-			param.ThinkingContentBlockStarted = false
-			param.ThinkingContentBlockIndex = -1
-		}
+		stopThinkingContentBlock(param, &results)
 
 		// Send content_block_stop for text if text content block was started
 		stopTextContentBlock(param, &results)
@@ -398,14 +380,7 @@ func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams)
 	results := make([][]byte, 0)
 
 	// Ensure all content blocks are stopped before final events
-	if param.ThinkingContentBlockStarted {
-		emitThinkingSignatureDelta(param, &results)
-		contentBlockStopJSON := []byte(`{"type":"content_block_stop","index":0}`)
-		contentBlockStopJSON, _ = sjson.SetBytes(contentBlockStopJSON, "index", param.ThinkingContentBlockIndex)
-		results = append(results, translatorcommon.AppendSSEEventBytes(nil, "content_block_stop", contentBlockStopJSON, 2))
-		param.ThinkingContentBlockStarted = false
-		param.ThinkingContentBlockIndex = -1
-	}
+	stopThinkingContentBlock(param, &results)
 
 	stopTextContentBlock(param, &results)
 
@@ -557,11 +532,6 @@ func (p *ConvertOpenAIResponseToAnthropicParams) toolContentBlockIndex(openAIToo
 	return idx
 }
 
-type openAIReasoningPart struct {
-	Text      string
-	Signature string
-}
-
 func collectOpenAIReasoningTexts(node gjson.Result) []string {
 	parts := collectOpenAIReasoningParts(node)
 	texts := make([]string, 0, len(parts))
@@ -573,60 +543,37 @@ func collectOpenAIReasoningTexts(node gjson.Result) []string {
 	return texts
 }
 
-func collectOpenAIReasoningParts(node gjson.Result) []openAIReasoningPart {
-	var parts []openAIReasoningPart
-	if !node.Exists() {
-		return parts
-	}
-
-	if node.IsArray() {
-		node.ForEach(func(_, value gjson.Result) bool {
-			parts = append(parts, collectOpenAIReasoningParts(value)...)
-			return true
-		})
-		return parts
-	}
-
-	switch node.Type {
-	case gjson.String:
-		if text := node.String(); text != "" {
-			parts = append(parts, openAIReasoningPart{Text: text})
-		}
-	case gjson.JSON:
-		text := firstOpenAIReasoningString(node, "text", "thinking", "content")
-		signature := compatibleClaudeThinkingSignature(firstOpenAIReasoningString(node, "signature", "encrypted_content"))
-		if text != "" || signature != "" {
-			parts = append(parts, openAIReasoningPart{Text: text, Signature: signature})
-		} else if raw := node.Raw; raw != "" && !strings.HasPrefix(raw, "{") && !strings.HasPrefix(raw, "[") {
-			parts = append(parts, openAIReasoningPart{Text: raw})
-		}
-	}
-
-	return parts
+func collectOpenAIReasoningParts(node gjson.Result) []translatorreasoning.OpenAIReasoningPart {
+	return translatorreasoning.CollectOpenAIReasoningParts(node, claudeResponseReasoningOptions())
 }
 
-func firstOpenAIReasoningString(node gjson.Result, paths ...string) string {
-	for _, path := range paths {
-		value := node.Get(path)
-		if value.Exists() && value.Type == gjson.String {
-			if text := value.String(); text != "" {
-				return text
-			}
-		}
+func claudeResponseReasoningOptions() translatorreasoning.OpenAIReasoningOptions {
+	return translatorreasoning.OpenAIReasoningOptions{
+		TargetProvider:         sigcompat.SignatureProviderClaude,
+		SignatureBlockKind:     sigcompat.SignatureBlockKindClaudeThinking,
+		IncludeJSONRawFallback: true,
 	}
-	return ""
 }
 
-func compatibleClaudeThinkingSignature(rawSignature string) string {
-	signature, ok := sigcompat.CompatibleSignatureForProviderBlock(
-		sigcompat.SignatureProviderClaude,
-		rawSignature,
-		sigcompat.SignatureBlockKindClaudeThinking,
-	)
-	if !ok {
-		return ""
+func startThinkingContentBlock(param *ConvertOpenAIResponseToAnthropicParams, results *[][]byte) {
+	if param.ThinkingContentBlockStarted {
+		return
 	}
-	return signature
+	if param.ThinkingContentBlockIndex == -1 {
+		param.ThinkingContentBlockIndex = param.NextContentBlockIndex
+		param.NextContentBlockIndex++
+	}
+	contentBlockStartJSON := []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`)
+	contentBlockStartJSON, _ = sjson.SetBytes(contentBlockStartJSON, "index", param.ThinkingContentBlockIndex)
+	*results = append(*results, translatorcommon.AppendSSEEventBytes(nil, "content_block_start", contentBlockStartJSON, 2))
+	param.ThinkingContentBlockStarted = true
+}
+
+func emitThinkingDelta(param *ConvertOpenAIResponseToAnthropicParams, text string, results *[][]byte) {
+	thinkingDeltaJSON := []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}`)
+	thinkingDeltaJSON, _ = sjson.SetBytes(thinkingDeltaJSON, "index", param.ThinkingContentBlockIndex)
+	thinkingDeltaJSON, _ = sjson.SetBytes(thinkingDeltaJSON, "delta.thinking", text)
+	*results = append(*results, translatorcommon.AppendSSEEventBytes(nil, "content_block_delta", thinkingDeltaJSON, 2))
 }
 
 func stopThinkingContentBlock(param *ConvertOpenAIResponseToAnthropicParams, results *[][]byte) {
