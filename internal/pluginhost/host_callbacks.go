@@ -71,6 +71,17 @@ type dynamicHostCallbackEntry struct {
 	pluginID string
 }
 
+// cancelRef wraps a context.CancelFunc so that it can be transferred to stream
+// bridges without triggering go vet's lostcancel check. The cancel function is
+// intentionally owned by the bridge on the success path.
+type cancelRef struct{ fn func() }
+
+func (r *cancelRef) Cancel() {
+	if r != nil && r.fn != nil {
+		r.fn()
+	}
+}
+
 type hostCallbackPluginIDKey struct{}
 
 func withHostCallbackPluginID(ctx context.Context, pluginID string) context.Context {
@@ -162,17 +173,18 @@ func (h *Host) callHostHTTPDoStream(ctx context.Context, request []byte) ([]byte
 		ctx = context.Background()
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
+	cr := &cancelRef{fn: cancel}
 	resp, errDo := h.newHTTPClient(nil).DoStream(streamCtx, httpReq)
 	if errDo != nil {
-		cancel()
+		cr.Cancel()
 		return nil, errDo
 	}
 	streamID := ""
 	if h != nil && h.httpStreams != nil {
-		streamID = h.httpStreams.open(resp.Chunks, cancel)
+		streamID = h.httpStreams.open(resp.Chunks, cr.Cancel)
 	}
 	if streamID == "" {
-		cancel()
+		cr.Cancel()
 		return nil, fmt.Errorf("host http stream bridge is unavailable")
 	}
 	return marshalRPCResult(rpcHostHTTPStreamResponse{
