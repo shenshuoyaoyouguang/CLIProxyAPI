@@ -271,11 +271,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
-	// Enable cch signing by default for OAuth tokens (not just experimental flag).
+	// Always sign the body with xxHash64-based cch to match real Claude Code behavior.
 	// Claude Code always computes cch; missing or invalid cch is a detectable fingerprint.
-	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
-		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
-	}
+	bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
@@ -458,10 +456,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
-	// Enable cch signing by default for OAuth tokens (not just experimental flag).
-	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
-		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
-	}
+	// Always sign the body with xxHash64-based cch to match real Claude Code behavior.
+	bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
@@ -1154,7 +1150,7 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 }
 
 func checkSystemInstructions(payload []byte) []byte {
-	return checkSystemInstructionsWithSigningMode(payload, false, false, false, "2.1.63", "", "")
+	return checkSystemInstructionsWithSigningMode(payload, false, false, "2.1.63", "", "")
 }
 
 func rebuildMidSystemMessagesToTopLevel(payload []byte) []byte {
@@ -1815,8 +1811,10 @@ func computeFingerprint(messageText, version string) string {
 
 // generateBillingHeader creates the x-anthropic-billing-header text block that
 // real Claude Code prepends to every system prompt array.
-// Format: x-anthropic-billing-header: cc_version=<ver>.<build>; cc_entrypoint=<ep>; cch=<hash>; [cc_workload=<wl>;]
-func generateBillingHeader(payload []byte, experimentalCCHSigning bool, version, messageText, entrypoint, workload string) string {
+// Format: x-anthropic-billing-header: cc_version=<ver>.<build>; cc_entrypoint=<ep>; cch=00000; [cc_workload=<wl>;]
+// The cch field is set to 00000 as a placeholder; signAnthropicMessagesBody will
+// compute the real xxHash64-based cch before the request is sent.
+func generateBillingHeader(payload []byte, version, messageText, entrypoint, workload string) string {
 	if entrypoint == "" {
 		entrypoint = "cli"
 	}
@@ -1826,18 +1824,11 @@ func generateBillingHeader(payload []byte, experimentalCCHSigning bool, version,
 		workloadPart = fmt.Sprintf(" cc_workload=%s;", workload)
 	}
 
-	if experimentalCCHSigning {
-		return fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=%s; cch=00000;%s", version, buildHash, entrypoint, workloadPart)
-	}
-
-	// Generate a deterministic cch hash from the payload content (system + messages + tools).
-	h := sha256.Sum256(payload)
-	cch := hex.EncodeToString(h[:])[:5]
-	return fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=%s; cch=%s;%s", version, buildHash, entrypoint, cch, workloadPart)
+	return fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=%s; cch=00000;%s", version, buildHash, entrypoint, workloadPart)
 }
 
 func checkSystemInstructionsWithMode(payload []byte, strictMode bool) []byte {
-	return checkSystemInstructionsWithSigningMode(payload, strictMode, false, false, "2.1.63", "", "")
+	return checkSystemInstructionsWithSigningMode(payload, strictMode, false, "2.1.63", "", "")
 }
 
 // checkSystemInstructionsWithSigningMode injects Claude Code-style system blocks:
@@ -1848,7 +1839,7 @@ func checkSystemInstructionsWithMode(payload []byte, strictMode bool) []byte {
 //	system[3]: system instructions (no cache_control)
 //	system[4]: doing tasks (no cache_control)
 //	system[5]: user system messages moved to first user message
-func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, experimentalCCHSigning bool, oauthMode bool, version, entrypoint, workload string) []byte {
+func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, oauthMode bool, version, entrypoint, workload string) []byte {
 	system := gjson.GetBytes(payload, "system")
 
 	// Extract original message text for fingerprint computation (before billing injection).
@@ -1872,7 +1863,7 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 		return payload
 	}
 
-	billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
+	billingText := generateBillingHeader(payload, version, messageText, entrypoint, workload)
 	billingBlock := buildTextBlock(billingText, nil)
 
 	// Build system blocks matching real Claude Code structure.
@@ -2012,7 +2003,6 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 	clientUserAgent := getClientUserAgent(ctx)
 	// Enable cch signing for OAuth tokens by default (not just experimental flag).
 	oauthToken := isClaudeOAuthToken(apiKey)
-	useCCHSigning := oauthToken || experimentalCCHSigningEnabled(cfg, auth)
 
 	// Get cloak config from ClaudeKey configuration
 	cloakCfg := resolveClaudeKeyCloakConfig(cfg, auth)
@@ -2060,7 +2050,7 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 		billingVersion := helps.DefaultClaudeVersion(cfg)
 		entrypoint := parseEntrypointFromUA(clientUserAgent)
 		workload := getWorkloadFromContext(ctx)
-		payload = checkSystemInstructionsWithSigningMode(payload, strictMode, useCCHSigning, oauthToken, billingVersion, entrypoint, workload)
+		payload = checkSystemInstructionsWithSigningMode(payload, strictMode, oauthToken, billingVersion, entrypoint, workload)
 	}
 
 	// Inject fake user ID

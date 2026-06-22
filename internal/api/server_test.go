@@ -141,7 +141,7 @@ func TestOAuthCallbackRouteSkipsManagementKeyMiddleware(t *testing.T) {
 		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}
 
-	callbackPath := filepath.Join(server.cfg.AuthDir, ".oauth-gemini-cli-"+state+".oauth")
+	callbackPath := filepath.Join(server.cfg.Load().AuthDir, ".oauth-gemini-cli-"+state+".oauth")
 	if _, errRead := os.ReadFile(callbackPath); errRead != nil {
 		t.Fatalf("expected callback file to be written without management key: %v", errRead)
 	}

@@ -34,9 +34,9 @@ type managementRegisterResult struct {
 
 // managementHandleResult holds the parsed response for management.handle.
 type managementHandleResult struct {
-	StatusCode int               `json:"StatusCode"`
+	StatusCode int                 `json:"StatusCode"`
 	Headers    map[string][]string `json:"Headers"`
-	Body       []byte            `json:"Body"`
+	Body       []byte              `json:"Body"`
 }
 
 // TestHandleMethod_Register verifies plugin.register returns a successful envelope.
@@ -205,10 +205,10 @@ func TestHandleMethod_ManagementHandle_BodyIsHTML(t *testing.T) {
 		if !strings.Contains(strings.ToLower(bodyStr), "<!doctype html>") &&
 			!strings.Contains(strings.ToLower(bodyStr), "<title>") {
 			limit := 100
-		if len(bodyStr) < limit {
-			limit = len(bodyStr)
-		}
-		t.Errorf("response body does not appear to be HTML: %q", bodyStr[:limit])
+			if len(bodyStr) < limit {
+				limit = len(bodyStr)
+			}
+			t.Errorf("response body does not appear to be HTML: %q", bodyStr[:limit])
 		}
 	}
 }

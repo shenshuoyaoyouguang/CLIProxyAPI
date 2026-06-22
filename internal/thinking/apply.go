@@ -234,7 +234,7 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 		}
 	}
 
-	if !hasThinkingConfig(config) {
+	if !hasThinkingConfig(config) && config.Mode != ModeNone {
 		// When a model supports thinking but the user did not specify any
 		// thinking configuration, inject a default so that the upstream
 		// provider returns thought/reasoning content.
@@ -449,7 +449,7 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 	switch provider {
 	case "claude":
 		return extractClaudeConfig(body)
-	case "gemini", "antigravity":
+	case "gemini", "antigravity", "gemini-cli":
 		return extractGeminiConfig(body, provider)
 	case "openai":
 		return extractOpenAIConfig(body)
@@ -464,7 +464,7 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 }
 
 func hasThinkingConfig(config ThinkingConfig) bool {
-	return config.Mode != ModeBudget || config.Budget != 0 || config.Level != ""
+	return config.Mode == ModeNone || config.Mode == ModeAuto || config.Budget != 0 || config.Level != ""
 }
 
 // ExtractReasoningEffort returns the request's thinking setting as a canonical
@@ -559,7 +559,7 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 			}
 			switch value {
 			case "none":
-				return ThinkingConfig{Mode: ModeNone, Budget: 0}
+				return ThinkingConfig{Mode: ModeNone, Budget: 0, Level: LevelNone}
 			case "auto":
 				return ThinkingConfig{Mode: ModeAuto, Budget: -1}
 			default:
@@ -602,7 +602,7 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 // This allows newer Gemini 3 level-based configs to take precedence.
 func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 	prefix := "generationConfig.thinkingConfig"
-	if provider == "antigravity" {
+	if provider == "antigravity" || provider == "gemini-cli" {
 		prefix = "request.generationConfig.thinkingConfig"
 	}
 

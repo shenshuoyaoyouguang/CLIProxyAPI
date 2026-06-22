@@ -2444,7 +2444,7 @@ func TestCheckSystemInstructionsWithMode_StringWithSpecialChars(t *testing.T) {
 	}
 }
 
-func TestClaudeExecutor_ExperimentalCCHSigningDisabledByDefaultKeepsLegacyHeader(t *testing.T) {
+func TestClaudeExecutor_CCHSigningAlwaysUsesUpstreamXXHash(t *testing.T) {
 	var seenBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -2476,12 +2476,25 @@ func TestClaudeExecutor_ExperimentalCCHSigningDisabledByDefaultKeepsLegacyHeader
 	if !strings.HasPrefix(billingHeader, "x-anthropic-billing-header:") {
 		t.Fatalf("system.0.text = %q, want billing header", billingHeader)
 	}
+	// CCH should always be signed with xxHash64 (not SHA-256 legacy, not 00000 placeholder)
 	if strings.Contains(billingHeader, "cch=00000;") {
-		t.Fatalf("legacy mode should not forward cch placeholder, got %q", billingHeader)
+		t.Fatalf("billing header should have signed cch, got placeholder %q", billingHeader)
+	}
+
+	billingPattern := regexp.MustCompile(`(x-anthropic-billing-header:[^"]*?\bcch=)([0-9a-f]{5})(;)`)
+	match := billingPattern.FindSubmatch(seenBody)
+	if match == nil {
+		t.Fatalf("expected signed billing header in body: %s", string(seenBody))
+	}
+	actualCCH := string(match[2])
+	unsignedBody := billingPattern.ReplaceAll(seenBody, []byte(`${1}00000${3}`))
+	wantCCH := fmt.Sprintf("%05x", xxHash64.Checksum(unsignedBody, 0x6E52736AC806831E)&0xFFFFF)
+	if actualCCH != wantCCH {
+		t.Fatalf("cch = %q, want %q\nbody: %s", actualCCH, wantCCH, string(seenBody))
 	}
 }
 
-func TestClaudeExecutor_ExperimentalCCHSigningOptInSignsFinalBody(t *testing.T) {
+func TestClaudeExecutor_CCHSigningPreservesLiteralCCHInMessages(t *testing.T) {
 	var seenBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -2491,13 +2504,7 @@ func TestClaudeExecutor_ExperimentalCCHSigningOptInSignsFinalBody(t *testing.T) 
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{
-		ClaudeKey: []config.ClaudeKey{{
-			APIKey:                 "key-123",
-			BaseURL:                server.URL,
-			ExperimentalCCHSigning: true,
-		}},
-	})
+	executor := NewClaudeExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
@@ -2517,18 +2524,6 @@ func TestClaudeExecutor_ExperimentalCCHSigningOptInSignsFinalBody(t *testing.T) 
 	}
 	if got := gjson.GetBytes(seenBody, "messages.0.content.0.text").String(); got != messageText {
 		t.Fatalf("message text = %q, want %q", got, messageText)
-	}
-
-	billingPattern := regexp.MustCompile(`(x-anthropic-billing-header:[^"]*?\bcch=)([0-9a-f]{5})(;)`)
-	match := billingPattern.FindSubmatch(seenBody)
-	if match == nil {
-		t.Fatalf("expected signed billing header in body: %s", string(seenBody))
-	}
-	actualCCH := string(match[2])
-	unsignedBody := billingPattern.ReplaceAll(seenBody, []byte(`${1}00000${3}`))
-	wantCCH := fmt.Sprintf("%05x", xxHash64.Checksum(unsignedBody, 0x6E52736AC806831E)&0xFFFFF)
-	if actualCCH != wantCCH {
-		t.Fatalf("cch = %q, want %q\nbody: %s", actualCCH, wantCCH, string(seenBody))
 	}
 }
 

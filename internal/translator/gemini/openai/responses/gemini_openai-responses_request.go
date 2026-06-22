@@ -356,7 +356,11 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 			case "reasoning":
 				thoughtContent := []byte(`{"role":"model","parts":[]}`)
 				thought := []byte(`{"text":"","thoughtSignature":"","thought":true}`)
-				thought, _ = sjson.SetBytes(thought, "text", item.Get("summary.0.text").String())
+				summaryText := item.Get("summary.0.text").String()
+				if summaryText == "" {
+					summaryText = item.Get("summary").String()
+				}
+				thought, _ = sjson.SetBytes(thought, "text", summaryText)
 				thought, _ = sjson.SetBytes(thought, "thoughtSignature", openAIResponsesGeminiThoughtSignature(item.Get("encrypted_content").String()))
 
 				thoughtContent, _ = sjson.SetRawBytes(thoughtContent, "parts.-1", thought)
@@ -372,11 +376,16 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 
 	// Gemini/Vertex accepts assistant/model turns in history, but some model
 	// surfaces reject requests whose final turn is model-authored prefill.
+	// Only strip text/content prefill turns. Do not strip thinking/reasoning blocks
+	// at the end, as those carry valid thoughtSignature injection.
 	contents := gjson.GetBytes(out, "contents")
 	if contents.Exists() && contents.IsArray() {
 		arr := contents.Array()
-		if len(arr) > 0 && arr[len(arr)-1].Get("role").String() == "model" {
-			out, _ = sjson.DeleteBytes(out, fmt.Sprintf("contents.%d", len(arr)-1))
+		if len(arr) > 0 {
+			lastMsg := arr[len(arr)-1]
+			if lastMsg.Get("role").String() == "model" && !lastMsg.Get("parts.0.thought").Bool() {
+				out, _ = sjson.DeleteBytes(out, fmt.Sprintf("contents.%d", len(arr)-1))
+			}
 		}
 	}
 

@@ -73,13 +73,16 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		pendingToolCalls := make([]interface{}, 0)
 		pendingToolCallIDs := make([]string, 0)
 		pendingReasoningContent := ""
+		hasPendingReasoning := false
 		awaitingToolOutputs := make(map[string]struct{})
 		deferredMessages := make([][]byte, 0)
 
-		takePendingReasoningContent := func() string {
+		takePendingReasoningContent := func() (string, bool) {
 			reasoningContent := pendingReasoningContent
+			has := hasPendingReasoning
 			pendingReasoningContent = ""
-			return reasoningContent
+			hasPendingReasoning = false
+			return reasoningContent, has
 		}
 		flushPendingToolCalls := func() {
 			if len(pendingToolCalls) == 0 {
@@ -87,7 +90,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			}
 			assistantMessage := []byte(`{"role":"assistant","tool_calls":[]}`)
 			assistantMessage, _ = sjson.SetBytes(assistantMessage, "tool_calls", pendingToolCalls)
-			if reasoningContent := takePendingReasoningContent(); reasoningContent != "" {
+			if reasoningContent, has := takePendingReasoningContent(); has {
 				assistantMessage, _ = sjson.SetBytes(assistantMessage, "reasoning_content", reasoningContent)
 			}
 			out, _ = sjson.SetRawBytes(out, "messages.-1", assistantMessage)
@@ -124,8 +127,8 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			out, _ = sjson.SetRawBytes(out, "messages.-1", message)
 		}
 		appendPendingReasoningMessage := func() {
-			reasoningContent := takePendingReasoningContent()
-			if reasoningContent == "" {
+			reasoningContent, has := takePendingReasoningContent()
+			if !has {
 				return
 			}
 			message := []byte(`{"role":"assistant","content":"","reasoning_content":""}`)
@@ -195,13 +198,20 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 
 				if role == "assistant" {
-					reasoningContent := item.Get("reasoning_content").String()
-					if reasoningContent == "" {
-						reasoningContent = takePendingReasoningContent()
-					} else {
+					reasoningContentResult := item.Get("reasoning_content")
+					var reasoningContent string
+					var hasReasoning bool
+
+					if reasoningContentResult.Exists() {
+						reasoningContent = reasoningContentResult.String()
+						hasReasoning = true
 						pendingReasoningContent = ""
+						hasPendingReasoning = false
+					} else {
+						reasoningContent, hasReasoning = takePendingReasoningContent()
 					}
-					if reasoningContent != "" {
+
+					if hasReasoning {
 						message, _ = sjson.SetBytes(message, "reasoning_content", reasoningContent)
 					}
 				}
@@ -219,11 +229,17 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 						}
 						return true
 					})
+
 					if hasSummaryText {
 						pendingReasoningContent = strings.Join(textParts, "")
+						hasPendingReasoning = true
+					} else {
+						pendingReasoningContent = "[reasoning unavailable]"
+						hasPendingReasoning = true
 					}
 				} else if ec := item.Get("encrypted_content"); ec.Exists() {
 					pendingReasoningContent = ec.String()
+					hasPendingReasoning = true
 				}
 
 			case "function_call":

@@ -81,16 +81,7 @@ type readyBucket struct {
 
 // readyView holds the selection order for flat round-robin traversal.
 type readyView struct {
-	flat         []*scheduledAuth
-	cursor       int
-	parentOrder  []string
-	parentCursor int
-	children     map[string]*childBucket
-}
-
-// childBucket keeps the per-parent rotation state for grouped Gemini virtual auths.
-type childBucket struct {
-	items  []*scheduledAuth
+	flat   []*scheduledAuth
 	cursor int
 }
 
@@ -98,9 +89,7 @@ type childBucket struct {
 type cooldownQueue []*scheduledAuth
 
 type readyViewCursorState struct {
-	cursor       int
-	parentCursor int
-	childCursors map[string]int
+	cursor int
 }
 
 type readyBucketCursorState struct {
@@ -768,18 +757,6 @@ func (m *modelScheduler) advancePastPromoted(promotedIDs []string) {
 
 func advanceViewPastPromoted(view *readyView, promoted map[string]struct{}) {
 	if view == nil || len(view.flat) == 0 || len(promoted) == 0 {
-		return
-	}
-	if len(view.parentOrder) > 1 && len(view.children) > 0 {
-		for _, child := range view.children {
-			if child == nil || len(child.items) == 0 {
-				continue
-			}
-			idx := child.cursor % len(child.items)
-			if _, ok := promoted[child.items[idx].auth.ID]; ok {
-				child.cursor = idx + 1
-			}
-		}
 		return
 	}
 	idx := view.cursor % len(view.flat)

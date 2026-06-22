@@ -742,7 +742,7 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		}
 		models = append(models, modelKey)
 		if state != nil {
-			resetModelState(state, now)
+			clearModelState(state, now)
 		}
 	}
 	if clearCooldownStateForAuth(auth, now) {
@@ -3269,6 +3269,14 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 	if isRequestInvalidError(err) {
 		return 0, false
 	}
+	retryAfter := retryAfterFromError(err)
+	if retryAfter != nil && *retryAfter > 0 {
+		if *retryAfter <= maxWait {
+			return *retryAfter, true
+		}
+		return 0, false
+	}
+
 	wait, found := m.closestCooldownWait(providers, model, attempt)
 	if found {
 		if wait > maxWait {
@@ -3282,11 +3290,9 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 	if !m.retryAllowed(attempt, providers) {
 		return 0, false
 	}
-	retryAfter := retryAfterFromError(err)
-	if retryAfter == nil || *retryAfter <= 0 || *retryAfter > maxWait {
-		return 0, false
-	}
-	return *retryAfter, true
+
+	// Fall back to exponential backoff or 0
+	return 0, false
 }
 
 func waitForCooldown(ctx context.Context, wait time.Duration) error {
@@ -3417,6 +3423,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							if !disableCooling {
 								if result.RetryAfter != nil {
 									next = now.Add(*result.RetryAfter)
+									_, backoffLevel = nextQuotaCooldown(backoffLevel, disableCooling)
 								} else {
 									cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
 									if cooldown > 0 {
@@ -3505,6 +3512,28 @@ func ensureModelState(auth *Auth, model string) *ModelState {
 }
 
 func resetModelState(state *ModelState, now time.Time) {
+	if state == nil {
+		return
+	}
+	state.Unavailable = false
+	state.Status = StatusActive
+	state.StatusMessage = ""
+	state.NextRetryAfter = time.Time{}
+	state.LastError = nil
+	// Only clear the quota error state but preserve the backoff level across successful requests.
+	// This ensures that when the next 429 inevitably occurs, the backoff continues from where it left off,
+	// rather than resetting to 0 and hammering the upstream provider again.
+	state.Quota = QuotaState{
+		BackoffLevel: state.Quota.BackoffLevel,
+	}
+	state.UpdatedAt = now
+}
+
+// clearModelState fully resets a model state including the quota backoff level.
+// Unlike resetModelState which preserves BackoffLevel across successful requests,
+// this function clears everything. Used by ResetQuota (management API) where the
+// user explicitly wants to clear all state.
+func clearModelState(state *ModelState, now time.Time) {
 	if state == nil {
 		return
 	}

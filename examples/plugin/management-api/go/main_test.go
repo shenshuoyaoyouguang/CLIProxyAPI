@@ -33,9 +33,9 @@ type managementRegisterResultMgmt struct {
 
 // managementHandleResultMgmt parses the management.handle response.
 type managementHandleResultMgmt struct {
-	StatusCode int               `json:"StatusCode"`
+	StatusCode int                 `json:"StatusCode"`
 	Headers    map[string][]string `json:"Headers"`
-	Body       []byte            `json:"Body"`
+	Body       []byte              `json:"Body"`
 }
 
 // TestHandleMethod_Register verifies plugin.register and plugin.reconfigure return success.

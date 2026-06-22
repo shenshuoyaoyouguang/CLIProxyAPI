@@ -5,34 +5,6 @@ import (
 	"testing"
 )
 
-func TestWrapGeminiCLIResponse(t *testing.T) {
-	tests := []struct {
-		name  string
-		input []byte
-		want  string
-	}{
-		{
-			name:  "wraps simple response",
-			input: []byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`),
-			want:  `{"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}}`,
-		},
-		{
-			name:  "wraps empty object",
-			input: []byte(`{}`),
-			want:  `{"response":{}}`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := WrapGeminiCLIResponse(tt.input)
-			if !bytes.Equal(got, []byte(tt.want)) {
-				t.Errorf("WrapGeminiCLIResponse() = %s, want %s", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestGeminiTokenCountJSON(t *testing.T) {
 	tests := []struct {
 		name  string

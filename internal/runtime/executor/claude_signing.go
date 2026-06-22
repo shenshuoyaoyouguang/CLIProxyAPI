@@ -75,11 +75,6 @@ func resolveClaudeKeyCloakConfig(cfg *config.Config, auth *cliproxyauth.Auth) *c
 	return entry.Cloak
 }
 
-func experimentalCCHSigningEnabled(cfg *config.Config, auth *cliproxyauth.Auth) bool {
-	entry := resolveClaudeKeyConfig(cfg, auth)
-	return entry != nil && entry.ExperimentalCCHSigning
-}
-
 func rebuildMidSystemMessageEnabled(cfg *config.Config, auth *cliproxyauth.Auth) bool {
 	if auth != nil && auth.Attributes != nil && strings.EqualFold(strings.TrimSpace(auth.Attributes["rebuild_mid_system_message"]), "true") {
 		return true

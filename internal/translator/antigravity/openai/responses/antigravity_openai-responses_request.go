@@ -81,7 +81,8 @@ func rewriteOpenAIResponsesReasoningForAntigravityClaude(modelName string, input
 				logDroppedOpenAIResponsesAntigravityClaudeReasoning(modelName, contentIndex, partIndex, reasoningIndex-1, reasoningSig)
 				continue
 			}
-			if text, _ := part["text"].(string); strings.TrimSpace(text) == "" {
+			text, ok := part["text"].(string)
+			if !ok || strings.TrimSpace(text) == "" || text == "[]" {
 				changed = true
 				logDroppedOpenAIResponsesAntigravityClaudeEmptyReasoning(modelName, contentIndex, partIndex, reasoningIndex-1, reasoningSig)
 				continue
