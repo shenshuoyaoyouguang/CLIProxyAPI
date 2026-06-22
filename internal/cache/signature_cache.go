@@ -102,7 +102,11 @@ func purgeExpiredCaches() {
 		}
 		isEmpty := len(sc.entries) == 0
 		sc.mu.Unlock()
-		// Remove cache bucket if empty
+		// Remove cache bucket if empty.
+		// NOTE: A concurrent goroutine may have added a new entry between Unlock
+		// and Delete. sync.Map.Delete is safe (the new entry will simply re-create
+		// the bucket via LoadOrStore on its next access). The small window means at
+		// most one extra cache miss — acceptable for a best-effort purge.
 		if isEmpty {
 			signatureCache.Delete(key)
 		}
@@ -208,16 +212,19 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 
 	now := time.Now()
 
-	sc.mu.Lock()
+	sc.mu.RLock()
 	entry, exists := sc.entries[textHash]
+	sc.mu.RUnlock()
+
 	if !exists {
-		sc.mu.Unlock()
 		if groupKey == "gemini" {
 			return "skip_thought_signature_validator", nil
 		}
 		return "", nil
 	}
+
 	if now.Sub(entry.Timestamp) > SignatureCacheTTL {
+		sc.mu.Lock()
 		delete(sc.entries, textHash)
 		sc.mu.Unlock()
 		if groupKey == "gemini" {
@@ -227,6 +234,7 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 	}
 
 	// Refresh TTL on access (sliding expiration).
+	sc.mu.Lock()
 	entry.Timestamp = now
 	sc.entries[textHash] = entry
 	sc.mu.Unlock()

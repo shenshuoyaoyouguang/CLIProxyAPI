@@ -1024,11 +1024,15 @@ func (r *ModelRegistry) GetModelCount(modelID string) int {
 				expiredClients++
 			}
 		}
-		suspendedClients := 0
+		otherSuspended := 0
 		if registration.SuspendedClients != nil {
-			suspendedClients = len(registration.SuspendedClients)
+			for _, reason := range registration.SuspendedClients {
+				if !strings.EqualFold(reason, "quota") {
+					otherSuspended++
+				}
+			}
 		}
-		result := registration.Count - expiredClients - suspendedClients
+		result := registration.Count - expiredClients - otherSuspended
 		if result < 0 {
 			return 0
 		}

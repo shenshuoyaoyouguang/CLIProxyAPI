@@ -72,9 +72,18 @@ func (e *KimiExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 }
 
 // Execute performs a non-streaming chat completion request to Kimi.
+// ensureAuthAttributes initialises auth.Attributes when it is nil so that
+// callers can safely write map entries without a nil-map panic.
+func ensureAuthAttributes(auth *cliproxyauth.Auth) {
+	if auth != nil && auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+}
+
 func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
+		ensureAuthAttributes(auth)
 		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
 		return e.ClaudeExecutor.Execute(ctx, auth, req, opts)
 	}
@@ -185,6 +194,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
+		ensureAuthAttributes(auth)
 		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
 		return e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
 	}
@@ -325,6 +335,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 // CountTokens estimates token count for Kimi requests.
 func (e *KimiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	ensureAuthAttributes(auth)
 	auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
 	return e.ClaudeExecutor.CountTokens(ctx, auth, req, opts)
 }

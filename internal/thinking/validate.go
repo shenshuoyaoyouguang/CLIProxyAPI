@@ -310,6 +310,7 @@ func clampBudget(value int, modelInfo *registry.ModelInfo, provider string) int 
 }
 
 func isLevelSupported(level string, supported []string) bool {
+	level = strings.TrimSpace(level)
 	for _, s := range supported {
 		if strings.EqualFold(level, strings.TrimSpace(s)) {
 			return true

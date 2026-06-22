@@ -139,6 +139,77 @@ func TestExtractThinkingConfig_DeepseekAndKimiAreEquivalent(t *testing.T) {
 	}
 }
 
+// TestExtractCodexConfig_Auto verifies that extractCodexConfig correctly parses
+// reasoning.effort="auto" as ModeAuto with Budget=-1, matching extractOpenAIConfig.
+func TestExtractCodexConfig_Auto(t *testing.T) {
+	body := []byte(`{"reasoning":{"effort":"auto"}}`)
+	got := extractCodexConfig(body)
+	if got.Mode != ModeAuto {
+		t.Errorf("Mode = %v, want ModeAuto", got.Mode)
+	}
+	if got.Budget != -1 {
+		t.Errorf("Budget = %d, want -1", got.Budget)
+	}
+}
+
+// TestExtractCodexConfig_None verifies the "none" case.
+func TestExtractCodexConfig_None(t *testing.T) {
+	body := []byte(`{"reasoning":{"effort":"none"}}`)
+	got := extractCodexConfig(body)
+	if got.Mode != ModeNone {
+		t.Errorf("Mode = %v, want ModeNone", got.Mode)
+	}
+	if got.Budget != 0 {
+		t.Errorf("Budget = %d, want 0", got.Budget)
+	}
+}
+
+// TestExtractCodexConfig_Level verifies that known level strings are ModeLevel.
+func TestExtractCodexConfig_Level(t *testing.T) {
+	for _, level := range []string{"low", "medium", "high"} {
+		t.Run(level, func(t *testing.T) {
+			body := []byte(`{"reasoning":{"effort":"` + level + `"}}`)
+			got := extractCodexConfig(body)
+			if got.Mode != ModeLevel {
+				t.Errorf("Mode = %v, want ModeLevel", got.Mode)
+			}
+			if got.Level != ThinkingLevel(level) {
+				t.Errorf("Level = %q, want %q", got.Level, level)
+			}
+		})
+	}
+}
+
+// TestExtractCodexConfig_Missing verifies an empty ThinkingConfig is returned
+// when the body has no reasoning.effort field.
+func TestExtractCodexConfig_Missing(t *testing.T) {
+	body := []byte(`{"model":"codex-mini","messages":[]}`)
+	got := extractCodexConfig(body)
+	if hasThinkingConfig(got) {
+		t.Errorf("extractCodexConfig() returned non-empty config for body without reasoning.effort: %+v", got)
+	}
+}
+
+// TestExtractThinkingConfig_CodexAndXAIAreEquivalent verifies that "codex" and
+// "xai" produce the same result for identical bodies, since both delegate to
+// extractCodexConfig.
+func TestExtractThinkingConfig_CodexAndXAIAreEquivalent(t *testing.T) {
+	bodies := [][]byte{
+		[]byte(`{"reasoning":{"effort":"auto"}}`),
+		[]byte(`{"reasoning":{"effort":"none"}}`),
+		[]byte(`{"reasoning":{"effort":"high"}}`),
+		[]byte(`{"model":"test"}`),
+	}
+	for _, body := range bodies {
+		codexCfg := extractThinkingConfig(body, "codex")
+		xaiCfg := extractThinkingConfig(body, "xai")
+		if codexCfg != xaiCfg {
+			t.Errorf("codex and xai configs differ for body %s: codex=%+v xai=%+v",
+				string(body), codexCfg, xaiCfg)
+		}
+	}
+}
+
 // TestExtractThinkingConfig_UnknownProviderReturnsEmpty verifies that an unknown
 // provider produces an empty config.
 func TestExtractThinkingConfig_UnknownProviderReturnsEmpty(t *testing.T) {

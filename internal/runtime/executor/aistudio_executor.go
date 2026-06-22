@@ -175,7 +175,6 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 		return resp, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, wsResp.Status, wsResp.Headers.Clone())
-	reporter.StartResponseTTFT()
 	if len(wsResp.Body) > 0 {
 		reporter.MarkFirstResponseByte()
 		helps.AppendAPIResponseChunk(ctx, e.cfg, wsResp.Body)

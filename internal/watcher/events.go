@@ -174,12 +174,12 @@ func (w *Watcher) shouldDebounceRemove(normalizedPath string, now time.Time) boo
 		return false
 	}
 	w.clientsMutex.Lock()
+	defer w.clientsMutex.Unlock()
 	if w.lastRemoveTimes == nil {
 		w.lastRemoveTimes = make(map[string]time.Time)
 	}
 	if last, ok := w.lastRemoveTimes[normalizedPath]; ok {
 		if now.Sub(last) < authRemoveDebounceWindow {
-			w.clientsMutex.Unlock()
 			return true
 		}
 	}
@@ -192,6 +192,5 @@ func (w *Watcher) shouldDebounceRemove(normalizedPath string, now time.Time) boo
 			}
 		}
 	}
-	w.clientsMutex.Unlock()
 	return false
 }
