@@ -79,7 +79,11 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		if config.Budget == 0 {
 			return applyDisabledThinking(body)
 		}
-		return applyEnabledThinking(body)
+		body, err := applyEnabledThinking(body)
+		if err != nil {
+			return body, err
+		}
+		return mimoBoostMaxCompletion(body, config.Budget), nil
 	case thinking.ModeAuto:
 		// Auto mode — MiMo defaults to enabled for supported models, so leave unchanged.
 		return body, nil
@@ -108,7 +112,11 @@ func applyCompatibleMimo(body []byte, config thinking.ThinkingConfig) ([]byte, e
 		if config.Budget == 0 {
 			return applyDisabledThinking(body)
 		}
-		return applyEnabledThinking(body)
+		body, err := applyEnabledThinking(body)
+		if err != nil {
+			return body, err
+		}
+		return mimoBoostMaxCompletion(body, config.Budget), nil
 	default:
 		return body, nil
 	}
@@ -120,6 +128,25 @@ func applyEnabledThinking(body []byte) ([]byte, error) {
 		return body, fmt.Errorf("mimo thinking: failed to set thinking.type: %w", errSetType)
 	}
 	return result, nil
+}
+
+// mimoBoostMaxCompletion sets max_completion_tokens to at least the given budget
+// when thinking is enabled. This gives the model maximum space for reasoning.
+// If the body already has a higher max_completion_tokens, it is preserved.
+// Only boosts when thinking.type is "enabled" in the body.
+func mimoBoostMaxCompletion(body []byte, budget int) []byte {
+	if budget <= 0 {
+		return body
+	}
+	thinkingType := gjson.GetBytes(body, "thinking.type")
+	if !thinkingType.Exists() || thinkingType.String() != "enabled" {
+		return body
+	}
+	current := gjson.GetBytes(body, "max_completion_tokens").Int()
+	if int64(budget) > current {
+		body, _ = sjson.SetBytes(body, "max_completion_tokens", budget)
+	}
+	return body
 }
 
 func applyDisabledThinking(body []byte) ([]byte, error) {

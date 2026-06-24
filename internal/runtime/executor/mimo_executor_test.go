@@ -110,15 +110,15 @@ func TestMimoLockThinkingParams_PreservesOtherFields(t *testing.T) {
 		"model": "mimo-v2.5-pro",
 		"thinking": {"type": "enabled"},
 		"messages": [{"role": "user", "content": "hello"}],
-		"max_completion_tokens": 1024,
+		"max_completion_tokens": 64512,
 		"frequency_penalty": 0.5,
 		"presence_penalty": 0.3
 	}`)
 
 	out := mimoLockThinkingParams(body)
 
-	if got := gjson.GetBytes(out, "max_completion_tokens").Int(); got != 1024 {
-		t.Fatalf("max_completion_tokens = %v, want 1024 (preserved)", got)
+	if got := gjson.GetBytes(out, "max_completion_tokens").Int(); got != 64512 {
+		t.Fatalf("max_completion_tokens = %v, want 64512 (preserved)", got)
 	}
 	if got := gjson.GetBytes(out, "frequency_penalty").Float(); got != 0.5 {
 		t.Fatalf("frequency_penalty = %v, want 0.5 (preserved)", got)
@@ -155,5 +155,31 @@ func TestMimoLockThinkingParams_SimulatedConfigOverride(t *testing.T) {
 	}
 	if got := gjson.GetBytes(body, "top_p").Float(); got != 0.95 {
 		t.Fatalf("post-lock top_p = %v, want 0.95 (config overridden by lock)", got)
+	}
+}
+
+// TestMimoLockThinkingParams_PreservesBoostedMaxCompletionTokens verifies that
+// mimoLockThinkingParams does not interfere with the max_completion_tokens boost
+// applied by the MiMo thinking applier. This is critical for the MAX reasoning flow.
+func TestMimoLockThinkingParams_PreservesBoostedMaxCompletionTokens(t *testing.T) {
+	body := []byte(`{
+		"model": "mimo-v2.5-pro",
+		"thinking": {"type": "enabled"},
+		"messages": [{"role": "user", "content": "hello"}],
+		"max_completion_tokens": 64512
+	}`)
+
+	out := mimoLockThinkingParams(body)
+
+	// temperature/top_p should be locked
+	if got := gjson.GetBytes(out, "temperature").Float(); got != 1.0 {
+		t.Fatalf("temperature = %v, want 1.0", got)
+	}
+	if got := gjson.GetBytes(out, "top_p").Float(); got != 0.95 {
+		t.Fatalf("top_p = %v, want 0.95", got)
+	}
+	// max_completion_tokens should be untouched
+	if got := gjson.GetBytes(out, "max_completion_tokens").Int(); got != 64512 {
+		t.Fatalf("max_completion_tokens = %v, want 64512 (preserved by lock)", got)
 	}
 }

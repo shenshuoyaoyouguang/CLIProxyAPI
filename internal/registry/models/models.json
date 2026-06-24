@@ -1981,11 +1981,11 @@
       "type": "mimo",
       "display_name": "MiMo V2.5 Pro",
       "description": "Xiaomi MiMo V2.5 Pro model with deep thinking support.",
-      "context_length": 131072,
-      "max_completion_tokens": 16384,
+      "context_length": 1048576,
+      "max_completion_tokens": 64512,
       "thinking": {
-        "min": 1024,
-        "max": 16384,
+        "min": 8192,
+        "max": 64512,
         "zero_allowed": true
       }
     },
@@ -1997,11 +1997,11 @@
       "type": "mimo",
       "display_name": "MiMo V2.5",
       "description": "Xiaomi MiMo V2.5 model with deep thinking support.",
-      "context_length": 131072,
-      "max_completion_tokens": 16384,
+      "context_length": 262144,
+      "max_completion_tokens": 64512,
       "thinking": {
-        "min": 1024,
-        "max": 16384,
+        "min": 8192,
+        "max": 64512,
         "zero_allowed": true
       }
     },
@@ -2014,10 +2014,10 @@
       "display_name": "MiMo V2 Pro",
       "description": "Xiaomi MiMo V2 Pro model with deep thinking support.",
       "context_length": 131072,
-      "max_completion_tokens": 16384,
+      "max_completion_tokens": 64512,
       "thinking": {
-        "min": 1024,
-        "max": 16384,
+        "min": 8192,
+        "max": 64512,
         "zero_allowed": true
       }
     },
@@ -2030,10 +2030,10 @@
       "display_name": "MiMo V2 Omni",
       "description": "Xiaomi MiMo V2 Omni multimodal model with deep thinking support.",
       "context_length": 131072,
-      "max_completion_tokens": 16384,
+      "max_completion_tokens": 64512,
       "thinking": {
-        "min": 1024,
-        "max": 16384,
+        "min": 8192,
+        "max": 64512,
         "zero_allowed": true
       }
     },
@@ -2046,10 +2046,10 @@
       "display_name": "MiMo V2 Flash",
       "description": "Xiaomi MiMo V2 Flash fast model with deep thinking support (disabled by default).",
       "context_length": 131072,
-      "max_completion_tokens": 16384,
+      "max_completion_tokens": 64512,
       "thinking": {
-        "min": 1024,
-        "max": 16384,
+        "min": 8192,
+        "max": 64512,
         "zero_allowed": true
       }
     }
