@@ -247,7 +247,11 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 						// Add reasoning_content if present
 						if hasReasoning {
-							if modelkind.IsDeepSeekModel(modelName) {
+							// DeepSeek and MiMo require reasoning_content as a plain string.
+							// MiMo official docs: when thinking mode is enabled with tool calls in
+							// history, assistant messages must pass back reasoning_content (string)
+							// verbatim, otherwise the API returns 400.
+							if modelkind.IsDeepSeekModel(modelName) || modelkind.IsMIMOModel(modelName) {
 								msgJSON, _ = sjson.SetBytes(msgJSON, "reasoning_content", joinOpenAIReasoningTexts(reasoningParts))
 							} else {
 								msgJSON, _ = sjson.SetRawBytes(msgJSON, "reasoning_content", marshalOpenAIReasoningParts(reasoningParts))
@@ -352,7 +356,11 @@ func claudeThinkingToOpenAIReasoningPart(modelName string, part gjson.Result) (t
 	if strings.TrimSpace(thinkingText) == "" {
 		return translatorreasoning.OpenAIReasoningPart{}, false
 	}
-	if modelkind.IsDeepSeekModel(modelName) {
+	// DeepSeek and MiMo use reasoning_content as a plain string and do not require
+	// a signature. MiMo thinking blocks never carry signatures, so without this
+	// exemption the reasoning content would be dropped entirely, causing 400 errors
+	// in multi-turn tool-call conversations under thinking mode.
+	if modelkind.IsDeepSeekModel(modelName) || modelkind.IsMIMOModel(modelName) {
 		return translatorreasoning.OpenAIReasoningPart{Text: thinkingText}, true
 	}
 

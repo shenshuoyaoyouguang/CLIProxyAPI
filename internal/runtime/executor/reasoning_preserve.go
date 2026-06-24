@@ -104,14 +104,19 @@ func preserveReasoningContent(original, translated []byte) ([]byte, error) {
 // messages into content-array thinking blocks when the payload has thinking mode enabled,
 // while preserving the top-level reasoning_content field for backward compatibility.
 //
-// Providers like MiMo, DeepSeek require assistant messages with reasoning_content to
-// also express it as a structured content part:
+// Some providers (e.g. OpenAI responses API) require assistant messages with
+// reasoning_content to also express it as a structured content part:
 //
 //	{"type": "thinking", "thinking": "<reasoning text>"}
 //
 // Without this, these APIs return 400:
-//   - MiMo/DeepSeek: "messages.N.content.M.thinking.thinking: Field required"
-//   - DeepSeek: "The reasoning_content in the thinking mode must be passed back to the API."
+//   - "messages.N.content.M.thinking.thinking: Field required"
+//
+// DeepSeek and MiMo are exempted from this conversion: they only require the
+// top-level reasoning_content field (as a plain string) to be passed back
+// verbatim in multi-turn conversations. MiMo official docs state that when
+// thinking mode is enabled with tool calls in history, assistant messages
+// must preserve reasoning_content, otherwise the API returns 400.
 //
 // Other providers (standard OpenAI, OpenRouter) only recognize the top-level
 // reasoning_content field and would reject a content-array thinking block.

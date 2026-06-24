@@ -109,6 +109,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if modelkind.IsDeepSeekModel(baseModel) {
 		thinkingTarget = "deepseek"
 	}
+	if modelkind.IsMIMOModel(baseModel) {
+		thinkingTarget = "mimo"
+	}
 	endpoint := "/chat/completions"
 	if opts.Alt == "responses/compact" {
 		to = sdktranslator.FromString("openai-response")
@@ -130,12 +133,19 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 
+	// MiMo-specific: lock temperature and top_p when thinking is enabled.
+	// Must run AFTER ApplyPayloadConfigWithRequest so config overrides are
+	// themselves overwritten by the locked values.
+	if modelkind.IsMIMOModel(baseModel) {
+		translated = mimoLockThinkingParams(translated)
+	}
+
 	translated, err = preserveReasoningContent(originalTranslated, translated)
 	if err != nil {
 		return resp, err
 	}
 
-	if !modelkind.IsDeepSeekModel(baseModel) {
+	if !modelkind.IsDeepSeekModel(baseModel) && !modelkind.IsMIMOModel(baseModel) {
 		translated, err = convertReasoningToThinkingContent(translated)
 		if err != nil {
 			return resp, err
@@ -334,6 +344,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if modelkind.IsDeepSeekModel(baseModel) {
 		thinkingTarget = "deepseek"
 	}
+	if modelkind.IsMIMOModel(baseModel) {
+		thinkingTarget = "mimo"
+	}
 	endpoint := "/chat/completions"
 	if opts.Alt == "responses/compact" {
 		to = sdktranslator.FromString("openai-response")
@@ -355,12 +368,19 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 
+	// MiMo-specific: lock temperature and top_p when thinking is enabled.
+	// Must run AFTER ApplyPayloadConfigWithRequest so config overrides are
+	// themselves overwritten by the locked values.
+	if modelkind.IsMIMOModel(baseModel) {
+		translated = mimoLockThinkingParams(translated)
+	}
+
 	translated, err = preserveReasoningContent(originalTranslated, translated)
 	if err != nil {
 		return nil, err
 	}
 
-	if !modelkind.IsDeepSeekModel(baseModel) {
+	if !modelkind.IsDeepSeekModel(baseModel) && !modelkind.IsMIMOModel(baseModel) {
 		translated, err = convertReasoningToThinkingContent(translated)
 		if err != nil {
 			return nil, err
@@ -625,6 +645,9 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 	thinkingTarget := to.String()
 	if modelkind.IsDeepSeekModel(baseModel) {
 		thinkingTarget = "deepseek"
+	}
+	if modelkind.IsMIMOModel(baseModel) {
+		thinkingTarget = "mimo"
 	}
 	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTarget, e.Identifier())
 	if err != nil {

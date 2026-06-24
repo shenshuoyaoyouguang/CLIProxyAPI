@@ -28,6 +28,7 @@ var nativeProviderAppliers = map[string]ProviderApplier{
 	"kimi":        nil,
 	"xai":         nil,
 	"deepseek":    nil,
+	"mimo":        nil,
 }
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.
@@ -458,6 +459,8 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 	case "kimi", "deepseek":
 		// Kimi uses OpenAI-compatible reasoning_effort format
 		return extractOpenAIConfig(body)
+	case "mimo":
+		return extractMIMOConfig(body)
 	default:
 		return ThinkingConfig{}
 	}
@@ -690,4 +693,26 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 	}
 
 	return ThinkingConfig{}
+}
+
+// extractMIMOConfig extracts thinking configuration from MiMo format request body.
+//
+// MiMo API format:
+//   - thinking.type: "enabled" or "disabled"
+//
+// MiMo uses thinking.type exclusively — no reasoning_effort field.
+func extractMIMOConfig(body []byte) ThinkingConfig {
+	thinkingType := gjson.GetBytes(body, "thinking.type")
+	if !thinkingType.Exists() {
+		return ThinkingConfig{}
+	}
+
+	switch thinkingType.String() {
+	case "enabled":
+		return ThinkingConfig{Mode: ModeLevel, Level: LevelHigh}
+	case "disabled":
+		return ThinkingConfig{Mode: ModeNone, Budget: 0}
+	default:
+		return ThinkingConfig{}
+	}
 }

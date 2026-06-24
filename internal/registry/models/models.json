@@ -1971,5 +1971,87 @@
       "context_length": 200000,
       "max_completion_tokens": 32768
     }
+  ],
+  "mimo": [
+    {
+      "id": "mimo-v2.5-pro",
+      "object": "model",
+      "created": 1750000000,
+      "owned_by": "xiaomi",
+      "type": "mimo",
+      "display_name": "MiMo V2.5 Pro",
+      "description": "Xiaomi MiMo V2.5 Pro model with deep thinking support.",
+      "context_length": 131072,
+      "max_completion_tokens": 16384,
+      "thinking": {
+        "min": 1024,
+        "max": 16384,
+        "zero_allowed": true
+      }
+    },
+    {
+      "id": "mimo-v2.5",
+      "object": "model",
+      "created": 1750000000,
+      "owned_by": "xiaomi",
+      "type": "mimo",
+      "display_name": "MiMo V2.5",
+      "description": "Xiaomi MiMo V2.5 model with deep thinking support.",
+      "context_length": 131072,
+      "max_completion_tokens": 16384,
+      "thinking": {
+        "min": 1024,
+        "max": 16384,
+        "zero_allowed": true
+      }
+    },
+    {
+      "id": "mimo-v2-pro",
+      "object": "model",
+      "created": 1750000000,
+      "owned_by": "xiaomi",
+      "type": "mimo",
+      "display_name": "MiMo V2 Pro",
+      "description": "Xiaomi MiMo V2 Pro model with deep thinking support.",
+      "context_length": 131072,
+      "max_completion_tokens": 16384,
+      "thinking": {
+        "min": 1024,
+        "max": 16384,
+        "zero_allowed": true
+      }
+    },
+    {
+      "id": "mimo-v2-omni",
+      "object": "model",
+      "created": 1750000000,
+      "owned_by": "xiaomi",
+      "type": "mimo",
+      "display_name": "MiMo V2 Omni",
+      "description": "Xiaomi MiMo V2 Omni multimodal model with deep thinking support.",
+      "context_length": 131072,
+      "max_completion_tokens": 16384,
+      "thinking": {
+        "min": 1024,
+        "max": 16384,
+        "zero_allowed": true
+      }
+    },
+    {
+      "id": "mimo-v2-flash",
+      "object": "model",
+      "created": 1750000000,
+      "owned_by": "xiaomi",
+      "type": "mimo",
+      "display_name": "MiMo V2 Flash",
+      "description": "Xiaomi MiMo V2 Flash fast model with deep thinking support (disabled by default).",
+      "context_length": 131072,
+      "max_completion_tokens": 16384,
+      "thinking": {
+        "min": 1024,
+        "max": 16384,
+        "zero_allowed": true
+      }
+    }
   ]
 }

@@ -21,4 +21,7 @@ const (
 
 	// Antigravity represents the Antigravity response format identifier.
 	Antigravity = "antigravity"
+
+	// MIMO represents the Xiaomi MiMo provider identifier.
+	MIMO = "mimo"
 )
