@@ -698,21 +698,37 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 // extractMIMOConfig extracts thinking configuration from MiMo format request body.
 //
 // MiMo API format:
-//   - thinking.type: "enabled" or "disabled"
+//   - thinking.type: "enabled" or "disabled"  (native, takes priority)
+//   - reasoning_effort: "low" / "medium" / "high" / "max"  (OpenAI-compatible fallback)
 //
-// MiMo uses thinking.type exclusively — no reasoning_effort field.
+// When both fields are present, thinking.type takes priority.
+// reasoning_effort is mapped to budget values: low=8192, medium=24576, high/max=64512.
 func extractMIMOConfig(body []byte) ThinkingConfig {
 	thinkingType := gjson.GetBytes(body, "thinking.type")
-	if !thinkingType.Exists() {
-		return ThinkingConfig{}
+	if thinkingType.Exists() {
+		switch thinkingType.String() {
+		case "enabled":
+			return ThinkingConfig{Mode: ModeLevel, Level: LevelHigh}
+		case "disabled":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		}
 	}
 
-	switch thinkingType.String() {
-	case "enabled":
-		return ThinkingConfig{Mode: ModeLevel, Level: LevelHigh}
-	case "disabled":
-		return ThinkingConfig{Mode: ModeNone, Budget: 0}
-	default:
-		return ThinkingConfig{}
+	// Fallback: reasoning_effort for OpenAI-compatible callers (e.g. DeepSeek-Reasonix).
+	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+		switch strings.ToLower(effort.String()) {
+		case "max", "high":
+			return ThinkingConfig{Mode: ModeBudget, Budget: 64512}
+		case "medium":
+			return ThinkingConfig{Mode: ModeBudget, Budget: 24576}
+		case "low":
+			return ThinkingConfig{Mode: ModeBudget, Budget: 8192}
+		case "none":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "auto":
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		}
 	}
+
+	return ThinkingConfig{}
 }

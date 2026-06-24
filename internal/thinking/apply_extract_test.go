@@ -219,3 +219,114 @@ func TestExtractThinkingConfig_UnknownProviderReturnsEmpty(t *testing.T) {
 		t.Errorf("unknown provider should return empty config, got %+v", got)
 	}
 }
+
+// --- MiMo extractMIMOConfig tests ---
+
+// TestExtractMIMOConfig_ThinkingTypePriority verifies that thinking.type takes
+// priority over reasoning_effort when both are present.
+func TestExtractMIMOConfig_ThinkingTypePriority(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"disabled"},"reasoning_effort":"high"}`)
+	got := extractMIMOConfig(body)
+	if got.Mode != ModeNone {
+		t.Errorf("Mode = %v, want ModeNone (thinking.type=disabled takes priority)", got.Mode)
+	}
+	if got.Budget != 0 {
+		t.Errorf("Budget = %d, want 0", got.Budget)
+	}
+}
+
+// TestExtractMIMOConfig_ThinkingTypeEnabled verifies the native thinking.type path.
+func TestExtractMIMOConfig_ThinkingTypeEnabled(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"enabled"}}`)
+	got := extractMIMOConfig(body)
+	if got.Mode != ModeLevel {
+		t.Errorf("Mode = %v, want ModeLevel", got.Mode)
+	}
+	if got.Level != LevelHigh {
+		t.Errorf("Level = %q, want %q", got.Level, LevelHigh)
+	}
+}
+
+// TestExtractMIMOConfig_ThinkingTypeDisabled verifies the native thinking.type=disabled path.
+func TestExtractMIMOConfig_ThinkingTypeDisabled(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"disabled"}}`)
+	got := extractMIMOConfig(body)
+	if got.Mode != ModeNone {
+		t.Errorf("Mode = %v, want ModeNone", got.Mode)
+	}
+}
+
+// TestExtractMIMOConfig_ReasoningEffort_Levels verifies the reasoning_effort fallback
+// for all supported levels.
+func TestExtractMIMOConfig_ReasoningEffort_Levels(t *testing.T) {
+	tests := []struct {
+		name       string
+		effort     string
+		wantMode   ThinkingMode
+		wantBudget int
+	}{
+		{name: "max", effort: "max", wantMode: ModeBudget, wantBudget: 64512},
+		{name: "high", effort: "high", wantMode: ModeBudget, wantBudget: 64512},
+		{name: "medium", effort: "medium", wantMode: ModeBudget, wantBudget: 24576},
+		{name: "low", effort: "low", wantMode: ModeBudget, wantBudget: 8192},
+		{name: "none", effort: "none", wantMode: ModeNone, wantBudget: 0},
+		{name: "auto", effort: "auto", wantMode: ModeAuto, wantBudget: -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"reasoning_effort":"` + tt.effort + `"}`)
+			got := extractMIMOConfig(body)
+			if got.Mode != tt.wantMode {
+				t.Errorf("Mode = %v, want %v", got.Mode, tt.wantMode)
+			}
+			if got.Budget != tt.wantBudget {
+				t.Errorf("Budget = %d, want %d", got.Budget, tt.wantBudget)
+			}
+		})
+	}
+}
+
+// TestExtractMIMOConfig_ReasoningEffort_CaseInsensitive verifies case-insensitive matching.
+func TestExtractMIMOConfig_ReasoningEffort_CaseInsensitive(t *testing.T) {
+	body := []byte(`{"reasoning_effort":"HIGH"}`)
+	got := extractMIMOConfig(body)
+	if got.Mode != ModeBudget {
+		t.Errorf("Mode = %v, want ModeBudget", got.Mode)
+	}
+	if got.Budget != 64512 {
+		t.Errorf("Budget = %d, want 64512", got.Budget)
+	}
+}
+
+// TestExtractMIMOConfig_MissingFields verifies that an empty ThinkingConfig is
+// returned when neither thinking.type nor reasoning_effort is present.
+func TestExtractMIMOConfig_MissingFields(t *testing.T) {
+	body := []byte(`{"model":"mimo-v2.5-pro","messages":[]}`)
+	got := extractMIMOConfig(body)
+	if hasThinkingConfig(got) {
+		t.Errorf("extractMIMOConfig() returned non-empty config for body without thinking fields: %+v", got)
+	}
+}
+
+// TestExtractMIMOConfig_ReasoningEffort_UnknownValue verifies that an unknown
+// reasoning_effort value is ignored (returns empty config).
+func TestExtractMIMOConfig_ReasoningEffort_UnknownValue(t *testing.T) {
+	body := []byte(`{"reasoning_effort":"xhigh"}`)
+	got := extractMIMOConfig(body)
+	if hasThinkingConfig(got) {
+		t.Errorf("unknown reasoning_effort value should return empty config, got %+v", got)
+	}
+}
+
+// TestExtractThinkingConfig_MIMO_ReasoningEffort verifies that the "mimo" provider
+// correctly extracts reasoning_effort through extractThinkingConfig.
+func TestExtractThinkingConfig_MIMO_ReasoningEffort(t *testing.T) {
+	body := []byte(`{"reasoning_effort":"high"}`)
+	got := extractThinkingConfig(body, "mimo")
+	if got.Mode != ModeBudget {
+		t.Errorf("Mode = %v, want ModeBudget", got.Mode)
+	}
+	if got.Budget != 64512 {
+		t.Errorf("Budget = %d, want 64512", got.Budget)
+	}
+}

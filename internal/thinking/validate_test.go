@@ -34,13 +34,13 @@ func TestIsLevelSupported_TrimsBothSides(t *testing.T) {
 			name:      "whitespace in level input",
 			level:     " high ",
 			supported: []string{"low", "medium", "high"},
-			want:      true, // BUG: currently returns false
+			want:      true,
 		},
 		{
 			name:      "whitespace in both",
 			level:     " Medium ",
 			supported: []string{" low ", " medium ", " high "},
-			want:      true, // BUG: currently returns false
+			want:      true,
 		},
 		{
 			name:      "no match",
