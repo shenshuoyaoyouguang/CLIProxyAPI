@@ -20,7 +20,7 @@ import (
 // MiMo-specific behavior:
 //   - Enabled thinking:  thinking.type="enabled"
 //   - Disabled thinking: thinking.type="disabled"
-//   - OpenAI-compatible reasoning_effort also accepted (low/medium/high/max)
+//   - No reasoning_effort field — uses thinking.type exclusively
 type Applier struct{}
 
 var _ thinking.ProviderApplier = (*Applier)(nil)
