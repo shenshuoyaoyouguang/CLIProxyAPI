@@ -28,6 +28,7 @@ type staticModelsJSON struct {
 	Kimi        []*ModelInfo `json:"kimi"`
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
+	Mimo        []*ModelInfo `json:"mimo"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -108,6 +109,11 @@ func AntigravityWebSearchModelFor(modelID string) string {
 // GetXAIModels returns the standard xAI Grok model definitions.
 func GetXAIModels() []*ModelInfo {
 	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
+}
+
+// GetMimoModels returns the standard Xiaomi MiMo model definitions.
+func GetMimoModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Mimo)
 }
 
 // WithCodexBuiltins injects hard-coded Codex-only model definitions that should
@@ -277,6 +283,7 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - kimi
 //   - antigravity
 //   - xai
+//   - mimo
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
@@ -296,6 +303,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAntigravityModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
+	case "mimo":
+		return GetMimoModels()
 	default:
 		return nil
 	}
@@ -318,6 +327,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Kimi,
 		data.Antigravity,
 		data.XAI,
+		data.Mimo,
 	}
 	for _, models := range allModels {
 		for _, m := range models {

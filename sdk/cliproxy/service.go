@@ -1895,6 +1895,9 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
+	case "mimo":
+		models = registry.GetMimoModels()
+		models = applyExcludedModels(models, excluded)
 	case "xai":
 		models = registry.GetXAIModels()
 		models = applyExcludedModels(models, excluded)
