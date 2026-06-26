@@ -8,17 +8,28 @@ import (
 
 // levelToBudgetMap defines the standard Level → Budget mapping.
 // All keys are lowercase; lookups should use strings.ToLower.
+// levelToBudgetMap defines the standard Level → Budget mapping.
+//
+// minimal, low, and medium are aliases for auto (-1). The level system is
+// simplified to three tiers: high (24576), xhigh (32768), and max (65536).
+// Lower levels are collapsed into auto, meaning "let the model decide".
+//
+// Note: This is a one-way simplification. ConvertBudgetToLevel (Budget → Level)
+// still returns minimal/low/medium labels for backward compatibility with
+// models that declare support for these levels in their registry metadata.
+// Feeding those labels back through ConvertLevelToBudget yields -1 (auto),
+// which is the intended behavior.
 var levelToBudgetMap = map[string]int{
 	"none":    0,
 	"auto":    -1,
-	"minimal": 512,
-	"low":     1024,
-	"medium":  8192,
+	"minimal": -1,
+	"low":     -1,
+	"medium":  -1,
 	"high":    24576,
 	"xhigh":   32768,
 	// "max" is used by Claude adaptive thinking effort. We map it to a large budget
 	// and rely on per-model clamping when converting to budget-only providers.
-	"max": 128000,
+	"max": 65536,
 }
 
 // ConvertLevelToBudget converts a thinking level to a budget value.
@@ -29,12 +40,12 @@ var levelToBudgetMap = map[string]int{
 // Level → Budget mapping:
 //   - none    → 0
 //   - auto    → -1
-//   - minimal → 512
-//   - low     → 1024
-//   - medium  → 8192
+//   - minimal → -1 (auto)
+//   - low     → -1 (auto)
+//   - medium  → -1 (auto)
 //   - high    → 24576
 //   - xhigh   → 32768
-//   - max     → 128000
+//   - max     → 65536
 //
 // Returns:
 //   - budget: The converted budget value
@@ -47,14 +58,14 @@ func ConvertLevelToBudget(level string) (int, bool) {
 // BudgetThreshold constants define the upper bounds for each thinking level.
 // These are used by ConvertBudgetToLevel for range-based mapping.
 const (
-	// ThresholdMinimal is the upper bound for "minimal" level (1-512)
-	ThresholdMinimal = 512
-	// ThresholdLow is the upper bound for "low" level (513-1024)
-	ThresholdLow = 1024
-	// ThresholdMedium is the upper bound for "medium" level (1025-8192)
+	// ThresholdMinimal is the upper bound for "minimal" level (1-1024)
+	ThresholdMinimal = 1024
+	// ThresholdLow is the upper bound for "low" level (1025-2048)
+	ThresholdLow = 2048
+	// ThresholdMedium is the upper bound for "medium" level (2049-8192)
 	ThresholdMedium = 8192
-	// ThresholdHigh is the upper bound for "high" level (8193-24576)
-	ThresholdHigh = 24576
+	// ThresholdHigh is the upper bound for "high" level (8193-32768)
+	ThresholdHigh = 32768
 )
 
 // ConvertBudgetToLevel converts a budget value to the nearest thinking level.
@@ -62,14 +73,19 @@ const (
 // This is a semantic conversion that maps numeric budgets to discrete levels.
 // Uses threshold-based mapping for range conversion.
 //
+// Note: The returned level labels for budgets ≤ ThresholdMedium (minimal, low,
+// medium) are for backward compatibility with model registry metadata. These
+// levels are aliases for auto (-1) in the Level → Budget direction — see
+// levelToBudgetMap for details.
+//
 // Budget → Level thresholds:
-//   - -1        → auto
-//   - 0         → none
-//   - 1-512     → minimal
-//   - 513-1024  → low
-//   - 1025-8192 → medium
-//   - 8193-24576 → high
-//   - 24577+    → xhigh
+//   - -1         → auto
+//   - 0          → none
+//   - 1-1024     → minimal
+//   - 1025-2048  → low
+//   - 2049-8192  → medium
+//   - 8193-32768 → high
+//   - 32769+     → xhigh
 //
 // Returns:
 //   - level: The converted thinking level string

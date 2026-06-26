@@ -26,3 +26,20 @@ func NormalizeEffort(effort string, provider string) string {
 	}
 	return effort
 }
+
+// MapXHighToMax maps the internal "xhigh" level to "max" for providers that
+// accept "max" but not "xhigh".
+//
+// When ConvertBudgetToLevel returns "xhigh" (budget > ThresholdHigh = 32768),
+// providers that support "max" should use this function to convert the level
+// before sending to the upstream API.
+//
+// Usage:
+//
+//	effort = thinking.MapXHighToMax(effort)
+func MapXHighToMax(effort string) string {
+	if effort == string(LevelXHigh) {
+		return string(LevelMax)
+	}
+	return effort
+}

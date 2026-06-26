@@ -111,7 +111,7 @@ func TestNormalizeUserDefinedConfig(t *testing.T) {
 			config:     ThinkingConfig{Mode: ModeLevel, Level: LevelMedium},
 			toFormat:   "gemini-cli",
 			wantMode:   ModeBudget,
-			wantBudget: 8192,
+			wantBudget: -1,
 			wantLevel:  "",
 		},
 		{
@@ -119,7 +119,7 @@ func TestNormalizeUserDefinedConfig(t *testing.T) {
 			config:     ThinkingConfig{Mode: ModeLevel, Level: LevelLow},
 			toFormat:   "antigravity",
 			wantMode:   ModeBudget,
-			wantBudget: 1024,
+			wantBudget: -1,
 			wantLevel:  "",
 		},
 		{

@@ -1,4 +1,4 @@
-package deepseek
+package kimi
 
 import (
 	"testing"
@@ -11,10 +11,10 @@ import (
 func TestApply_ModeNone_UsesDisabledThinking(t *testing.T) {
 	applier := NewApplier()
 	modelInfo := &registry.ModelInfo{
-		ID:       "deepseek-v4-pro",
-		Thinking: &registry.ThinkingSupport{Levels: []string{"high", "max"}},
+		ID:       "kimi-k2",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
 	}
-	body := []byte(`{"model":"deepseek-v4-pro","reasoning_effort":"high","thinking":{"type":"enabled"}}`)
+	body := []byte(`{"model":"kimi-k2","reasoning_effort":"high","thinking":{"type":"enabled"}}`)
 
 	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeNone}, modelInfo)
 	if errApply != nil {
@@ -31,10 +31,10 @@ func TestApply_ModeNone_UsesDisabledThinking(t *testing.T) {
 func TestApply_ModeLevel_UsesReasoningEffort(t *testing.T) {
 	applier := NewApplier()
 	modelInfo := &registry.ModelInfo{
-		ID:       "deepseek-v4-pro",
-		Thinking: &registry.ThinkingSupport{Levels: []string{"high", "max"}},
+		ID:       "kimi-k2",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
 	}
-	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"disabled"}}`)
+	body := []byte(`{"model":"kimi-k2","thinking":{"type":"disabled"}}`)
 
 	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelHigh}, modelInfo)
 	if errApply != nil {
@@ -51,10 +51,10 @@ func TestApply_ModeLevel_UsesReasoningEffort(t *testing.T) {
 func TestApply_UserDefinedModeNone_UsesDisabledThinking(t *testing.T) {
 	applier := NewApplier()
 	modelInfo := &registry.ModelInfo{
-		ID:          "custom-deepseek-model",
+		ID:          "custom-kimi-model",
 		UserDefined: true,
 	}
-	body := []byte(`{"model":"custom-deepseek-model","reasoning_effort":"high"}`)
+	body := []byte(`{"model":"custom-kimi-model","reasoning_effort":"high"}`)
 
 	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeNone}, modelInfo)
 	if errApply != nil {
@@ -68,28 +68,11 @@ func TestApply_UserDefinedModeNone_UsesDisabledThinking(t *testing.T) {
 	}
 }
 
-func TestApply_ModeLevel_MaxLevel(t *testing.T) {
-	applier := NewApplier()
-	modelInfo := &registry.ModelInfo{
-		ID:       "deepseek-v4-pro",
-		Thinking: &registry.ThinkingSupport{Levels: []string{"high", "max"}},
-	}
-	body := []byte(`{"model":"deepseek-v4-pro"}`)
-
-	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelMax}, modelInfo)
-	if errApply != nil {
-		t.Fatalf("Apply() error = %v", errApply)
-	}
-	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "max" {
-		t.Fatalf("reasoning_effort = %q, want %q, body=%s", got, "max", string(out))
-	}
-}
-
 func TestApply_ModeBudget_ConvertsToLevel(t *testing.T) {
 	applier := NewApplier()
 	modelInfo := &registry.ModelInfo{
-		ID:       "deepseek-v4-pro",
-		Thinking: &registry.ThinkingSupport{Levels: []string{"high", "max"}},
+		ID:       "kimi-k2",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
 	}
 
 	tests := []struct {
@@ -97,15 +80,17 @@ func TestApply_ModeBudget_ConvertsToLevel(t *testing.T) {
 		budget     int
 		wantEffort string
 	}{
+		{name: "budget_1024_maps_to_minimal", budget: 1024, wantEffort: "minimal"},
+		{name: "budget_1500_maps_to_low", budget: 1500, wantEffort: "low"},
+		{name: "budget_8192_maps_to_medium", budget: 8192, wantEffort: "medium"},
 		{name: "budget_20000_maps_to_high", budget: 20000, wantEffort: "high"},
-		{name: "budget_40000_maps_to_max", budget: 40000, wantEffort: "max"},
 		{name: "budget_0_maps_to_none", budget: 0, wantEffort: "none"},
 		{name: "budget_minus1_maps_to_auto", budget: -1, wantEffort: "auto"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"}}`)
+			body := []byte(`{"model":"kimi-k2","thinking":{"type":"enabled"}}`)
 			out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: tt.budget}, modelInfo)
 			if errApply != nil {
 				t.Fatalf("Apply() error = %v", errApply)
@@ -120,10 +105,10 @@ func TestApply_ModeBudget_ConvertsToLevel(t *testing.T) {
 func TestApply_ModeBudget_InvalidReturnsBody(t *testing.T) {
 	applier := NewApplier()
 	modelInfo := &registry.ModelInfo{
-		ID:       "deepseek-v4-pro",
-		Thinking: &registry.ThinkingSupport{Levels: []string{"high", "max"}},
+		ID:       "kimi-k2",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
 	}
-	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"}}`)
+	body := []byte(`{"model":"kimi-k2","thinking":{"type":"enabled"}}`)
 
 	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: -5}, modelInfo)
 	if errApply != nil {
@@ -137,10 +122,10 @@ func TestApply_ModeBudget_InvalidReturnsBody(t *testing.T) {
 func TestApply_ModeAuto_SetsAuto(t *testing.T) {
 	applier := NewApplier()
 	modelInfo := &registry.ModelInfo{
-		ID:       "deepseek-v4-pro",
-		Thinking: &registry.ThinkingSupport{Levels: []string{"high", "max"}},
+		ID:       "kimi-k2",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
 	}
-	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"}}`)
+	body := []byte(`{"model":"kimi-k2","thinking":{"type":"enabled"}}`)
 
 	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeAuto}, modelInfo)
 	if errApply != nil {
@@ -157,27 +142,27 @@ func TestApply_ModeAuto_SetsAuto(t *testing.T) {
 func TestApply_UserDefinedModeBudget_ConvertsToLevel(t *testing.T) {
 	applier := NewApplier()
 	modelInfo := &registry.ModelInfo{
-		ID:          "custom-deepseek-model",
+		ID:          "custom-kimi-model",
 		UserDefined: true,
 	}
-	body := []byte(`{"model":"custom-deepseek-model","thinking":{"type":"enabled"}}`)
+	body := []byte(`{"model":"custom-kimi-model","thinking":{"type":"enabled"}}`)
 
-	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 20000}, modelInfo)
+	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 8192}, modelInfo)
 	if errApply != nil {
 		t.Fatalf("Apply() error = %v", errApply)
 	}
-	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "high" {
-		t.Fatalf("reasoning_effort = %q, want %q, body=%s", got, "high", string(out))
+	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "medium" {
+		t.Fatalf("reasoning_effort = %q, want %q, body=%s", got, "medium", string(out))
 	}
 }
 
 func TestApply_UserDefinedModeAuto_SetsAuto(t *testing.T) {
 	applier := NewApplier()
 	modelInfo := &registry.ModelInfo{
-		ID:          "custom-deepseek-model",
+		ID:          "custom-kimi-model",
 		UserDefined: true,
 	}
-	body := []byte(`{"model":"custom-deepseek-model","reasoning_effort":"high"}`)
+	body := []byte(`{"model":"custom-kimi-model","reasoning_effort":"high"}`)
 
 	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeAuto}, modelInfo)
 	if errApply != nil {
@@ -188,47 +173,46 @@ func TestApply_UserDefinedModeAuto_SetsAuto(t *testing.T) {
 	}
 }
 
-func TestMapXHighToMax(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{name: "xhigh_maps_to_max", input: "xhigh", expected: "max"},
-		{name: "high_passes_through", input: "high", expected: "high"},
-		{name: "max_passes_through", input: "max", expected: "max"},
-		{name: "medium_passes_through", input: "medium", expected: "medium"},
-		{name: "low_passes_through", input: "low", expected: "low"},
-		{name: "auto_passes_through", input: "auto", expected: "auto"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := thinking.MapXHighToMax(tt.input)
-			if got != tt.expected {
-				t.Fatalf("MapXHighToMax(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestApply_ModeBudget_LargeBudget_MapsToMax(t *testing.T) {
-	// This test verifies that budget > 24576 (which ConvertBudgetToLevel maps to "xhigh")
-	// is correctly normalized to "max" for DeepSeek API.
+// TestApply_ModeBudget_LargeBudget_CurrentBehavior documents current behavior:
+// budget > ThresholdHigh (32768) maps to "xhigh" which is passed through unchanged.
+// If Kimi later supports "max" level, this test should be updated to use MapXHighToMax.
+func TestApply_ModeBudget_LargeBudget_CurrentBehavior(t *testing.T) {
 	applier := NewApplier()
 	modelInfo := &registry.ModelInfo{
-		ID:       "deepseek-v4-pro",
-		Thinking: &registry.ThinkingSupport{Levels: []string{"high", "max"}},
+		ID:       "kimi-k2",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
 	}
-	body := []byte(`{"model":"deepseek-v4-pro"}`)
+	body := []byte(`{"model":"kimi-k2"}`)
 
-	// Budget 50000 > ThresholdHigh (32768), so ConvertBudgetToLevel returns "xhigh"
-	// MapXHighToMax maps "xhigh" to "max" for DeepSeek API.
+	// Budget 50000 > ThresholdHigh (32768), ConvertBudgetToLevel returns "xhigh"
+	// Currently Kimi passes "xhigh" through unchanged
 	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 50000}, modelInfo)
 	if errApply != nil {
 		t.Fatalf("Apply() error = %v", errApply)
 	}
-	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "max" {
-		t.Fatalf("reasoning_effort = %q, want %q (xhigh should be normalized to max), body=%s", got, "max", string(out))
+	// Current behavior: xhigh is passed through
+	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "xhigh" {
+		t.Fatalf("reasoning_effort = %q, want %q (current behavior: xhigh passthrough), body=%s", got, "xhigh", string(out))
+	}
+}
+
+// TestApply_ModeLevel_XHigh_CurrentBehavior documents current behavior:
+// Level "xhigh" is passed through unchanged.
+// If Kimi later supports "max" level, apply MapXHighToMax to convert xhigh → max.
+func TestApply_ModeLevel_XHigh_CurrentBehavior(t *testing.T) {
+	applier := NewApplier()
+	modelInfo := &registry.ModelInfo{
+		ID:       "kimi-k2",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
+	}
+	body := []byte(`{"model":"kimi-k2"}`)
+
+	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelXHigh}, modelInfo)
+	if errApply != nil {
+		t.Fatalf("Apply() error = %v", errApply)
+	}
+	// Current behavior: xhigh is passed through
+	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "xhigh" {
+		t.Fatalf("reasoning_effort = %q, want %q (current behavior: xhigh passthrough), body=%s", got, "xhigh", string(out))
 	}
 }
