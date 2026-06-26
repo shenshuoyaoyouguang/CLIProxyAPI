@@ -37,6 +37,26 @@ const (
 	openAICompatMultipartMemory       int64 = 32 << 20
 )
 
+// thinkingTargetForModel returns the thinking provider target string for the
+// given model. Models with provider-specific thinking APIs get their own target;
+// all others fall back to defaultTarget.
+func thinkingTargetForModel(model, defaultTarget string) string {
+	if modelkind.IsDeepSeekModel(model) {
+		return "deepseek"
+	}
+	if modelkind.IsMIMOModel(model) {
+		return "mimo"
+	}
+	return defaultTarget
+}
+
+// usesReasoningContentString reports whether the model passes reasoning_content
+// as a plain string (DeepSeek, MiMo) rather than as structured reasoning parts.
+// Models in this category are exempt from convertReasoningToThinkingContent.
+func usesReasoningContentString(model string) bool {
+	return modelkind.IsDeepSeekModel(model) || modelkind.IsMIMOModel(model)
+}
+
 // OpenAICompatExecutor implements a stateless executor for OpenAI-compatible providers.
 // It performs request/response translation and executes against the provider base URL
 // using per-auth credentials (API key) and per-auth HTTP transport (proxy) from context.
@@ -105,13 +125,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("openai")
-	thinkingTarget := to.String()
-	if modelkind.IsDeepSeekModel(baseModel) {
-		thinkingTarget = "deepseek"
-	}
-	if modelkind.IsMIMOModel(baseModel) {
-		thinkingTarget = "mimo"
-	}
+	thinkingTarget := thinkingTargetForModel(baseModel, to.String())
 	endpoint := "/chat/completions"
 	if opts.Alt == "responses/compact" {
 		to = sdktranslator.FromString("openai-response")
@@ -145,7 +159,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 
-	if !modelkind.IsDeepSeekModel(baseModel) && !modelkind.IsMIMOModel(baseModel) {
+	if !usesReasoningContentString(baseModel) {
 		translated, err = convertReasoningToThinkingContent(translated)
 		if err != nil {
 			return resp, err
@@ -340,13 +354,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("openai")
-	thinkingTarget := to.String()
-	if modelkind.IsDeepSeekModel(baseModel) {
-		thinkingTarget = "deepseek"
-	}
-	if modelkind.IsMIMOModel(baseModel) {
-		thinkingTarget = "mimo"
-	}
+	thinkingTarget := thinkingTargetForModel(baseModel, to.String())
 	endpoint := "/chat/completions"
 	if opts.Alt == "responses/compact" {
 		to = sdktranslator.FromString("openai-response")
@@ -380,7 +388,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		return nil, err
 	}
 
-	if !modelkind.IsDeepSeekModel(baseModel) && !modelkind.IsMIMOModel(baseModel) {
+	if !usesReasoningContentString(baseModel) {
 		translated, err = convertReasoningToThinkingContent(translated)
 		if err != nil {
 			return nil, err
@@ -447,61 +455,140 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
-		defer proxyutil.DrainAndClose(httpResp)
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800) // 50MB
-		var param any
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
-			trimmedLine := bytes.TrimSpace(line)
-			if len(trimmedLine) == 0 {
-				continue
-			}
+		// Track stream state for EOF retry decisions.
+		var gotSSEData bool
+		retryBody := translated // mutable; degraded on retry
 
-			if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
-				if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
-					bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+		// readStream reads SSE lines from the given body scanner and streams
+		// translated chunks to out. Returns the scanner error (if any) and
+		// whether a [DONE] marker was seen.
+		readStream := func(body io.Reader) (scanErr error, done bool) {
+			scanner := bufio.NewScanner(body)
+			scanner.Buffer(nil, 52_428_800) // 50MB
+			var param any
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+				if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
+					reporter.Publish(ctx, detail)
+				}
+				trimmedLine := bytes.TrimSpace(line)
+				if len(trimmedLine) == 0 {
 					continue
 				}
-				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-					streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
-					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					reporter.PublishFailure(ctx, streamErr)
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-					case <-ctx.Done():
-					}
-					return
-				}
-				continue
-			}
 
-			// OpenAI-compatible streams must use SSE data lines.
-			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
+				if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
+					if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
+						bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+						continue
+					}
+					if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
+						streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+						helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+						reporter.PublishFailure(ctx, streamErr)
+						select {
+						case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+						case <-ctx.Done():
+						}
+						return streamErr, false
+					}
+					continue
+				}
+
+				trimmedData := bytes.TrimPrefix(trimmedLine, []byte("data:"))
+				trimmedData = bytes.TrimSpace(trimmedData)
+				if bytes.Equal(trimmedData, []byte("[DONE]")) {
+					done = true
+					// Still translate the [DONE] marker.
+					chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, retryBody, trimmedLine, &param)
+					for i := range chunks {
+						select {
+						case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+						case <-ctx.Done():
+							return ctx.Err(), done
+						}
+					}
+					continue
+				}
+
+				gotSSEData = true
+				// OpenAI-compatible streams must use SSE data lines.
+				chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, retryBody, bytes.Clone(trimmedLine), &param)
+				for i := range chunks {
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+					case <-ctx.Done():
+						return ctx.Err(), done
+					}
+				}
+			}
+			return scanner.Err(), done
+		}
+
+		// First attempt — read from the initial response.
+		errScan, done := readStream(httpResp.Body)
+		httpResp.Body.Close()
+
+		// EOF retry: if upstream disconnected before any SSE data and before
+		// [DONE], retry with degraded reasoning_effort to reduce token pressure.
+		if isRetryableStreamDisconnect(errScan, done) && !gotSSEData {
+			retryBody = degradeReasoningForRetry(retryBody)
+			log.WithFields(log.Fields{
+				"provider": e.Identifier(),
+				"model":    baseModel,
+			}).Debug("stream: retrying after unexpected EOF with degraded reasoning |")
+
+			httpReq2, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(retryBody))
+			if errReq == nil {
+				// Copy headers from original request
+				httpReq2.Header = httpReq.Header.Clone()
+				httpReq2.Header.Set("Content-Type", "application/json")
+				if apiKey != "" {
+					httpReq2.Header.Set("Authorization", "Bearer "+apiKey)
+				}
+				for k, v := range opts.Headers {
+					if k != "Content-Type" && k != "Authorization" {
+						httpReq2.Header[k] = v
+					}
+				}
+				httpClient2 := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+				httpClient2 = reporter.TrackHTTPClient(httpClient2)
+				httpResp2, errDo := httpClient2.Do(httpReq2)
+				if errDo != nil {
+					log.WithFields(log.Fields{
+						"provider": e.Identifier(),
+						"model":    baseModel,
+						"error":    errDo.Error(),
+					}).Debug("stream: retry request failed |")
+				} else if httpResp2.StatusCode >= 200 && httpResp2.StatusCode < 300 {
+					errScan, done = readStream(httpResp2.Body)
+					httpResp2.Body.Close()
+				} else {
+					// Non-2xx response: read and close body to prevent resource leak
+					body, _ := io.ReadAll(httpResp2.Body)
+					httpResp2.Body.Close()
+					log.WithFields(log.Fields{
+						"provider":    e.Identifier(),
+						"model":       baseModel,
+						"status_code": httpResp2.StatusCode,
+						"body":        string(body),
+					}).Debug("stream: retry request returned non-2xx status |")
 				}
 			}
 		}
-		if errScan := scanner.Err(); errScan != nil {
+
+		if errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
 			}
-		} else {
-			// In case the upstream close the stream without a terminal [DONE] marker.
-			// Feed a synthetic done marker through the translator so pending
-			// response.completed events are still emitted exactly once.
-			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
+		} else if !done {
+			// Upstream closed without [DONE]. Emit synthetic done so downstream
+			// consumers still get a clean termination.
+			var param any
+			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, retryBody, []byte("data: [DONE]"), &param)
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
@@ -642,13 +729,7 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 
 	modelForCounting := baseModel
 
-	thinkingTarget := to.String()
-	if modelkind.IsDeepSeekModel(baseModel) {
-		thinkingTarget = "deepseek"
-	}
-	if modelkind.IsMIMOModel(baseModel) {
-		thinkingTarget = "mimo"
-	}
+	thinkingTarget := thinkingTargetForModel(baseModel, to.String())
 	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTarget, e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err

@@ -254,3 +254,59 @@ func TestApply_ModeBudget_WithExistingMaxCompletionTokens_TakesMax(t *testing.T)
 		t.Errorf("max_completion_tokens = %d, want 128000 (user value higher)", got)
 	}
 }
+
+// --- Tests for reasoning_effort fallback behavior ---
+// These test that the applier correctly handles budget values derived
+// from reasoning_effort mapping (low→8192, medium→24576, high/max→64512).
+
+func TestApply_ReasoningEffortLow_BudgetSetsEnabled(t *testing.T) {
+	a := NewApplier()
+	body := []byte(`{"model":"mimo-v2.5-pro","messages":[]}`)
+	// Simulate reasoning_effort=low → ModeBudget/8192 after extractMIMOConfig
+	config := thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 8192}
+
+	result, err := a.Apply(body, config, newModelInfo())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gjson.GetBytes(result, "thinking.type").String() != "enabled" {
+		t.Errorf("expected thinking.type=enabled for low effort")
+	}
+	if got := gjson.GetBytes(result, "max_completion_tokens").Int(); got != 8192 {
+		t.Errorf("max_completion_tokens = %d, want 8192", got)
+	}
+}
+
+func TestApply_ReasoningEffortMedium_BudgetSetsEnabled(t *testing.T) {
+	a := NewApplier()
+	body := []byte(`{"model":"mimo-v2.5-pro","messages":[]}`)
+	config := thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 24576}
+
+	result, err := a.Apply(body, config, newModelInfo())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gjson.GetBytes(result, "thinking.type").String() != "enabled" {
+		t.Errorf("expected thinking.type=enabled for medium effort")
+	}
+	if got := gjson.GetBytes(result, "max_completion_tokens").Int(); got != 24576 {
+		t.Errorf("max_completion_tokens = %d, want 24576", got)
+	}
+}
+
+func TestApply_ReasoningEffortMax_BudgetSetsEnabled(t *testing.T) {
+	a := NewApplier()
+	body := []byte(`{"model":"mimo-v2.5-pro","messages":[]}`)
+	config := thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 64512}
+
+	result, err := a.Apply(body, config, newModelInfo())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gjson.GetBytes(result, "thinking.type").String() != "enabled" {
+		t.Errorf("expected thinking.type=enabled for max effort")
+	}
+	if got := gjson.GetBytes(result, "max_completion_tokens").Int(); got != 64512 {
+		t.Errorf("max_completion_tokens = %d, want 64512", got)
+	}
+}

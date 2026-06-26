@@ -13,6 +13,7 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/codex"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/gemini"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/kimi"
+	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/mimo"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/openai"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/xai"
 
@@ -824,7 +825,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 68: Budget 64000 → passthrough logic → xhigh
+		// Case 68: Budget 64000 → passthrough logic → clamped to high (OpenAI max)
 		{
 			name:        "68",
 			from:        "gemini",
@@ -832,7 +833,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "user-defined-model(64000)",
 			inputJSON:   `{"model":"user-defined-model(64000)","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
 			expectField: "reasoning_effort",
-			expectValue: "xhigh",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 69: Budget 0 → none → field deleted (upstream doesn't accept "none")
@@ -885,7 +886,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "user-defined-model(64000)",
 			inputJSON:   `{"model":"user-defined-model(64000)","messages":[{"role":"user","content":"hi"}]}`,
 			expectField: "reasoning.effort",
-			expectValue: "xhigh",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 74: Budget 0 → passthrough logic → none
@@ -1138,15 +1139,16 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 3: reasoning_effort=xhigh → out of range error
+		// Case 3: reasoning_effort=xhigh → normalized to high by codex translator
 		{
 			name:        "3",
 			from:        "openai",
 			to:          "codex",
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}`,
-			expectField: "",
-			expectErr:   true,
+			expectField: "reasoning.effort",
+			expectValue: "high",
+			expectErr:   false,
 		},
 		// Case 4: reasoning_effort=none → clamped to minimal
 		{
@@ -1937,7 +1939,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 68: thinkingBudget=64000 → xhigh (passthrough)
+		// Case 68: thinkingBudget=64000 → xhigh → normalized to high
 		{
 			name:        "68",
 			from:        "gemini",
@@ -1945,7 +1947,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "user-defined-model",
 			inputJSON:   `{"model":"user-defined-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":64000}}}`,
 			expectField: "reasoning_effort",
-			expectValue: "xhigh",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 69: thinkingBudget=0 → none → field deleted (upstream doesn't accept "none")
@@ -1990,7 +1992,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 73: thinking.budget_tokens=64000 → xhigh (passthrough)
+		// Case 73: thinking.budget_tokens=64000 → xhigh → normalized to high
 		{
 			name:        "73",
 			from:        "claude",
@@ -1998,7 +2000,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "user-defined-model",
 			inputJSON:   `{"model":"user-defined-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":64000}}`,
 			expectField: "reasoning.effort",
-			expectValue: "xhigh",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 74: thinking.budget_tokens=0 → none
@@ -2340,14 +2342,15 @@ func TestThinkingE2ENewProviderTargets(t *testing.T) {
 			expectField: "reasoning.effort",
 			expectValue: "none",
 		},
+		// Case X6: reasoning_effort=xhigh → normalized to high by codex translator
 		{
 			name:        "X6",
 			from:        "openai",
 			to:          "xai",
 			model:       "xai-level-model",
 			inputJSON:   `{"model":"xai-level-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}`,
-			expectField: "",
-			expectErr:   true,
+			expectField: "reasoning.effort",
+			expectValue: "high",
 		},
 		{
 			name:        "X7",
@@ -2384,6 +2387,66 @@ func TestThinkingE2ENewProviderTargets(t *testing.T) {
 			inputJSON:   `{"model":"xai-level-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}`,
 			expectField: "reasoning.effort",
 			expectValue: "high",
+		},
+		// MiMo target: reasoning_effort maps to thinking.type
+		{
+			name:        "M1",
+			from:        "openai",
+			to:          "mimo",
+			model:       "mimo-budget-model",
+			inputJSON:   `{"model":"mimo-budget-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`,
+			expectField: "thinking.type",
+			expectValue: "enabled",
+		},
+		{
+			name:        "M2",
+			from:        "openai",
+			to:          "mimo",
+			model:       "mimo-budget-model",
+			inputJSON:   `{"model":"mimo-budget-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"}`,
+			expectField: "thinking.type",
+			expectValue: "disabled",
+		},
+		// MiMo default-disabled model: no user config → no thinking injected
+		{
+			name:        "M3",
+			from:        "openai",
+			to:          "mimo",
+			model:       "mimo-default-disabled-model",
+			inputJSON:   `{"model":"mimo-default-disabled-model","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "",
+			expectValue: "",
+		},
+		// MiMo default-disabled model: explicit reasoning_effort works even with DefaultDisabled
+		{
+			name:        "M4",
+			from:        "openai",
+			to:          "mimo",
+			model:       "mimo-default-disabled-model",
+			inputJSON:   `{"model":"mimo-default-disabled-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"medium"}`,
+			expectField: "thinking.type",
+			expectValue: "enabled",
+		},
+		// MiMo→MiMo strict budget: out-of-range suffix is CLAMPED (not rejected),
+		// because fromSuffix disables strict validation per ValidateConfig policy.
+		{
+			name:        "M5",
+			from:        "openai",
+			to:          "mimo",
+			model:       "mimo-budget-model(100000)",
+			inputJSON:   `{"model":"mimo-budget-model(100000)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "thinking.type",
+			expectValue: "enabled",
+		},
+		// MiMo→MiMo: in-range suffix is accepted
+		{
+			name:        "M6",
+			from:        "openai",
+			to:          "mimo",
+			model:       "mimo-budget-model(16384)",
+			inputJSON:   `{"model":"mimo-budget-model(16384)","messages":[{"role":"user","content":"hi"}]}`,
+			expectField: "thinking.type",
+			expectValue: "enabled",
 		},
 	}
 
@@ -3015,6 +3078,25 @@ func getTestModels() []*registry.ModelInfo {
 			UserDefined: true,
 			Thinking:    nil,
 		},
+		// MiMo models for thinking E2E tests
+		{
+			ID:          "mimo-budget-model",
+			Object:      "model",
+			Created:     1750000000,
+			OwnedBy:     "xiaomi",
+			Type:        "mimo",
+			DisplayName: "MiMo Budget Model",
+			Thinking:    &registry.ThinkingSupport{Min: 8192, Max: 64512, ZeroAllowed: true},
+		},
+		{
+			ID:          "mimo-default-disabled-model",
+			Object:      "model",
+			Created:     1750000000,
+			OwnedBy:     "xiaomi",
+			Type:        "mimo",
+			DisplayName: "MiMo Default Disabled Model",
+			Thinking:    &registry.ThinkingSupport{Min: 8192, Max: 64512, ZeroAllowed: true, DefaultDisabled: true},
+		},
 	}
 }
 
@@ -3034,6 +3116,9 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 				translateTo = "openai"
 			case "xai":
 				translateTo = "codex"
+			case "mimo":
+				// MiMo uses OpenAI-compatible format; TranslateRequest operates on the wire format
+				translateTo = "openai"
 			}
 
 			body := sdktranslator.TranslateRequest(
@@ -3072,6 +3157,8 @@ func runThinkingTests(t *testing.T, cases []thinkingTestCase) {
 					hasThinking = gjson.GetBytes(body, "reasoning_effort").Exists()
 				case "codex":
 					hasThinking = gjson.GetBytes(body, "reasoning.effort").Exists() || gjson.GetBytes(body, "reasoning").Exists()
+				case "mimo":
+					hasThinking = gjson.GetBytes(body, "thinking.type").Exists()
 				}
 				if hasThinking {
 					t.Fatalf("expected no thinking field but found one, body=%s", string(body))

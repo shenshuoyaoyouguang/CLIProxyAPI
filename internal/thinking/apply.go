@@ -240,9 +240,12 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 		// thinking configuration, inject a default so that the upstream
 		// provider returns thought/reasoning content.
 		//
+		// Some models (e.g. mimo-v2-flash) set DefaultDisabled=true to opt
+		// out of this behavior — thinking becomes opt-in for those models.
+		//
 		// For level-based models (Gemini 3.x), default to the lowest level.
 		// For budget-based models (Gemini 2.5), default to auto (budget=-1).
-		if modelInfo.Thinking != nil {
+		if modelInfo.Thinking != nil && !modelInfo.Thinking.DefaultDisabled {
 			if len(modelInfo.Thinking.Levels) > 0 {
 				// Use the first (lowest) non-special level as default.
 				// Skip "none" and "auto" which are special values that disable
@@ -697,22 +700,50 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 
 // extractMIMOConfig extracts thinking configuration from MiMo format request body.
 //
-// MiMo API format:
+// MiMo API format (primary):
 //   - thinking.type: "enabled" or "disabled"
 //
-// MiMo uses thinking.type exclusively — no reasoning_effort field.
+// OpenAI-compatible format (fallback when thinking.type is absent):
+//   - reasoning_effort: "none", "low", "medium", "high", "max", "auto"
+//
+// When both fields are present, thinking.type takes priority.
+// reasoning_effort values are mapped to MiMo budget ranges:
+//   - none → ModeNone
+//   - low → ModeBudget/8192
+//   - medium → ModeBudget/24576
+//   - high, max → ModeBudget/64512
+//   - auto → ModeAuto
 func extractMIMOConfig(body []byte) ThinkingConfig {
 	thinkingType := gjson.GetBytes(body, "thinking.type")
-	if !thinkingType.Exists() {
-		return ThinkingConfig{}
+	if thinkingType.Exists() {
+		switch thinkingType.String() {
+		case "enabled":
+			return ThinkingConfig{Mode: ModeLevel, Level: LevelHigh}
+		case "disabled":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		default:
+			return ThinkingConfig{}
+		}
 	}
 
-	switch thinkingType.String() {
-	case "enabled":
-		return ThinkingConfig{Mode: ModeLevel, Level: LevelHigh}
-	case "disabled":
-		return ThinkingConfig{Mode: ModeNone, Budget: 0}
-	default:
-		return ThinkingConfig{}
+	// Fallback: accept OpenAI-compatible reasoning_effort
+	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+		value := strings.ToLower(strings.TrimSpace(effort.String()))
+		switch value {
+		case "none":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "low":
+			return ThinkingConfig{Mode: ModeBudget, Budget: 8192}
+		case "medium":
+			return ThinkingConfig{Mode: ModeBudget, Budget: 24576}
+		case "high", "max":
+			return ThinkingConfig{Mode: ModeBudget, Budget: 64512}
+		case "auto":
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		default:
+			return ThinkingConfig{}
+		}
 	}
+
+	return ThinkingConfig{}
 }

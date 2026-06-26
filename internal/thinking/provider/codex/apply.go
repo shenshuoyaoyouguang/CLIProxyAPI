@@ -59,7 +59,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	}
 
 	if config.Mode == thinking.ModeLevel {
-		result, _ := sjson.SetBytes(body, "reasoning.effort", string(config.Level))
+		result, _ := sjson.SetBytes(body, "reasoning.effort", thinking.NormalizeEffort(string(config.Level), "codex"))
 		return result, nil
 	}
 
@@ -95,14 +95,13 @@ func applyCompatibleCodex(body []byte, config thinking.ThinkingConfig) ([]byte, 
 		if config.Level == "" {
 			return body, nil
 		}
-		effort = string(config.Level)
+		effort = thinking.NormalizeEffort(string(config.Level), "codex")
 	case thinking.ModeNone:
 		effort = string(thinking.LevelNone)
 		if config.Level != "" {
-			effort = string(config.Level)
+			effort = thinking.NormalizeEffort(string(config.Level), "codex")
 		}
 	case thinking.ModeAuto:
-		// Auto mode for user-defined models: pass through as "auto"
 		effort = string(thinking.LevelAuto)
 	case thinking.ModeBudget:
 		// Budget mode: convert budget to level using threshold mapping
@@ -110,7 +109,7 @@ func applyCompatibleCodex(body []byte, config thinking.ThinkingConfig) ([]byte, 
 		if !ok {
 			return body, nil
 		}
-		effort = level
+		effort = thinking.NormalizeEffort(level, "codex")
 	default:
 		return body, nil
 	}

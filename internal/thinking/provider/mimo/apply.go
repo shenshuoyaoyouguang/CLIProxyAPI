@@ -1,7 +1,8 @@
 // Package mimo implements thinking configuration for Xiaomi MiMo models.
 //
 // MiMo models use thinking.type for both enabled and disabled thinking states.
-// This differs from Kimi/DeepSeek which use reasoning_effort for enabled states.
+// When thinking.type is absent, reasoning_effort is accepted as a fallback
+// (mapped to MiMo budget ranges).
 //
 // Reference: https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/text-generation/deep-thinking
 package mimo
@@ -20,7 +21,7 @@ import (
 // MiMo-specific behavior:
 //   - Enabled thinking:  thinking.type="enabled"
 //   - Disabled thinking: thinking.type="disabled"
-//   - No reasoning_effort field — uses thinking.type exclusively
+//   - reasoning_effort accepted as fallback when thinking.type is absent
 type Applier struct{}
 
 var _ thinking.ProviderApplier = (*Applier)(nil)

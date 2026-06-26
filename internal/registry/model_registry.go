@@ -89,6 +89,10 @@ type ThinkingSupport struct {
 	ZeroAllowed bool `json:"zero_allowed,omitempty" yaml:"zero-allowed,omitempty"`
 	// DynamicAllowed indicates whether -1 is a valid value (dynamic thinking budget).
 	DynamicAllowed bool `json:"dynamic_allowed,omitempty" yaml:"dynamic-allowed,omitempty"`
+	// DefaultDisabled indicates that thinking should NOT be auto-injected when the
+	// user omits thinking configuration. Models like mimo-v2-flash set this to true
+	// so that thinking is opt-in rather than opt-out.
+	DefaultDisabled bool `json:"default_disabled,omitempty" yaml:"default-disabled,omitempty"`
 	// Levels defines discrete reasoning effort levels (e.g., "low", "medium", "high").
 	// When set, the model uses level-based reasoning instead of token budgets.
 	Levels []string `json:"levels,omitempty" yaml:"levels,omitempty"`

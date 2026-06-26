@@ -71,12 +71,12 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				if budgetTokens := thinkingConfig.Get("budget_tokens"); budgetTokens.Exists() {
 					budget := int(budgetTokens.Int())
 					if effort, ok := thinking.ConvertBudgetToLevel(budget); ok && effort != "" {
-						out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
+						out, _ = sjson.SetBytes(out, "reasoning_effort", thinking.NormalizeEffort(effort, "openai"))
 					}
 				} else {
 					// No budget_tokens specified, default to "auto" for enabled thinking
 					if effort, ok := thinking.ConvertBudgetToLevel(-1); ok && effort != "" {
-						out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
+						out, _ = sjson.SetBytes(out, "reasoning_effort", thinking.NormalizeEffort(effort, "openai"))
 					}
 				}
 			case "adaptive", "auto":
@@ -87,13 +87,13 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					effort = strings.ToLower(strings.TrimSpace(v.String()))
 				}
 				if effort != "" {
-					out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
+					out, _ = sjson.SetBytes(out, "reasoning_effort", thinking.NormalizeEffort(effort, "openai"))
 				} else {
 					out, _ = sjson.SetBytes(out, "reasoning_effort", string(thinking.LevelHigh))
 				}
 			case "disabled":
 				if effort, ok := thinking.ConvertBudgetToLevel(0); ok && effort != "" {
-					out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
+					out, _ = sjson.SetBytes(out, "reasoning_effort", thinking.NormalizeEffort(effort, "openai"))
 				}
 			}
 		}

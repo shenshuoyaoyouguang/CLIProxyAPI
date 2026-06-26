@@ -65,10 +65,10 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		if config.Level == "" {
 			return body, nil
 		}
-		effort = string(config.Level)
+		effort = normalizeDeepSeekEffort(string(config.Level))
 	case thinking.ModeNone:
 		if config.Level != "" && config.Level != thinking.LevelNone {
-			effort = string(config.Level)
+			effort = normalizeDeepSeekEffort(string(config.Level))
 			break
 		}
 		return applyDisabledThinking(body)
@@ -77,7 +77,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		if !ok {
 			return body, nil
 		}
-		effort = level
+		effort = normalizeDeepSeekEffort(level)
 	case thinking.ModeAuto:
 		effort = string(thinking.LevelAuto)
 	default:
@@ -101,13 +101,13 @@ func applyCompatibleDeepSeek(body []byte, config thinking.ThinkingConfig) ([]byt
 		if config.Level == "" {
 			return body, nil
 		}
-		effort = string(config.Level)
+		effort = normalizeDeepSeekEffort(string(config.Level))
 	case thinking.ModeNone:
 		if config.Level == "" || config.Level == thinking.LevelNone {
 			return applyDisabledThinking(body)
 		}
 		if config.Level != "" {
-			effort = string(config.Level)
+			effort = normalizeDeepSeekEffort(string(config.Level))
 		}
 	case thinking.ModeAuto:
 		effort = string(thinking.LevelAuto)
@@ -116,12 +116,24 @@ func applyCompatibleDeepSeek(body []byte, config thinking.ThinkingConfig) ([]byt
 		if !ok {
 			return body, nil
 		}
-		effort = level
+		effort = normalizeDeepSeekEffort(level)
 	default:
 		return body, nil
 	}
 
 	return applyReasoningEffort(body, effort)
+}
+
+// normalizeDeepSeekEffort maps internal thinking levels to DeepSeek-accepted values.
+// DeepSeek accepts "high" and "max", but not "xhigh". When budget > 24576,
+// ConvertBudgetToLevel returns "xhigh", which must be mapped to "max" for DeepSeek.
+func normalizeDeepSeekEffort(effort string) string {
+	switch effort {
+	case "xhigh":
+		return "max"
+	default:
+		return effort
+	}
 }
 
 func applyReasoningEffort(body []byte, effort string) ([]byte, error) {

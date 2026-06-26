@@ -2050,7 +2050,8 @@
       "thinking": {
         "min": 8192,
         "max": 64512,
-        "zero_allowed": true
+        "zero_allowed": true,
+        "default_disabled": true
       }
     }
   ]

@@ -15,15 +15,15 @@ func TestApplyCompatibleOpenAI_ModeLevel_PassesThroughLevels(t *testing.T) {
 		wantFieldExists bool
 	}{
 		{
-			name:            "xhigh passes through unchanged",
+			name:            "xhigh clamped to high",
 			level:           thinking.LevelXHigh,
-			wantEffort:      "xhigh",
+			wantEffort:      "high",
 			wantFieldExists: true,
 		},
 		{
-			name:            "max passes through unchanged",
+			name:            "max clamped to high",
 			level:           thinking.LevelMax,
-			wantEffort:      "max",
+			wantEffort:      "high",
 			wantFieldExists: true,
 		},
 		{
@@ -42,6 +42,12 @@ func TestApplyCompatibleOpenAI_ModeLevel_PassesThroughLevels(t *testing.T) {
 			name:            "low passes through unchanged",
 			level:           thinking.LevelLow,
 			wantEffort:      "low",
+			wantFieldExists: true,
+		},
+		{
+			name:            "minimal passes through",
+			level:           thinking.LevelMinimal,
+			wantEffort:      "minimal",
 			wantFieldExists: true,
 		},
 		{
@@ -94,16 +100,30 @@ func TestApplyCompatibleOpenAI_ModeAuto(t *testing.T) {
 	}
 }
 
-func TestApplyCompatibleOpenAI_ModeBudget_HighBudgetPassesThrough(t *testing.T) {
+func TestApplyCompatibleOpenAI_ModeBudget_HighBudgetClamped(t *testing.T) {
 	body := []byte(`{"model":"test-model","messages":[]}`)
-	// Budget 64000 maps to xhigh, which should now pass through as xhigh.
+	// Budget 64000 maps to xhigh, which should be clamped to high for OpenAI-compatible APIs.
 	config := thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 64000}
 	result, err := applyCompatibleOpenAI(body, config)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := gjson.GetBytes(result, "reasoning_effort").String()
-	if got != "xhigh" {
-		t.Fatalf("reasoning_effort = %q, want %q (xhigh should pass through). Output: %s", got, "xhigh", string(result))
+	if got != "high" {
+		t.Fatalf("reasoning_effort = %q, want %q (xhigh from budget should be clamped to high). Output: %s", got, "high", string(result))
+	}
+}
+
+func TestApplyCompatibleOpenAI_ModeBudget_LowBudgetPassesThrough(t *testing.T) {
+	body := []byte(`{"model":"test-model","messages":[]}`)
+	// Budget 100 maps to minimal, which is a valid Responses API level.
+	config := thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 100}
+	result, err := applyCompatibleOpenAI(body, config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := gjson.GetBytes(result, "reasoning_effort").String()
+	if got != "minimal" {
+		t.Fatalf("reasoning_effort = %q, want %q (minimal should pass through). Output: %s", got, "minimal", string(result))
 	}
 }

@@ -20,6 +20,14 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// MiMo locked parameters when deep thinking (thinking.type="enabled") is active.
+// Per MiMo docs, these models do not support custom temperature/top_p in deep
+// thinking mode, so we force the documented defaults.
+const (
+	mimoThinkingTemperature = 1.0
+	mimoThinkingTopP        = 0.95
+)
+
 // MIMOExecutor implements a stateless executor for Xiaomi MiMo API.
 // It embeds OpenAICompatExecutor for the base OpenAI-compatible logic and adds
 // MiMo-specific credential injection. MiMo accepts both "Authorization: Bearer"
@@ -145,8 +153,8 @@ func mimoCreds(a *cliproxyauth.Auth) (baseURL, apiKey string) {
 func mimoLockThinkingParams(body []byte) []byte {
 	thinkingType := gjson.GetBytes(body, "thinking.type")
 	if thinkingType.Exists() && thinkingType.String() == "enabled" {
-		body, _ = sjson.SetBytes(body, "temperature", 1.0)
-		body, _ = sjson.SetBytes(body, "top_p", 0.95)
+		body, _ = sjson.SetBytes(body, "temperature", mimoThinkingTemperature)
+		body, _ = sjson.SetBytes(body, "top_p", mimoThinkingTopP)
 	}
 	return body
 }

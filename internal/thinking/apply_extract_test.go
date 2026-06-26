@@ -219,3 +219,112 @@ func TestExtractThinkingConfig_UnknownProviderReturnsEmpty(t *testing.T) {
 		t.Errorf("unknown provider should return empty config, got %+v", got)
 	}
 }
+
+// --- MiMo extractThinkingConfig tests ---
+
+// TestExtractMIMOConfig_ThinkingTypePriority verifies that thinking.type
+// takes priority over reasoning_effort when both are present.
+func TestExtractMIMOConfig_ThinkingTypePriority(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       []byte
+		wantMode   ThinkingMode
+		wantLevel  ThinkingLevel
+		wantBudget int
+	}{
+		{
+			name:      "type=enabled overrides reasoning_effort=none",
+			body:      []byte(`{"thinking":{"type":"enabled"},"reasoning_effort":"none"}`),
+			wantMode:  ModeLevel,
+			wantLevel: LevelHigh,
+		},
+		{
+			name:       "type=disabled overrides reasoning_effort=high",
+			body:       []byte(`{"thinking":{"type":"disabled"},"reasoning_effort":"high"}`),
+			wantMode:   ModeNone,
+			wantBudget: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractThinkingConfig(tt.body, "mimo")
+			if got.Mode != tt.wantMode {
+				t.Errorf("Mode = %v, want %v", got.Mode, tt.wantMode)
+			}
+			if tt.wantLevel != "" && got.Level != tt.wantLevel {
+				t.Errorf("Level = %q, want %q", got.Level, tt.wantLevel)
+			}
+			if tt.wantBudget != 0 && got.Budget != tt.wantBudget {
+				t.Errorf("Budget = %d, want %d", got.Budget, tt.wantBudget)
+			}
+		})
+	}
+}
+
+// TestExtractMIMOConfig_ReasoningEffortFallback verifies reasoning_effort
+// mapping when thinking.type is absent.
+func TestExtractMIMOConfig_ReasoningEffortFallback(t *testing.T) {
+	tests := []struct {
+		name       string
+		effort     string
+		wantMode   ThinkingMode
+		wantBudget int
+		wantLevel  ThinkingLevel
+	}{
+		{name: "none", effort: "none", wantMode: ModeNone, wantBudget: 0},
+		{name: "low", effort: "low", wantMode: ModeBudget, wantBudget: 8192},
+		{name: "medium", effort: "medium", wantMode: ModeBudget, wantBudget: 24576},
+		{name: "high", effort: "high", wantMode: ModeBudget, wantBudget: 64512},
+		{name: "max", effort: "max", wantMode: ModeBudget, wantBudget: 64512},
+		{name: "auto", effort: "auto", wantMode: ModeAuto, wantBudget: -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"reasoning_effort":"` + tt.effort + `","messages":[]}`)
+			got := extractThinkingConfig(body, "mimo")
+			if got.Mode != tt.wantMode {
+				t.Errorf("Mode = %v, want %v", got.Mode, tt.wantMode)
+			}
+			if got.Budget != tt.wantBudget {
+				t.Errorf("Budget = %d, want %d", got.Budget, tt.wantBudget)
+			}
+			if tt.wantLevel != "" && got.Level != tt.wantLevel {
+				t.Errorf("Level = %q, want %q", got.Level, tt.wantLevel)
+			}
+		})
+	}
+}
+
+// TestExtractMIMOConfig_NoConfig verifies empty config when neither
+// thinking.type nor reasoning_effort is present.
+func TestExtractMIMOConfig_NoConfig(t *testing.T) {
+	body := []byte(`{"model":"mimo-v2.5-pro","messages":[]}`)
+	got := extractThinkingConfig(body, "mimo")
+	if hasThinkingConfig(got) {
+		t.Errorf("expected empty config for body without thinking params, got %+v", got)
+	}
+}
+
+// TestExtractMIMOConfig_InvalidReasoningEffort verifies that unknown
+// reasoning_effort values produce empty config.
+func TestExtractMIMOConfig_InvalidReasoningEffort(t *testing.T) {
+	body := []byte(`{"reasoning_effort":"super-ultra-mega"}`)
+	got := extractThinkingConfig(body, "mimo")
+	if hasThinkingConfig(got) {
+		t.Errorf("unknown reasoning_effort value should produce empty config, got %+v", got)
+	}
+}
+
+// TestExtractMIMOConfig_MatchesKimiDeepSeekForEffort verifies mimo reasoning_effort
+// extraction is structurally similar to kimi/deepseek for common values.
+func TestExtractMIMOConfig_MatchesKimiDeepSeekForEffort(t *testing.T) {
+	// MiMo uses budget mapping while kimi/deepseek use level mapping,
+	// so "none" and "auto" should produce identical results.
+	for _, effort := range []string{"none", "auto"} {
+		mimoCfg := extractThinkingConfig([]byte(`{"reasoning_effort":"`+effort+`"}`), "mimo")
+		kimiCfg := extractThinkingConfig([]byte(`{"reasoning_effort":"`+effort+`"}`), "kimi")
+		if mimoCfg.Mode != kimiCfg.Mode {
+			t.Errorf("effort=%s: mimo Mode=%v differs from kimi Mode=%v", effort, mimoCfg.Mode, kimiCfg.Mode)
+		}
+	}
+}

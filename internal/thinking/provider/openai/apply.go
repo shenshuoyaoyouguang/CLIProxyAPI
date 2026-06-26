@@ -56,7 +56,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	}
 
 	if config.Mode == thinking.ModeLevel {
-		result, _ := sjson.SetBytes(body, "reasoning_effort", string(config.Level))
+		result, _ := sjson.SetBytes(body, "reasoning_effort", thinking.NormalizeEffort(string(config.Level), "openai"))
 		return result, nil
 	}
 
@@ -92,7 +92,7 @@ func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig) ([]byte,
 		if config.Level == "" {
 			return body, nil
 		}
-		effort = string(config.Level)
+		effort = thinking.NormalizeEffort(string(config.Level), "openai")
 	case thinking.ModeNone:
 		// "none" is an internal value; upstream APIs don't accept it.
 		// Delete the field to let upstream disable reasoning effort.
@@ -108,7 +108,7 @@ func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig) ([]byte,
 		if !ok {
 			return body, nil
 		}
-		effort = level
+		effort = thinking.NormalizeEffort(level, "openai")
 	default:
 		return body, nil
 	}

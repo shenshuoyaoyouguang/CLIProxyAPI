@@ -98,7 +98,7 @@ func TestApply_ModeBudget_ConvertsToLevel(t *testing.T) {
 		wantEffort string
 	}{
 		{name: "budget_20000_maps_to_high", budget: 20000, wantEffort: "high"},
-		{name: "budget_30000_maps_to_xhigh", budget: 30000, wantEffort: "xhigh"},
+		{name: "budget_30000_maps_to_max", budget: 30000, wantEffort: "max"},
 		{name: "budget_0_maps_to_none", budget: 0, wantEffort: "none"},
 		{name: "budget_minus1_maps_to_auto", budget: -1, wantEffort: "auto"},
 	}
@@ -185,5 +185,50 @@ func TestApply_UserDefinedModeAuto_SetsAuto(t *testing.T) {
 	}
 	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "auto" {
 		t.Fatalf("reasoning_effort = %q, want %q, body=%s", got, "auto", string(out))
+	}
+}
+
+func TestNormalizeDeepSeekEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "xhigh_maps_to_max", input: "xhigh", expected: "max"},
+		{name: "high_passes_through", input: "high", expected: "high"},
+		{name: "max_passes_through", input: "max", expected: "max"},
+		{name: "medium_passes_through", input: "medium", expected: "medium"},
+		{name: "low_passes_through", input: "low", expected: "low"},
+		{name: "auto_passes_through", input: "auto", expected: "auto"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeDeepSeekEffort(tt.input)
+			if got != tt.expected {
+				t.Fatalf("normalizeDeepSeekEffort(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestApply_ModeBudget_LargeBudget_MapsToMax(t *testing.T) {
+	// This test verifies that budget > 24576 (which ConvertBudgetToLevel maps to "xhigh")
+	// is correctly normalized to "max" for DeepSeek API.
+	applier := NewApplier()
+	modelInfo := &registry.ModelInfo{
+		ID:       "deepseek-v4-pro",
+		Thinking: &registry.ThinkingSupport{Levels: []string{"high", "max"}},
+	}
+	body := []byte(`{"model":"deepseek-v4-pro"}`)
+
+	// Budget 50000 > 24576, so ConvertBudgetToLevel returns "xhigh"
+	// normalizeDeepSeekEffort should map "xhigh" to "max"
+	out, errApply := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 50000}, modelInfo)
+	if errApply != nil {
+		t.Fatalf("Apply() error = %v", errApply)
+	}
+	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "max" {
+		t.Fatalf("reasoning_effort = %q, want %q (xhigh should be normalized to max), body=%s", got, "max", string(out))
 	}
 }

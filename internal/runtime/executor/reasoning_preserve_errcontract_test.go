@@ -153,3 +153,136 @@ func TestConvertReasoningToThinkingContent_EmptyStringContentOnlyThinkingBlock(t
 		t.Errorf("content[0].type = %q, want %q", contentArr[0].Get("type").String(), "thinking")
 	}
 }
+
+// TestConvertReasoningToThinkingContent_MiMo_EnabledConverts verifies that a
+// MiMo payload with thinking.type=enabled converts reasoning_content into
+// content-array thinking blocks while preserving the top-level reasoning_content.
+func TestConvertReasoningToThinkingContent_MiMo_EnabledConverts(t *testing.T) {
+	payload := []byte(`{
+		"thinking":{"type":"enabled"},
+		"model":"mimo-v2.5-pro",
+		"messages":[
+			{"role":"assistant","content":"result","reasoning_content":"deep mimo thinking"}
+		]
+	}`)
+
+	out, err := convertReasoningToThinkingContent(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bytes.Equal(out, payload) {
+		t.Fatal("expected payload to be rewritten with thinking blocks")
+	}
+
+	// thinking block should be prepended to content
+	if gjson.GetBytes(out, "messages.0.content.0.type").String() != "thinking" {
+		t.Fatalf("expected thinking block, got %s", gjson.GetBytes(out, "messages.0.content.0").Raw)
+	}
+	if gjson.GetBytes(out, "messages.0.content.0.thinking").String() != "deep mimo thinking" {
+		t.Fatalf("expected thinking text, got %s", gjson.GetBytes(out, "messages.0.content.0.thinking").Raw)
+	}
+	// reasoning_content should still be preserved
+	if rc := gjson.GetBytes(out, "messages.0.reasoning_content").String(); rc != "deep mimo thinking" {
+		t.Fatalf("reasoning_content = %q, want %q", rc, "deep mimo thinking")
+	}
+}
+
+// TestConvertReasoningToThinkingContent_MiMo_DisabledNoConvert verifies that
+// a MiMo payload with thinking.type=disabled does NOT convert reasoning_content.
+func TestConvertReasoningToThinkingContent_MiMo_DisabledNoConvert(t *testing.T) {
+	payload := []byte(`{
+		"thinking":{"type":"disabled"},
+		"model":"mimo-v2.5-pro",
+		"messages":[
+			{"role":"assistant","content":"result","reasoning_content":"old reasoning"}
+		]
+	}`)
+
+	out, err := convertReasoningToThinkingContent(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(out, payload) {
+		t.Fatalf("expected payload unchanged for thinking.type=disabled, got diff")
+	}
+}
+
+// TestConvertReasoningToThinkingContent_MiMo_MultiTurnToolCalls verifies the
+// MiMo-specific scenario: multi-turn with tool calls where reasoning_content
+// must be preserved across all assistant messages.
+func TestConvertReasoningToThinkingContent_MiMo_MultiTurnToolCalls(t *testing.T) {
+	payload := []byte(`{
+		"thinking":{"type":"enabled"},
+		"model":"mimo-v2.5-pro",
+		"messages":[
+			{"role":"user","content":"What is the weather in Beijing?"},
+			{"role":"assistant","content":"","reasoning_content":"User asks about Beijing weather, I need to call the tool.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"Sunny 25\u00b0C"},
+			{"role":"assistant","content":"Beijing is sunny, 25\u00b0C.","reasoning_content":"Got the result, now I'll respond."}
+		]
+	}`)
+
+	out, err := convertReasoningToThinkingContent(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// First assistant message should have thinking block
+	if gjson.GetBytes(out, "messages.1.content").IsArray() {
+		if gjson.GetBytes(out, "messages.1.content.0.type").String() != "thinking" {
+			t.Fatalf("first assistant should have thinking block, got %s", gjson.GetBytes(out, "messages.1.content.0").Raw)
+		}
+	}
+
+	// Both assistant messages should retain reasoning_content
+	if rc1 := gjson.GetBytes(out, "messages.1.reasoning_content").String(); rc1 == "" {
+		t.Fatal("first assistant reasoning_content should be preserved")
+	}
+	if rc3 := gjson.GetBytes(out, "messages.3.reasoning_content").String(); rc3 == "" {
+		t.Fatal("second assistant reasoning_content should be preserved")
+	}
+}
+
+// TestPreserveReasoningContent_MiMo_ToolCallScenario verifies the MiMo-specific
+// multi-turn tool-call preservation scenario: reasoning_content from the original
+// assistant message with tool_calls is re-injected into translated output that
+// lost it during translation.
+func TestPreserveReasoningContent_MiMo_ToolCallScenario(t *testing.T) {
+	original := []byte(`{
+		"thinking":{"type":"enabled"},
+		"model":"mimo-v2.5-pro",
+		"messages":[
+			{"role":"user","content":"What is the weather in Beijing?"},
+			{"role":"assistant","content":"","reasoning_content":"User asks about weather, calling tool.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"Sunny 25C"},
+			{"role":"assistant","content":"Beijing is sunny, 25C.","reasoning_content":"Got the result, now responding."}
+		]
+	}`)
+	translated := []byte(`{
+		"thinking":{"type":"enabled"},
+		"model":"mimo-v2.5-pro",
+		"messages":[
+			{"role":"user","content":"What is the weather in Beijing?"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"Sunny 25C"},
+			{"role":"assistant","content":"Beijing is sunny, 25C."}
+		]
+	}`)
+
+	out, err := preserveReasoningContent(original, translated)
+	if err != nil {
+		t.Fatalf("preserveReasoningContent() error = %v", err)
+	}
+
+	// First assistant (tool call) should have reasoning_content restored
+	rc1 := gjson.GetBytes(out, "messages.1.reasoning_content").String()
+	if rc1 != "User asks about weather, calling tool." {
+		t.Fatalf("messages.1.reasoning_content = %q, want %q", rc1, "User asks about weather, calling tool.")
+	}
+
+	// Second assistant (final answer) should have reasoning_content restored
+	rc3 := gjson.GetBytes(out, "messages.3.reasoning_content").String()
+	if rc3 != "Got the result, now responding." {
+		t.Fatalf("messages.3.reasoning_content = %q, want %q", rc3, "Got the result, now responding.")
+	}
+}

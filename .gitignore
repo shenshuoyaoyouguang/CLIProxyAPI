@@ -1,6 +1,8 @@
 # Binaries
 cli-proxy-api
+cli-proxy-test
 *.exe
+*.upx
 
 # Configuration
 config.yaml
