@@ -468,7 +468,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 			DisplayName:   "GPT 5.5",
 			Description:   "Frontier model for complex coding, research, and real-world work.",
 			ContextLength: 272000,
-			Thinking:      &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
+			Thinking:      &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}},
 		},
 		{
 			ID:            "custom-codex-model-test",
@@ -478,7 +478,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 			DisplayName:   "Custom Codex Model",
 			Description:   "Custom model from registry",
 			ContextLength: 123456,
-			Thinking:      &registry.ThinkingSupport{Levels: []string{"none", "minimal", "low", "medium", "unsupported", "high", "xhigh"}},
+			Thinking:      &registry.ThinkingSupport{Levels: []string{"none", "minimal", "low", "medium", "unsupported", "high", "xhigh", "max"}},
 		},
 		{ID: "grok-imagine-image-quality", Object: "model", OwnedBy: "xai", Type: "openai"},
 		{ID: "gpt-image-2", Object: "model", OwnedBy: "openai", Type: "openai"},
@@ -538,6 +538,14 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if !ok || len(serviceTiers) != 1 {
 		t.Fatalf("expected gpt-5.5 priority service tier, got %#v", gpt55["service_tiers"])
 	}
+	priorityTier, ok := serviceTiers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected gpt-5.5 service_tier[0] to be object, got %#v", serviceTiers[0])
+	}
+	if got, _ := priorityTier["id"].(string); got != "priority" {
+		t.Fatalf("expected gpt-5.5 service_tier[0].id = priority, got %q", got)
+	}
+	assertCodexSupportedReasoningLevels(t, gpt55, []string{"low", "medium", "high", "xhigh", "max"})
 	if custom == nil {
 		t.Fatal("expected custom model codex catalog entry")
 	}
@@ -553,7 +561,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["context_window"].(float64); got != 123456 {
 		t.Fatalf("custom context_window = %v, want 123456", custom["context_window"])
 	}
-	assertCodexSupportedReasoningLevels(t, custom, []string{"none", "low", "medium", "high", "xhigh"})
+	assertCodexSupportedReasoningLevels(t, custom, []string{"none", "low", "medium", "high", "xhigh", "max"})
 	if custom["base_instructions"] != gpt55["base_instructions"] {
 		t.Fatal("expected custom model to use gpt-5.5 base_instructions fallback")
 	}
