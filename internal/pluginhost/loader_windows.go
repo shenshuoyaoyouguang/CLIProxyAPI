@@ -4,7 +4,14 @@ package pluginhost
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -37,16 +44,24 @@ var (
 	windowsHostCallbackEntries sync.Map
 	windowsHostCallCallback    = syscall.NewCallback(windowsHostCall)
 	windowsHostFreeCallback    = syscall.NewCallback(windowsHostFree)
-	procLocalAlloc             = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalAlloc")
+	shadowPluginCleanupOnce    sync.Once
+)
+
+const (
+	shadowPluginPrefix           = "cliproxy-plugin-"
+	shadowPluginTempPrefix       = ".cliproxy-plugin-"
+	shadowPluginProcessDirPrefix = "pid-"
+	shadowPluginDigestLength     = 32
 )
 
 type dynamicLibraryLoader struct{}
 
 type dynamicLibraryClient struct {
-	dll       *syscall.DLL
-	hostAPI   *windowsHostAPI
-	hostCtxID uintptr
-	api       windowsPluginAPI
+	dll      *syscall.DLL
+	tempPath string
+	hostAPI  *windowsHostAPI
+	hostCtx  *uintptr
+	api      windowsPluginAPI
 }
 
 func defaultPluginLoader() pluginLoader {
@@ -54,41 +69,185 @@ func defaultPluginLoader() pluginLoader {
 }
 
 func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, error) {
-	dll, errLoad := syscall.LoadDLL(file.Path)
+	loadPath, errShadow := shadowCopyPlugin(file)
+	if errShadow != nil {
+		return nil, errShadow
+	}
+	dll, errLoad := syscall.LoadDLL(loadPath)
 	if errLoad != nil {
+		removeShadowPlugin(loadPath)
 		return nil, errLoad
 	}
 	proc, errProc := dll.FindProc("cliproxy_plugin_init")
 	if errProc != nil {
 		_ = dll.Release()
+		removeShadowPlugin(loadPath)
 		return nil, errProc
 	}
 	id := windowsHostCallbackID.Add(1)
+	hostCtx := new(uintptr)
+	*hostCtx = id
 	windowsHostCallbackEntries.Store(id, dynamicHostCallbackEntry{host: host, pluginID: file.ID})
 	client := &dynamicLibraryClient{
-		dll:       dll,
-		hostCtxID: id,
+		dll:      dll,
+		tempPath: loadPath,
+		hostCtx:  hostCtx,
 		hostAPI: &windowsHostAPI{
 			abiVersion: pluginHostABIVersion,
-			hostCtx:    id,
+			hostCtx:    uintptr(unsafe.Pointer(hostCtx)),
 			call:       windowsHostCallCallback,
 			freeBuffer: windowsHostFreeCallback,
 		},
 	}
 	rc, _, errCall := proc.Call(uintptr(unsafe.Pointer(client.hostAPI)), uintptr(unsafe.Pointer(&client.api)))
 	if rc != 0 {
-		client.Shutdown()
+		client.closeAfterOpenFailure()
 		return nil, fmt.Errorf("cliproxy_plugin_init returned %d: %v", rc, errCall)
 	}
 	if client.api.abiVersion != pluginHostABIVersion {
-		client.Shutdown()
+		client.closeAfterOpenFailure()
 		return nil, fmt.Errorf("plugin ABI version %d is not supported", client.api.abiVersion)
 	}
 	if client.api.call == 0 || client.api.freeBuffer == 0 {
-		client.Shutdown()
+		client.closeAfterOpenFailure()
 		return nil, fmt.Errorf("plugin function table is incomplete")
 	}
 	return client, nil
+}
+
+func shadowCopyPlugin(file pluginFile) (string, error) {
+	dir, errDir := shadowPluginDir()
+	if errDir != nil {
+		return "", errDir
+	}
+	shadowPluginCleanupOnce.Do(func() {
+		removeStaleShadowPlugins(dir)
+	})
+	return shadowCopyPluginToDir(file, dir)
+}
+
+func shadowCopyPluginToDir(file pluginFile, dir string) (string, error) {
+	source := filepath.Clean(file.Path)
+	tmp, errTemp := os.CreateTemp(dir, shadowPluginTempPrefix+file.ID+"-*"+filepath.Ext(source))
+	if errTemp != nil {
+		return "", errTemp
+	}
+	tmpName := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			removeShadowPlugin(tmpName)
+		}
+	}()
+
+	in, errOpen := os.Open(source)
+	if errOpen != nil {
+		_ = tmp.Close()
+		return "", errOpen
+	}
+	defer func() {
+		_ = in.Close()
+	}()
+	hasher := sha256.New()
+	size, errCopy := io.Copy(io.MultiWriter(tmp, hasher), in)
+	if errCopy != nil {
+		_ = tmp.Close()
+		return "", errCopy
+	}
+	if errClose := tmp.Close(); errClose != nil {
+		return "", errClose
+	}
+	digest := hex.EncodeToString(hasher.Sum(nil))
+	target := shadowPluginPath(dir, file.ID, digest, filepath.Ext(source))
+	if shadowPluginMatches(target, size, digest) {
+		return target, nil
+	}
+	if errRemove := os.Remove(target); errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
+		if shadowPluginMatches(target, size, digest) {
+			return target, nil
+		}
+		removeShadowPlugin(target)
+		return "", fmt.Errorf("remove stale shadow plugin: %w", errRemove)
+	}
+	if errRename := os.Rename(tmpName, target); errRename != nil {
+		if shadowPluginMatches(target, size, digest) {
+			return target, nil
+		}
+		return "", fmt.Errorf("move shadow plugin: %w", errRename)
+	}
+	removeTemp = false
+	return target, nil
+}
+
+func shadowPluginDir() (string, error) {
+	dir := filepath.Join(os.TempDir(), "cliproxy-pluginhost", shadowPluginProcessDirName(os.Getpid()))
+	if errMkdir := os.MkdirAll(dir, 0o700); errMkdir != nil {
+		return "", errMkdir
+	}
+	return dir, nil
+}
+
+func shadowPluginProcessDirName(pid int) string {
+	return fmt.Sprintf("%s%d", shadowPluginProcessDirPrefix, pid)
+}
+
+func removeShadowPlugin(path string) {
+	if path == "" {
+		return
+	}
+	if errRemove := os.Remove(path); errRemove == nil {
+		return
+	}
+	pathPtr, errPath := windows.UTF16PtrFromString(path)
+	if errPath != nil {
+		return
+	}
+	_ = windows.MoveFileEx(pathPtr, nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT)
+}
+
+func removeStaleShadowPlugins(dir string) {
+	entries, errRead := os.ReadDir(dir)
+	if errRead != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry == nil || entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, shadowPluginPrefix) || strings.HasPrefix(name, shadowPluginTempPrefix) {
+			removeShadowPlugin(filepath.Join(dir, name))
+		}
+	}
+}
+
+func shadowPluginPath(dir string, id string, digest string, extension string) string {
+	if len(digest) > shadowPluginDigestLength {
+		digest = digest[:shadowPluginDigestLength]
+	}
+	return filepath.Join(dir, shadowPluginPrefix+id+"-"+digest+extension)
+}
+
+func shadowPluginMatches(path string, size int64, digest string) bool {
+	info, errStat := os.Stat(path)
+	if errStat != nil {
+		return false
+	}
+	if !info.Mode().IsRegular() || info.Size() != size {
+		return false
+	}
+	file, errOpen := os.Open(path)
+	if errOpen != nil {
+		return false
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+	hasher := sha256.New()
+	if _, errCopy := io.Copy(hasher, file); errCopy != nil {
+		return false
+	}
+	return hex.EncodeToString(hasher.Sum(nil)) == digest
 }
 
 func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request []byte) ([]byte, error) {
@@ -120,7 +279,7 @@ func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request 
 	)
 	var out []byte
 	if response.ptr != 0 && response.len > 0 {
-		out = unsafe.Slice((*byte)(unsafe.Add(nil, uintptr(response.ptr))), response.len)
+		out = unsafe.Slice((*byte)(unsafe.Pointer(response.ptr)), response.len)
 		out = append([]byte(nil), out...)
 	}
 	if response.ptr != 0 {
@@ -136,6 +295,17 @@ func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request 
 }
 
 func (c *dynamicLibraryClient) Shutdown() {
+	// Windows Go DLLs are not safe to hot-unload from the host process.
+	// The plugin was loaded from a shadow copy, so keeping the module mapped
+	// does not block deleting or replacing the source artifact.
+	c.close(false)
+}
+
+func (c *dynamicLibraryClient) closeAfterOpenFailure() {
+	c.close(true)
+}
+
+func (c *dynamicLibraryClient) close(releaseDLL bool) {
 	if c == nil {
 		return
 	}
@@ -143,26 +313,30 @@ func (c *dynamicLibraryClient) Shutdown() {
 		_, _, _ = syscall.SyscallN(c.api.shutdown)
 		c.api.shutdown = 0
 	}
-	if c.hostCtxID != 0 {
-		windowsHostCallbackEntries.Delete(c.hostCtxID)
-		c.hostCtxID = 0
+	if c.hostCtx != nil {
+		windowsHostCallbackEntries.Delete(*c.hostCtx)
+		c.hostCtx = nil
 	}
 	if c.dll != nil {
-		_ = c.dll.Release()
+		if releaseDLL {
+			_ = c.dll.Release()
+		}
 		c.dll = nil
 	}
+	removeShadowPlugin(c.tempPath)
+	c.tempPath = ""
 }
 
-func windowsHostCall(hostCtx unsafe.Pointer, methodPtr unsafe.Pointer, requestPtr unsafe.Pointer, requestLen uintptr, responsePtr unsafe.Pointer) uintptr {
-	if responsePtr != nil {
-		response := (*windowsBuffer)(responsePtr)
+func windowsHostCall(hostCtx uintptr, methodPtr uintptr, requestPtr uintptr, requestLen uintptr, responsePtr uintptr) uintptr {
+	if responsePtr != 0 {
+		response := (*windowsBuffer)(unsafe.Pointer(responsePtr))
 		response.ptr = 0
 		response.len = 0
 	}
-	if hostCtx == nil || methodPtr == nil {
+	if hostCtx == 0 || methodPtr == 0 {
 		return 1
 	}
-	id := uintptr(hostCtx)
+	id := *(*uintptr)(unsafe.Pointer(hostCtx))
 	rawHost, okHost := windowsHostCallbackEntries.Load(id)
 	if !okHost {
 		return 1
@@ -172,8 +346,8 @@ func windowsHostCall(hostCtx unsafe.Pointer, methodPtr unsafe.Pointer, requestPt
 		return 1
 	}
 	var request []byte
-	if requestPtr != nil && requestLen > 0 {
-		request = unsafe.Slice((*byte)(requestPtr), requestLen)
+	if requestPtr != 0 && requestLen > 0 {
+		request = unsafe.Slice((*byte)(unsafe.Pointer(requestPtr)), requestLen)
 		request = append([]byte(nil), request...)
 	}
 	ctx := withHostCallbackPluginID(context.Background(), entry.pluginID)
@@ -181,15 +355,15 @@ func windowsHostCall(hostCtx unsafe.Pointer, methodPtr unsafe.Pointer, requestPt
 	if errCall != nil {
 		resp = marshalRPCError("host_call_failed", errCall.Error())
 	}
-	if len(resp) == 0 || responsePtr == nil {
+	if len(resp) == 0 || responsePtr == 0 {
 		return 0
 	}
-	mem, _, errCall := syscall.SyscallN(procLocalAlloc.Addr(), windows.LMEM_FIXED, uintptr(len(resp)))
-	if errCall != syscall.Errno(0) || mem == 0 {
+	mem, errAlloc := windows.LocalAlloc(windows.LMEM_FIXED, uint32(len(resp)))
+	if errAlloc != nil || mem == 0 {
 		return 1
 	}
-	response := (*windowsBuffer)(responsePtr)
-	copy(unsafe.Slice((*byte)(unsafe.Add(nil, mem)), len(resp)), resp)
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(mem)), len(resp)), resp)
+	response := (*windowsBuffer)(unsafe.Pointer(responsePtr))
 	response.ptr = mem
 	response.len = uintptr(len(resp))
 	return 0
@@ -202,17 +376,17 @@ func windowsHostFree(ptr uintptr, len uintptr) uintptr {
 	return 0
 }
 
-func windowsString(ptr unsafe.Pointer) string {
-	if ptr == nil {
+func windowsString(ptr uintptr) string {
+	if ptr == 0 {
 		return ""
 	}
-	var out []byte
-	for i := 0; ; i++ {
-		b := *(*byte)(unsafe.Add(ptr, i))
+	bytes := make([]byte, 0)
+	for offset := uintptr(0); ; offset++ {
+		b := *(*byte)(unsafe.Pointer(ptr + offset))
 		if b == 0 {
 			break
 		}
-		out = append(out, b)
+		bytes = append(bytes, b)
 	}
-	return string(out)
+	return string(bytes)
 }

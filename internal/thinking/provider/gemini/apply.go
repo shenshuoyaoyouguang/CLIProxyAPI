@@ -126,24 +126,10 @@ func (a *Applier) applyLevelFormat(body []byte, config thinking.ThinkingConfig) 
 	result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig.include_thoughts")
 
 	if config.Mode == thinking.ModeNone {
-		// Test cases require `generationConfig.thinkingConfig` to be entirely deleted
-		// if we aren't preserving the `none` state specifically for `Level` configs.
-		// Since we changed extractGeminiConfig to output `LevelNone` when we see `thinkingLevel="none"`,
-		// config.Level will be set to "none".
-
-		// `explicit_none_disables_thinking` has a body with `thinkingLevel="none"` AND `includeThoughts=false`.
-		// It expects `includeThoughts=false` back, BUT currently tests fail because `thinkingConfig` gets stripped.
-		// Wait, test failure: Output: `{"contents":[{"role":"user","parts":[{"text":"Hello"}]}],"generationConfig":{}}`
-		// which means `thinkingConfig` got deleted.
-		// Ah! Look at `TestApplyThinking_DefaultWhenNoConfig`. It checks `ApplyThinking` which runs `StripThinkingConfig`!
-		// `ApplyThinking` calls `StripThinkingConfig` when config is invalid or stripped. Wait, let's see.
-
-		// If we output includeThoughts: false, that's what the test wants.
-		// Why did it get stripped? Because of `validate.go` clamping?
-		// `clamped_to=0 max=0 min=0 model=test-gemini-3-pro original_value=0 provider=gemini`
-		// `test-gemini-3-pro` has NO budget, only levels. But it clamped budget to 0? That's fine.
-		// But if `config.Level` == "none", then it should reach here.
-
+		if config.Budget == 0 && config.Level == "" {
+			result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig")
+			return result, nil
+		}
 		result, _ = sjson.SetBytes(result, "generationConfig.thinkingConfig.includeThoughts", false)
 		if config.Level != "" {
 			result, _ = sjson.SetBytes(result, "generationConfig.thinkingConfig.thinkingLevel", string(config.Level))

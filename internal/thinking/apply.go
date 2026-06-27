@@ -622,7 +622,9 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 		value := level.String()
 		switch value {
 		case "none":
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+			// Preserve Level=LevelNone so the provider keeps thinkingConfig with
+			// includeThoughts=false (explicit disable) instead of deleting it.
+			return ThinkingConfig{Mode: ModeNone, Budget: 0, Level: LevelNone}
 		case "auto":
 			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
 		default:
