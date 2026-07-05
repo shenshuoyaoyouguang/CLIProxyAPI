@@ -16,7 +16,8 @@ import (
 // "tool_use".
 //
 // Run with:
-//   go test ./internal/runtime/executor/helps/ -run TestScenario8 -v
+//
+//	go test ./internal/runtime/executor/helps/ -run TestScenario8 -v
 func TestScenario8_NonStream_ToolUseStopReasonCorrection(t *testing.T) {
 	fmt.Println("============================================================")
 	fmt.Println("场景 8 测试: 非流式响应中 tool_use 块 + stop_reason 异常修正")

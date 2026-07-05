@@ -13,10 +13,10 @@ import (
 // considered retryable.
 func TestIsRetryableStreamDisconnect(t *testing.T) {
 	cases := []struct {
-		name        string
-		err         error
-		gotSSEData  bool
-		want        bool
+		name       string
+		err        error
+		gotSSEData bool
+		want       bool
 	}{
 		{name: "nil error is not retryable", err: nil, gotSSEData: false, want: false},
 		{name: "ErrUnexpectedEOF with no SSE data is retryable", err: io.ErrUnexpectedEOF, gotSSEData: false, want: true},
@@ -35,36 +35,9 @@ func TestIsRetryableStreamDisconnect(t *testing.T) {
 	}
 }
 
-// TestDegradeEffort verifies the per-notch reasoning effort degradation chain
-// used when retrying after a stream disconnect.
-func TestDegradeEffort(t *testing.T) {
-	cases := []struct {
-		name   string
-		effort string
-		want   string
-	}{
-		{name: "max degrades to high", effort: "max", want: "high"},
-		{name: "xhigh degrades to high", effort: "xhigh", want: "high"},
-		{name: "high degrades to medium", effort: "high", want: "medium"},
-		{name: "medium degrades to low", effort: "medium", want: "low"},
-		{name: "low degrades to minimal", effort: "low", want: "minimal"},
-		{name: "minimal degrades to empty (removed)", effort: "minimal", want: ""},
-		{name: "unknown effort degrades to empty", effort: "unknown", want: ""},
-		{name: "empty effort degrades to empty", effort: "", want: ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := degradeEffort(tc.effort)
-			if got != tc.want {
-				t.Fatalf("degradeEffort(%q) = %q, want %q", tc.effort, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestDetectReasoningEffort verifies detection of reasoning effort fields in
-// both flat (reasoning_effort) and nested (reasoning.effort) formats.
+// flat (reasoning_effort), nested (reasoning.effort), and Claude
+// (output_config.effort) formats.
 func TestDetectReasoningEffort(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -85,6 +58,12 @@ func TestDetectReasoningEffort(t *testing.T) {
 			wantFormat: "nested",
 		},
 		{
+			name:       "Claude output_config.effort",
+			body:       `{"output_config":{"effort":"max"}}`,
+			wantEffort: "max",
+			wantFormat: "claude_effort",
+		},
+		{
 			name:       "no effort field returns empty",
 			body:       `{}`,
 			wantEffort: "",
@@ -95,6 +74,18 @@ func TestDetectReasoningEffort(t *testing.T) {
 			body:       `{"reasoning_effort":"high","reasoning":{"effort":"low"}}`,
 			wantEffort: "high",
 			wantFormat: "flat",
+		},
+		{
+			name:       "flat takes priority over Claude effort",
+			body:       `{"reasoning_effort":"high","output_config":{"effort":"low"}}`,
+			wantEffort: "high",
+			wantFormat: "flat",
+		},
+		{
+			name:       "nested takes priority over Claude effort",
+			body:       `{"reasoning":{"effort":"medium"},"output_config":{"effort":"low"}}`,
+			wantEffort: "medium",
+			wantFormat: "nested",
 		},
 	}
 
@@ -110,8 +101,8 @@ func TestDetectReasoningEffort(t *testing.T) {
 }
 
 // TestDegradeReasoningForRetry verifies that degradeReasoningForRetry lowers
-// the reasoning effort by one notch in both flat and nested formats, and
-// removes the field entirely when degradation reaches the bottom of the chain.
+// the reasoning effort by one notch in all supported formats, and removes the
+// field entirely when degradation reaches the bottom of the chain.
 func TestDegradeReasoningForRetry(t *testing.T) {
 	t.Run("flat format max→high", func(t *testing.T) {
 		body := []byte(`{"reasoning_effort":"max"}`)
@@ -133,6 +124,16 @@ func TestDegradeReasoningForRetry(t *testing.T) {
 		}
 	})
 
+	t.Run("Claude effort max→high", func(t *testing.T) {
+		body := []byte(`{"output_config":{"effort":"max"}}`)
+		got := degradeReasoningForRetry(body)
+		if v := gjson.GetBytes(got, "output_config.effort"); !v.Exists() {
+			t.Fatalf("output_config.effort field missing after degradation: %s", string(got))
+		} else if v.String() != "high" {
+			t.Fatalf("output_config.effort = %q, want %q", v.String(), "high")
+		}
+	})
+
 	t.Run("minimal is removed (flat)", func(t *testing.T) {
 		body := []byte(`{"reasoning_effort":"minimal"}`)
 		got := degradeReasoningForRetry(body)
@@ -146,6 +147,18 @@ func TestDegradeReasoningForRetry(t *testing.T) {
 		got := degradeReasoningForRetry(body)
 		if v := gjson.GetBytes(got, "reasoning.effort"); v.Exists() {
 			t.Fatalf("reasoning.effort should be removed after degrading minimal, got %s; body=%s", v.Raw, string(got))
+		}
+	})
+
+	t.Run("minimal is removed (Claude)", func(t *testing.T) {
+		body := []byte(`{"output_config":{"effort":"minimal"}}`)
+		got := degradeReasoningForRetry(body)
+		if v := gjson.GetBytes(got, "output_config.effort"); v.Exists() {
+			t.Fatalf("output_config.effort should be removed after degrading minimal, got %s; body=%s", v.Raw, string(got))
+		}
+		// Empty output_config should also be cleaned up.
+		if v := gjson.GetBytes(got, "output_config"); v.Exists() {
+			t.Fatalf("output_config should be removed when empty, got %s; body=%s", v.Raw, string(got))
 		}
 	})
 
@@ -190,6 +203,31 @@ func TestDegradeReasoningForRetry(t *testing.T) {
 		}
 		if v := gjson.GetBytes(got, "reasoning_effort"); v.String() != "high" {
 			t.Fatalf("reasoning_effort = %q, want %q", v.String(), "high")
+		}
+	})
+
+	t.Run("Claude effort low degrades to removal (Claude lacks minimal)", func(t *testing.T) {
+		body := []byte(`{"output_config":{"effort":"low"}}`)
+		got := degradeReasoningForRetry(body)
+		// Claude does not support "minimal" effort, so "low" degrades directly to
+		// field removal (one step, not low→minimal→removed).
+		if v := gjson.GetBytes(got, "output_config.effort"); v.Exists() {
+			t.Fatalf("output_config.effort should be removed after degrading low, got %s; body=%s", v.Raw, string(got))
+		}
+		// Empty output_config should also be cleaned up.
+		if v := gjson.GetBytes(got, "output_config"); v.Exists() {
+			t.Fatalf("output_config should be removed when empty, got %s; body=%s", v.Raw, string(got))
+		}
+	})
+
+	t.Run("Claude effort high→medium (maps normally)", func(t *testing.T) {
+		body := []byte(`{"output_config":{"effort":"high"}}`)
+		got := degradeReasoningForRetry(body)
+		// "high" → "medium" is a normal degradation that Claude supports.
+		if v := gjson.GetBytes(got, "output_config.effort"); !v.Exists() {
+			t.Fatalf("output_config.effort field missing after degrading high: %s", string(got))
+		} else if v.String() != "medium" {
+			t.Fatalf("output_config.effort = %q, want %q; body=%s", v.String(), "medium", string(got))
 		}
 	})
 }

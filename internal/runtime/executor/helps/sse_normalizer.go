@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"strconv"
 
-	log "github.com/sirupsen/logrus"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
 
@@ -147,14 +147,14 @@ func extractDataLine(line []byte) ([]byte, bool) {
 // been emitted. Events that arrive after message_stop are dropped. Missing
 // terminal events are emitted by Flush.
 type SSENormalizer struct {
-	messageStartSent bool
-	activeBlocks     map[int64]bool
-	messageDeltaSent bool
-	messageStopSent  bool
-	finishReason     string
-	usageInputTokens int64
+	messageStartSent  bool
+	activeBlocks      map[int64]bool
+	messageDeltaSent  bool
+	messageStopSent   bool
+	finishReason      string
+	usageInputTokens  int64
 	usageOutputTokens int64
-	pending          []sseEvent
+	pending           []sseEvent
 }
 
 // NewSSENormalizer creates a new normalizer with empty state.

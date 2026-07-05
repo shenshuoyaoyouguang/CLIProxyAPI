@@ -16,8 +16,8 @@ func newMimoModelInfo() *registry.ModelInfo {
 		Type:        "mimo",
 		UserDefined: false,
 		Thinking: &registry.ThinkingSupport{
-			Min:  0,
-			Max:  64512,
+			Min:    0,
+			Max:    64512,
 			Levels: []string{"low", "medium", "high"},
 		},
 	}
@@ -31,8 +31,8 @@ func newMimoUserDefinedModelInfo() *registry.ModelInfo {
 		Type:        "mimo",
 		UserDefined: true,
 		Thinking: &registry.ThinkingSupport{
-			Min:  0,
-			Max:  64512,
+			Min:    0,
+			Max:    64512,
 			Levels: []string{"low", "medium", "high"},
 		},
 	}
