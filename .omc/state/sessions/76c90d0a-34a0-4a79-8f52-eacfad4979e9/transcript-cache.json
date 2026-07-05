@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "mtimeMs": 1783882248255.694,
+  "size": 1957742,
+  "baseResult": {
+    "agents": [
+      {
+        "id": "call_e0df634902ba439d8375c24b",
+        "type": "Explore",
+        "name": "test-coverage-gap",
+        "description": "测试覆盖缺失分析",
+        "status": "completed",
+        "startTime": "2026-07-12T18:27:22.117Z",
+        "endTime": "2026-07-12T18:34:14.580Z"
+      },
+      {
+        "id": "call_d3ec6030bb264e518a159258",
+        "type": "Explore",
+        "name": "logic-bugs-analysis",
+        "description": "逻辑与安全漏洞分析",
+        "status": "completed",
+        "startTime": "2026-07-12T18:27:22.119Z",
+        "endTime": "2026-07-12T18:33:09.573Z"
+      },
+      {
+        "id": "call_7a85333eb10a462799432daf",
+        "type": "Explore",
+        "name": "test-quality-analysis",
+        "description": "测试质量与Flaky分析",
+        "status": "completed",
+        "startTime": "2026-07-12T18:27:22.120Z",
+        "endTime": "2026-07-12T18:31:56.431Z"
+      },
+      {
+        "id": "call_f134aa2684d34a988c3f0e28",
+        "type": "Explore",
+        "name": "redisqueue-global-state",
+        "description": "P1-1: redisqueue全局状态",
+        "status": "completed",
+        "startTime": "2026-07-12T18:37:45.315Z",
+        "endTime": "2026-07-12T18:41:08.363Z"
+      },
+      {
+        "id": "call_07e8cd1c0b894f9bbf0e6a6c",
+        "type": "Explore",
+        "name": "package-mutable-state",
+        "description": "P1-2: 包级可变状态竞态",
+        "status": "completed",
+        "startTime": "2026-07-12T18:37:45.317Z",
+        "endTime": "2026-07-12T18:44:34.054Z"
+      },
+      {
+        "id": "call_ea803fdd5c3a4ab4bfd16495",
+        "type": "Explore",
+        "name": "flaky-time-sleep",
+        "description": "P1-3: Flaky测试time.Sleep",
+        "status": "completed",
+        "startTime": "2026-07-12T18:37:45.318Z",
+        "endTime": "2026-07-12T18:41:11.008Z"
+      }
+    ],
+    "todos": [],
+    "toolCallCount": 179,
+    "agentCallCount": 6,
+    "skillCallCount": 0,
+    "lastToolName": "PowerShell",
+    "sessionStart": "2026-07-12T18:04:48.418Z",
+    "lastRequestTokenUsage": {
+      "inputTokens": 49325,
+      "outputTokens": 254
+    },
+    "thinkingState": {
+      "active": true,
+      "lastSeen": "2026-07-12T18:50:47.409Z"
+    },
+    "sessionTotalTokens": 2414524
+  },
+  "pendingPermissions": [],
+  "generatedAt": "2026-07-12T18:50:48.518Z"
+}

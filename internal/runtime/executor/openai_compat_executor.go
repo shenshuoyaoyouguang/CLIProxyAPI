@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -402,8 +403,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				log.Errorf("openai compat executor: close response body error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800) // 50MB
+
+		// B1: param lives at goroutine scope so readStream and the synthetic
+		// [DONE] marker share the same translator state across retries.
 		var param any
 		var streamUsage helps.StreamUsageBuffer
 		defer streamUsage.Publish(ctx, reporter)
@@ -449,51 +451,115 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			}
 			return false
 		}
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			streamUsage.ObserveOpenAIStream(line)
-			trimmedLine := bytes.TrimSpace(line)
-			if len(trimmedLine) == 0 {
-				continue
-			}
 
-			if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
-				if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
-					bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+		// Stream retry state: track whether any SSE data was received and keep a
+		// mutable retry body that can be degraded on retry.
+		var gotSSEData bool
+		retryBody := translated
+
+		// readStream reads SSE lines from body, translates them, and fans chunks
+		// out via sendChunks. On a JSON error body it only returns the error
+		// (B2: reporting is centralised in the outer block to avoid double
+		// PublishFailure). It returns ctx.Err() when sendChunks is cancelled.
+		readStream := func(body io.Reader) error {
+			scanner := bufio.NewScanner(body)
+			scanner.Buffer(nil, 52_428_800) // 50MB
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+				if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
+					reporter.Publish(ctx, detail)
+				}
+				trimmedLine := bytes.TrimSpace(line)
+				if len(trimmedLine) == 0 {
 					continue
 				}
-				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-					streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
-					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					reporter.PublishFailure(ctx, streamErr)
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-					case <-ctx.Done():
+
+				if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
+					if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
+						bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+						continue
 					}
-					return
+					if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
+						// B2: only return the error; outer block handles reporting.
+						return statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+					}
+					continue
 				}
-				continue
+
+				gotSSEData = true
+				chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, retryBody, bytes.Clone(trimmedLine), &param)
+				if sendChunks(chunks) {
+					return ctx.Err()
+				}
+			}
+			return scanner.Err()
+		}
+
+		errScan := readStream(httpResp.Body)
+
+		// Retry once when the upstream disconnected before any SSE data arrived.
+		if isRetryableStreamDisconnect(errScan, gotSSEData) {
+			retryBody = degradeReasoningForRetry(retryBody)
+			log.WithFields(log.Fields{
+				"provider": e.Identifier(),
+				"model":    baseModel,
+			}).Debug("stream: retrying after unexpected EOF with degraded reasoning |")
+
+			// Reset SSENormalizer so the new stream starts from a clean state.
+			if responseFormat == sdktranslator.FormatClaude {
+				normalizer = helps.NewSSENormalizer()
 			}
 
-			// OpenAI-compatible streams must use SSE data lines.
-			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param)
-			if sendChunks(chunks) {
-				return
+			httpReq2, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(retryBody))
+			if errReq == nil {
+				httpReq2.Header = httpReq.Header.Clone()
+				// W3: record the retry request for observability.
+				helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+					URL:       url,
+					Method:    http.MethodPost,
+					Headers:   httpReq2.Header.Clone(),
+					Body:      retryBody,
+					Provider:  e.Identifier(),
+					AuthID:    authID,
+					AuthLabel: authLabel,
+					AuthType:  authType,
+					AuthValue: authValue,
+				})
+				httpClient2 := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+				httpClient2 = reporter.TrackHTTPClient(httpClient2)
+				httpResp2, errDo := httpClient2.Do(httpReq2)
+				if errDo == nil && httpResp2.StatusCode >= 200 && httpResp2.StatusCode < 300 {
+					errScan = readStream(httpResp2.Body)
+					if errClose := httpResp2.Body.Close(); errClose != nil {
+						log.Errorf("openai compat executor: close retry response body error: %v", errClose)
+					}
+				} else if errDo == nil {
+					// W3: log non-2xx retry response status and body.
+					b, _ := io.ReadAll(httpResp2.Body)
+					log.Debugf("openai compat executor: retry response non-2xx status: %d, error body: %s", httpResp2.StatusCode, string(b))
+					if errClose := httpResp2.Body.Close(); errClose != nil {
+						log.Errorf("openai compat executor: close retry response body error: %v", errClose)
+					}
+				}
 			}
 		}
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
+
+		// W2: do not report context cancellation/timeout as failures.
+		if errScan != nil {
+			if !errors.Is(errScan, context.Canceled) && !errors.Is(errScan, context.DeadlineExceeded) {
+				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+				reporter.PublishFailure(ctx, errScan)
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+				case <-ctx.Done():
+				}
 			}
 		} else {
 			// In case the upstream close the stream without a terminal [DONE] marker.
 			// Feed a synthetic done marker through the translator so pending
 			// response.completed events are still emitted exactly once.
-			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
+			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, retryBody, []byte("data: [DONE]"), &param)
 			if sendChunks(chunks) {
 				return
 			}

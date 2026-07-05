@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "mtimeMs": 1783918007143.5276,
+  "size": 545640,
+  "baseResult": {
+    "agents": [],
+    "todos": [],
+    "toolCallCount": 23,
+    "agentCallCount": 0,
+    "skillCallCount": 0,
+    "lastToolName": "Read",
+    "sessionStart": "2026-07-13T04:30:22.630Z",
+    "lastRequestTokenUsage": {
+      "inputTokens": 82040,
+      "outputTokens": 1225
+    },
+    "sessionTotalTokens": 3026553
+  },
+  "pendingPermissions": [],
+  "generatedAt": "2026-07-13T04:46:47.302Z"
+}
