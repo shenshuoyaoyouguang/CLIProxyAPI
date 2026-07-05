@@ -73,3 +73,21 @@ func AppendSSEEventBytes(out []byte, event string, payload []byte, trailingNewli
 	}
 	return out
 }
+
+// WriteSSEEventBytes writes an SSE event frame into buf. Payload is split on
+// '\n' so each line becomes its own "data:" line per the W3C SSE spec.
+// trailingNewlines controls how many blank lines terminate the frame after
+// the last "data:" line; typical usage is 2 for a standard frame end.
+func WriteSSEEventBytes(buf *bytes.Buffer, event string, payload []byte, trailingNewlines int) {
+	buf.WriteString("event: ")
+	buf.WriteString(event)
+	buf.WriteByte('\n')
+	for _, line := range bytes.Split(payload, []byte("\n")) {
+		buf.WriteString("data: ")
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	for i := 1; i < trailingNewlines; i++ {
+		buf.WriteByte('\n')
+	}
+}

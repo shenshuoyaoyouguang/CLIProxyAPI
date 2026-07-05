@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+// splitFrames splits a concatenated SSE byte stream into individual event
+// frames on the "\n\n" separator. Empty tail entries are dropped. Each
+// returned frame includes its trailing "\n\n" so it round-trips through the
+// SSE frame boundary. This is the canonical helper for tests that need to
+// count or index frames after Process/Flush return a single []byte.
+func splitFrames(b []byte) [][]byte {
+	if len(b) == 0 {
+		return nil
+	}
+	parts := bytes.Split(b, []byte("\n\n"))
+	out := make([][]byte, 0, len(parts))
+	for _, p := range parts {
+		if len(bytes.TrimSpace(p)) > 0 {
+			out = append(out, append(p, '\n', '\n'))
+		}
+	}
+	return out
+}
+
 func TestSSEEventType(t *testing.T) {
 	cases := []struct {
 		name string
@@ -164,12 +183,11 @@ func TestSSENormalizer_PassthroughNormalOrder(t *testing.T) {
 	out := n.Process(chunk)
 	flush := n.Flush()
 	if len(flush) != 0 {
-		t.Fatalf("Flush should produce nothing for a complete stream, got %d chunks", len(flush))
+		t.Fatalf("Flush should produce nothing for a complete stream, got %d bytes", len(flush))
 	}
-	joined := bytes.Join(out, nil)
 	expected := chunk
-	if !bytes.Equal(joined, expected) {
-		t.Fatalf("passthrough mismatch\n got: %q\nwant: %q", joined, expected)
+	if !bytes.Equal(out, expected) {
+		t.Fatalf("passthrough mismatch\n got: %q\nwant: %q", out, expected)
 	}
 }
 
@@ -185,16 +203,16 @@ func TestSSENormalizer_ReorderMisordered(t *testing.T) {
 
 	out1 := n.Process(chunk1)
 	if len(out1) != 0 {
-		t.Fatalf("early delta should be buffered, got %d chunks", len(out1))
+		t.Fatalf("early delta should be buffered, got %d bytes", len(out1))
 	}
 	out2 := n.Process(chunk2)
 	out3 := n.Process(chunk3)
 	flush := n.Flush()
 	if len(flush) != 0 {
-		t.Fatalf("Flush should produce nothing for complete stream, got %d chunks", len(flush))
+		t.Fatalf("Flush should produce nothing for complete stream, got %d bytes", len(flush))
 	}
 
-	all := bytes.Join(append(append(out2, out3...), nil), nil)
+	all := append(append([]byte(nil), out2...), out3...)
 
 	// Verify order: message_start must precede content_block_start must precede
 	// content_block_delta must precede content_block_stop must precede
@@ -236,15 +254,14 @@ func TestSSENormalizer_DropAfterMessageStop(t *testing.T) {
 	flush := n.Flush()
 
 	if len(out2) != 0 {
-		t.Fatalf("events after message_stop should be dropped, got %d chunks", len(out2))
+		t.Fatalf("events after message_stop should be dropped, got %d bytes", len(out2))
 	}
 	if len(flush) != 0 {
-		t.Fatalf("Flush should produce nothing, got %d chunks", len(flush))
+		t.Fatalf("Flush should produce nothing, got %d bytes", len(flush))
 	}
 	// Ensure the late delta is not present in the joined output.
-	all := bytes.Join(out1, nil)
-	if bytes.Contains(all, []byte("content_block_delta")) && len(out2) > 0 {
-		t.Fatalf("late content_block_delta leaked into output: %q", all)
+	if bytes.Contains(out1, []byte("content_block_delta")) && len(out2) > 0 {
+		t.Fatalf("late content_block_delta leaked into output: %q", out1)
 	}
 }
 
@@ -259,22 +276,21 @@ func TestSSENormalizer_FlushCompletesMissing(t *testing.T) {
 		if len(flush) == 0 {
 			t.Fatal("Flush should produce terminal events")
 		}
-		all := bytes.Join(flush, nil)
 		// Must contain content_block_stop for index 0.
-		if !bytes.Contains(all, []byte(`"type":"content_block_stop"`)) || !bytes.Contains(all, []byte(`"index":0`)) {
-			t.Fatalf("Flush missing content_block_stop: %q", all)
+		if !bytes.Contains(flush, []byte(`"type":"content_block_stop"`)) || !bytes.Contains(flush, []byte(`"index":0`)) {
+			t.Fatalf("Flush missing content_block_stop: %q", flush)
 		}
 		// Must contain message_delta with stop_reason default "end_turn"
 		// ("stop" is not a valid Anthropic stop_reason).
-		if !bytes.Contains(all, []byte("message_delta")) {
-			t.Fatalf("Flush missing message_delta: %q", all)
+		if !bytes.Contains(flush, []byte("message_delta")) {
+			t.Fatalf("Flush missing message_delta: %q", flush)
 		}
-		if !bytes.Contains(all, []byte(`"stop_reason":"end_turn"`)) {
-			t.Fatalf("Flush missing default stop_reason end_turn: %q", all)
+		if !bytes.Contains(flush, []byte(`"stop_reason":"end_turn"`)) {
+			t.Fatalf("Flush missing default stop_reason end_turn: %q", flush)
 		}
 		// Must contain message_stop.
-		if !bytes.Contains(all, []byte("message_stop")) {
-			t.Fatalf("Flush missing message_stop: %q", all)
+		if !bytes.Contains(flush, []byte("message_stop")) {
+			t.Fatalf("Flush missing message_stop: %q", flush)
 		}
 	})
 
@@ -284,13 +300,12 @@ func TestSSENormalizer_FlushCompletesMissing(t *testing.T) {
 			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":7}}\n\n")
 		_ = n.Process(chunk)
 		flush := n.Flush()
-		all := bytes.Join(flush, nil)
 		// Should not re-emit message_delta because it was already sent.
-		if bytes.Contains(all, []byte("message_delta")) {
-			t.Fatalf("message_delta should not be re-emitted: %q", all)
+		if bytes.Contains(flush, []byte("message_delta")) {
+			t.Fatalf("message_delta should not be re-emitted: %q", flush)
 		}
-		if !bytes.Contains(all, []byte("message_stop")) {
-			t.Fatalf("Flush missing message_stop: %q", all)
+		if !bytes.Contains(flush, []byte("message_stop")) {
+			t.Fatalf("Flush missing message_stop: %q", flush)
 		}
 	})
 
@@ -302,12 +317,11 @@ func TestSSENormalizer_FlushCompletesMissing(t *testing.T) {
 			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
 		_ = n.Process(chunk)
 		flush := n.Flush()
-		all := bytes.Join(flush, nil)
-		if bytes.Contains(all, []byte("message_delta")) {
-			t.Fatalf("message_delta should not be re-emitted: %q", all)
+		if bytes.Contains(flush, []byte("message_delta")) {
+			t.Fatalf("message_delta should not be re-emitted: %q", flush)
 		}
-		if !bytes.Contains(all, []byte("message_stop")) {
-			t.Fatalf("Flush missing message_stop: %q", all)
+		if !bytes.Contains(flush, []byte("message_stop")) {
+			t.Fatalf("Flush missing message_stop: %q", flush)
 		}
 	})
 }
@@ -326,9 +340,8 @@ func TestSSENormalizer_MultiSpaceEventPrefix(t *testing.T) {
 	out := n.Process(chunk)
 	flush := n.Flush()
 	if len(flush) != 0 {
-		t.Fatalf("Flush should produce nothing, got %d chunks", len(flush))
+		t.Fatalf("Flush should produce nothing, got %d bytes", len(flush))
 	}
-	all := bytes.Join(out, nil)
 	expectedTypes := []string{
 		"message_start",
 		"content_block_start",
@@ -339,12 +352,12 @@ func TestSSENormalizer_MultiSpaceEventPrefix(t *testing.T) {
 	}
 	for _, et := range expectedTypes {
 		// Each event type must appear exactly once.
-		count := strings.Count(string(all), "event: "+et)
+		count := strings.Count(string(out), "event: "+et)
 		if count == 0 {
 			// The normalizer re-emits events with a single space, so check that
 			// the event type is present at all.
-			if !bytes.Contains(all, []byte(et)) {
-				t.Fatalf("event type %s missing from output: %q", et, all)
+			if !bytes.Contains(out, []byte(et)) {
+				t.Fatalf("event type %s missing from output: %q", et, out)
 			}
 		}
 	}
@@ -354,10 +367,11 @@ func TestSSENormalizer_OutputFormatCompleteFrames(t *testing.T) {
 	n := NewSSENormalizer()
 	chunk := []byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
 	out := n.Process(chunk)
-	if len(out) != 1 {
-		t.Fatalf("got %d chunks, want 1", len(out))
+	frames := splitFrames(out)
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1", len(frames))
 	}
-	frame := out[0]
+	frame := frames[0]
 	// Each frame must end with two newlines.
 	if !bytes.HasSuffix(frame, []byte("\n\n")) {
 		t.Fatalf("frame does not end with two newlines: %q", frame)
@@ -377,12 +391,11 @@ func TestSSENormalizer_PingAndErrorPassThrough(t *testing.T) {
 	chunk := []byte("event: ping\ndata: {}\n\n" +
 		"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n")
 	out := n.Process(chunk)
-	all := bytes.Join(out, nil)
-	if !bytes.Contains(all, []byte("event: ping")) {
-		t.Fatalf("ping not passed through: %q", all)
+	if !bytes.Contains(out, []byte("event: ping")) {
+		t.Fatalf("ping not passed through: %q", out)
 	}
-	if !bytes.Contains(all, []byte("event: error")) {
-		t.Fatalf("error not passed through: %q", all)
+	if !bytes.Contains(out, []byte("event: error")) {
+		t.Fatalf("error not passed through: %q", out)
 	}
 }
 
@@ -458,10 +471,11 @@ func TestParseSSEEvents_MultiLineData(t *testing.T) {
 		out := n.Process(chunk)
 		flush := n.Flush()
 		if len(flush) != 0 {
-			t.Fatalf("Flush should produce nothing, got %d chunks", len(flush))
+			t.Fatalf("Flush should produce nothing, got %d bytes", len(flush))
 		}
-		if len(out) < 6 {
-			t.Fatalf("expected at least 6 output chunks, got %d", len(out))
+		frames := splitFrames(out)
+		if len(frames) < 6 {
+			t.Fatalf("expected at least 6 output frames, got %d", len(frames))
 		}
 	})
 }
@@ -486,10 +500,10 @@ func TestSSENormalizer_MultiLineDataPayload(t *testing.T) {
 	out := n.Process(chunk)
 	flush := n.Flush()
 	if len(flush) != 0 {
-		t.Fatalf("Flush should produce nothing, got %d chunks", len(flush))
+		t.Fatalf("Flush should produce nothing, got %d bytes", len(flush))
 	}
 
-	all := bytes.Join(out, nil)
+	all := out
 	if !bytes.Contains(all, []byte("content_block_delta")) {
 		t.Fatalf("missing content_block_delta in output: %q", all)
 	}

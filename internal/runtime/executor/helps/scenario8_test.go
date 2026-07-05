@@ -204,7 +204,7 @@ func TestScenario8_Stream_ToolUseEventOrder(t *testing.T) {
 
 	out1 := normalizer.Process(chunk1)
 	fmt.Println("--- Chunk 1: message_start + text block + tool_use start ---")
-	for _, o := range out1 {
+	for _, o := range splitFrames(out1) {
 		fmt.Printf("  %s", visualizeSSEFrame(o))
 	}
 
@@ -217,7 +217,7 @@ func TestScenario8_Stream_ToolUseEventOrder(t *testing.T) {
 
 	out2 := normalizer.Process(chunk2)
 	fmt.Println("\n--- Chunk 2: tool_use input_json_delta ---")
-	for _, o := range out2 {
+	for _, o := range splitFrames(out2) {
 		fmt.Printf("  %s", visualizeSSEFrame(o))
 	}
 
@@ -232,7 +232,7 @@ func TestScenario8_Stream_ToolUseEventOrder(t *testing.T) {
 
 	out3 := normalizer.Process(chunk3)
 	fmt.Println("\n--- Chunk 3: tool_use stop + message_delta + message_stop ---")
-	for _, o := range out3 {
+	for _, o := range splitFrames(out3) {
 		fmt.Printf("  %s", visualizeSSEFrame(o))
 	}
 
@@ -240,17 +240,20 @@ func TestScenario8_Stream_ToolUseEventOrder(t *testing.T) {
 	flushOut := normalizer.Flush()
 	if len(flushOut) > 0 {
 		fmt.Println("\n--- Flush (补发事件) ---")
-		for _, o := range flushOut {
+		for _, o := range splitFrames(flushOut) {
 			fmt.Printf("  %s", visualizeSSEFrame(o))
 		}
 	} else {
 		fmt.Println("\n--- Flush: 无补发事件(流完整) ---")
 	}
 
-	// Collect all output and verify event order
-	allOut := append(append(out1, out2...), out3...)
-	allOut = append(allOut, flushOut...)
-	joined := bytes.Join(allOut, nil)
+	// Collect all output and verify event order. Process/Flush now return
+	// concatenated frames per call, so a plain []byte concatenation is enough.
+	joined := make([]byte, 0, len(out1)+len(out2)+len(out3)+len(flushOut))
+	joined = append(joined, out1...)
+	joined = append(joined, out2...)
+	joined = append(joined, out3...)
+	joined = append(joined, flushOut...)
 
 	// Parse events
 	events := parseFramesForTest(joined)
@@ -332,8 +335,10 @@ func TestScenario8_Stream_MisorderedMessageDelta(t *testing.T) {
 
 	out := normalizer.Process(chunk)
 	flushOut := normalizer.Flush()
-	allOut := append(out, flushOut...)
-	joined := bytes.Join(allOut, nil)
+	// Process/Flush now return a single concatenated frame per call; join them.
+	joined := make([]byte, 0, len(out)+len(flushOut))
+	joined = append(joined, out...)
+	joined = append(joined, flushOut...)
 	events := parseFramesForTest(joined)
 
 	fmt.Printf("--- 事件序列(%d 个事件)---\n", len(events))

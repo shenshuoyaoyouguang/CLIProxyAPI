@@ -41,7 +41,7 @@ func TestCompliance_CRLFStreamNoDuplicateNewlines(t *testing.T) {
 
 	out := n.Process(chunk)
 	flush := n.Flush()
-	all := bytes.Join(append(out, flush...), nil)
+	all := append(append([]byte(nil), out...), flush...)
 
 	// No residual \r.
 	if bytes.Contains(all, []byte("\r")) {
@@ -77,7 +77,7 @@ func TestCompliance_MessageDeltaBufferedUntilContentBlockStop(t *testing.T) {
 
 	out := n.Process(chunk)
 	flush := n.Flush()
-	all := bytes.Join(append(out, flush...), nil)
+	all := append(append([]byte(nil), out...), flush...)
 
 	cbStopIdx := bytes.Index(all, []byte("event: content_block_stop"))
 	mdIdx := bytes.Index(all, []byte("event: message_delta"))
@@ -113,7 +113,7 @@ func TestCompliance_MessageStopBufferedUntilMessageDelta(t *testing.T) {
 
 	out := n.Process(chunk)
 	flush := n.Flush()
-	all := bytes.Join(append(out, flush...), nil)
+	all := append(append([]byte(nil), out...), flush...)
 
 	// Verify order: content_block_stop -> message_delta -> message_stop
 	cbStopIdx := bytes.Index(all, []byte("event: content_block_stop"))
@@ -131,7 +131,7 @@ func TestCompliance_MessageStopBufferedUntilMessageDelta(t *testing.T) {
 	}
 	// Flush should produce nothing — stream is complete.
 	if len(flush) != 0 {
-		t.Errorf("Flush should produce nothing for complete stream, got %d chunks", len(flush))
+		t.Errorf("Flush should produce nothing for complete stream, got %d bytes", len(flush))
 	}
 }
 
@@ -153,7 +153,7 @@ func TestCompliance_DuplicateMessageDeltaDeduplicated(t *testing.T) {
 
 	out := n.Process(chunk)
 	flush := n.Flush()
-	all := bytes.Join(append(out, flush...), nil)
+	all := append(append([]byte(nil), out...), flush...)
 
 	count := strings.Count(string(all), "event: message_delta")
 	if count != 1 {
@@ -161,7 +161,7 @@ func TestCompliance_DuplicateMessageDeltaDeduplicated(t *testing.T) {
 	}
 	// Flush should not re-emit message_delta.
 	if len(flush) != 0 {
-		t.Errorf("Flush should produce nothing, got %d chunks: %q", len(flush), flush)
+		t.Errorf("Flush should produce nothing, got %d bytes: %q", len(flush), flush)
 	}
 }
 
@@ -177,8 +177,7 @@ func TestCompliance_FlushDefaultStopReasonEndTurn(t *testing.T) {
 			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0}\n\n" +
 			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0}\n\n")
 	_ = n.Process(chunk)
-	flush := n.Flush()
-	all := bytes.Join(flush, nil)
+	all := n.Flush()
 
 	if !bytes.Contains(all, []byte(`"stop_reason":"end_turn"`)) {
 		t.Errorf("Flush should use end_turn as default stop_reason, got: %q", all)
@@ -343,10 +342,9 @@ func TestCompliance_ReleaseReadyMessageStopSetsFlag(t *testing.T) {
 		t.Errorf("Flush should produce nothing, got %d chunks: %q", len(flush), flush)
 	}
 	// Exactly one message_stop in output.
-	all := bytes.Join(out, nil)
-	count := strings.Count(string(all), "event: message_stop")
+	count := strings.Count(string(out), "event: message_stop")
 	if count != 1 {
-		t.Errorf("expected 1 message_stop, got %d: %q", count, all)
+		t.Errorf("expected 1 message_stop, got %d: %q", count, out)
 	}
 }
 
@@ -370,7 +368,7 @@ func TestCompliance_MessageDeltaInStopBranchSetsFlag(t *testing.T) {
 
 	out := n.Process(chunk)
 	flush := n.Flush()
-	all := bytes.Join(append(out, flush...), nil)
+	all := append(out, flush...)
 
 	// Exactly one message_delta.
 	deltaCount := strings.Count(string(all), "event: message_delta")
