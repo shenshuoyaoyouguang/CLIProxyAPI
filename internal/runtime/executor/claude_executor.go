@@ -547,41 +547,175 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 		}()
 
-		// If the response target is Claude, directly forward complete SSE events without translation.
+		// retryBodyForStream is a mutable copy used when degrading effort on retry.
+		retryBodyForStream := bodyForUpstream
+		needReSign := oauthToken || experimentalCCHSigningEnabled(e.cfg, auth)
+
+		// Define a helper to make a retry HTTP request with degraded effort.
+		// Returns the new response body and an error.
+		retryRequest := func() (io.ReadCloser, error) {
+			retryBodyForStream = degradeReasoningForRetry(retryBodyForStream)
+			reporter.SetTranslatedReasoningEffort(retryBodyForStream, to.String())
+			log.WithFields(log.Fields{
+				"provider": e.Identifier(),
+				"model":    baseModel,
+			}).Debug("claude executor: retrying stream after unexpected EOF with degraded reasoning |")
+
+			// Re-sign if CCH signing was active.
+			if needReSign {
+				retryBodyForStream = signAnthropicMessagesBody(retryBodyForStream)
+			}
+
+			httpReq2, errReq2 := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(retryBodyForStream))
+			if errReq2 != nil {
+				return nil, errReq2
+			}
+			httpReq2.Header = httpReq.Header.Clone()
+
+			helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+				URL:       url,
+				Method:    http.MethodPost,
+				Headers:   httpReq2.Header.Clone(),
+				Body:      retryBodyForStream,
+				Provider:  e.Identifier(),
+				AuthID:    authID,
+				AuthLabel: authLabel,
+				AuthType:  authType,
+				AuthValue: authValue,
+			})
+
+			httpClient2 := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
+			httpClient2 = reporter.TrackHTTPClient(httpClient2)
+			httpResp2, errDo2 := httpClient2.Do(httpReq2)
+			if errDo2 != nil {
+				return nil, errDo2
+			}
+			if httpResp2.StatusCode < 200 || httpResp2.StatusCode >= 300 {
+				_ = httpResp2.Body.Close()
+				return nil, fmt.Errorf("retry returned status %d", httpResp2.StatusCode)
+			}
+			decodedBody2, errDec2 := decodeResponseBody(httpResp2.Body, httpResp2.Header.Get("Content-Encoding"))
+			if errDec2 != nil {
+				_ = httpResp2.Body.Close()
+				return nil, errDec2
+			}
+			return decodedBody2, nil
+		}
+
+		// If the response target is Claude, directly forward the SSE stream without translation.
 		if responseFormat == to {
+			for attempt := 0; attempt < 2; attempt++ {
+				if attempt > 0 {
+					newBody, retryErr := retryRequest()
+					if retryErr != nil {
+						helps.RecordAPIResponseError(ctx, e.cfg, retryErr)
+						reporter.PublishFailure(ctx, retryErr)
+						select {
+						case out <- cliproxyexecutor.StreamChunk{Err: retryErr}:
+						case <-ctx.Done():
+						}
+						return
+					}
+					_ = decodedBody.Close()
+					decodedBody = newBody
+				}
+
+				gotSSEData := false
+				scanner := bufio.NewScanner(decodedBody)
+				scanner.Buffer(nil, 52_428_800) // 50MB
+			passthroughLoop:
+				for scanner.Scan() {
+					gotSSEData = true
+					line := scanner.Bytes()
+					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+					if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
+						reporter.Publish(ctx, detail)
+					}
+					line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
+					// Forward the line as-is to preserve SSE format
+					cloned := make([]byte, len(line)+1)
+					copy(cloned, line)
+					cloned[len(line)] = '\n'
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: cloned}:
+					case <-ctx.Done():
+						break passthroughLoop
+					}
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				if errScan := scanner.Err(); errScan != nil {
+					if attempt == 0 && isRetryableStreamDisconnect(errScan, gotSSEData) {
+						continue // retry with degraded effort
+					}
+					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+					reporter.PublishFailure(ctx, errScan)
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+					case <-ctx.Done():
+					}
+				}
+				return
+			}
+			return
+		}
+
+		// For other formats, use translation
+		var param any
+		for attempt := 0; attempt < 2; attempt++ {
+			if attempt > 0 {
+				newBody, retryErr := retryRequest()
+				if retryErr != nil {
+					helps.RecordAPIResponseError(ctx, e.cfg, retryErr)
+					reporter.PublishFailure(ctx, retryErr)
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Err: retryErr}:
+					case <-ctx.Done():
+					}
+					return
+				}
+				_ = decodedBody.Close()
+				decodedBody = newBody
+			}
+
+			gotSSEData := false
 			scanner := bufio.NewScanner(decodedBody)
 			scanner.Buffer(nil, 52_428_800) // 50MB
-			var event bytes.Buffer
-			flushEvent := func() bool {
-				if event.Len() == 0 {
-					return true
-				}
-				cloned := bytes.Clone(event.Bytes())
-				event.Reset()
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: cloned}:
-					return true
-				case <-ctx.Done():
-					return false
-				}
-			}
+		translateLoop:
 			for scanner.Scan() {
+				gotSSEData = true
 				line := scanner.Bytes()
 				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 				if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 					reporter.Publish(ctx, detail)
 				}
 				line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
-				event.Write(line)
-				event.WriteByte('\n')
-				if len(bytes.TrimSpace(line)) == 0 && !flushEvent() {
-					return
+				chunks := sdktranslator.TranslateStream(
+					ctx,
+					to,
+					responseFormat,
+					req.Model,
+					opts.OriginalRequest,
+					bodyForTranslation,
+					bytes.Clone(line),
+					&param,
+				)
+				for i := range chunks {
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+					case <-ctx.Done():
+						break translateLoop
+					}
 				}
 			}
-			if !flushEvent() {
+			if ctx.Err() != nil {
 				return
 			}
 			if errScan := scanner.Err(); errScan != nil {
+				if attempt == 0 && isRetryableStreamDisconnect(errScan, gotSSEData) {
+					continue // retry with degraded effort
+				}
 				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 				reporter.PublishFailure(ctx, errScan)
 				select {
@@ -590,44 +724,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				}
 			}
 			return
-		}
-
-		// For other formats, use translation
-		scanner := bufio.NewScanner(decodedBody)
-		scanner.Buffer(nil, 52_428_800) // 50MB
-		var param any
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
-			line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
-			chunks := sdktranslator.TranslateStream(
-				ctx,
-				to,
-				responseFormat,
-				req.Model,
-				opts.OriginalRequest,
-				bodyForTranslation,
-				bytes.Clone(line),
-				&param,
-			)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
-			}
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

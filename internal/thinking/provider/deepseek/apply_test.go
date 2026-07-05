@@ -12,12 +12,12 @@ import (
 // enabled, suitable for exercising the main Apply path.
 func newDeepSeekModelInfo() *registry.ModelInfo {
 	return &registry.ModelInfo{
-		ID:         "deepseek-chat",
-		Type:       "deepseek",
+		ID:          "deepseek-chat",
+		Type:        "deepseek",
 		UserDefined: false,
 		Thinking: &registry.ThinkingSupport{
-			Min:  0,
-			Max:  64512,
+			Min:    0,
+			Max:    64512,
 			Levels: []string{"low", "medium", "high", "max"},
 		},
 	}
@@ -31,8 +31,8 @@ func newUserDefinedModelInfo() *registry.ModelInfo {
 		Type:        "deepseek",
 		UserDefined: true,
 		Thinking: &registry.ThinkingSupport{
-			Min:  0,
-			Max:  64512,
+			Min:    0,
+			Max:    64512,
 			Levels: []string{"low", "medium", "high", "max"},
 		},
 	}

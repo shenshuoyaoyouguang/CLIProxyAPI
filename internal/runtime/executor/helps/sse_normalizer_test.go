@@ -8,10 +8,10 @@ import (
 
 func TestSSEEventType(t *testing.T) {
 	cases := []struct {
-		name  string
-		line  string
-		want  string
-		ok    bool
+		name string
+		line string
+		want string
+		ok   bool
 	}{
 		{
 			name: "single space prefix",

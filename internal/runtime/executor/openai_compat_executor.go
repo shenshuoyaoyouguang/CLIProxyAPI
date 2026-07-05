@@ -528,6 +528,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		// Retry once when the upstream disconnected before any SSE data arrived.
 		if isRetryableStreamDisconnect(errScan, gotSSEData) {
 			retryBody = degradeReasoningForRetry(retryBody)
+			reporter.SetTranslatedReasoningEffort(retryBody, to.String())
 			log.WithFields(log.Fields{
 				"provider": e.Identifier(),
 				"model":    baseModel,

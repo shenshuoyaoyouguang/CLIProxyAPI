@@ -25,24 +25,24 @@
     "name": "default"
   },
   "cost": {
-    "total_cost_usd": 5.054563,
-    "total_duration_ms": 1552809,
-    "total_api_duration_ms": 1155550,
+    "total_cost_usd": 7.446921499999998,
+    "total_duration_ms": 1759997,
+    "total_api_duration_ms": 1343497,
     "total_lines_added": 27,
-    "total_lines_removed": 45
+    "total_lines_removed": 76
   },
   "context_window": {
-    "total_input_tokens": 77644,
-    "total_output_tokens": 353,
+    "total_input_tokens": 90959,
+    "total_output_tokens": 309,
     "context_window_size": 1000000,
     "current_usage": {
-      "input_tokens": 913,
-      "output_tokens": 353,
-      "cache_creation_input_tokens": 11510,
-      "cache_read_input_tokens": 65221
+      "input_tokens": 0,
+      "output_tokens": 309,
+      "cache_creation_input_tokens": 13644,
+      "cache_read_input_tokens": 77315
     },
-    "used_percentage": 8,
-    "remaining_percentage": 92
+    "used_percentage": 9,
+    "remaining_percentage": 91
   },
   "exceeds_200k_tokens": false,
   "fast_mode": false,
