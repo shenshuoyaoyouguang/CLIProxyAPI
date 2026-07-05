@@ -19,6 +19,9 @@ func rewriteSSEPayloadLines(payload []byte, targetModel string) []byte {
 	lines := bytes.Split(payload, []byte("\n"))
 	out := make([][]byte, 0, len(lines))
 	for _, line := range lines {
+		// Trim trailing CR/LF introduced by splitting on "\n" so CRLF-terminated
+		// SSE lines do not leak a stray '\r' into prefix checks or JSON parsing.
+		line = bytes.TrimRight(line, "\r\n")
 		prefix, jsonData, ok := extractSSEDataLine(line)
 		if ok && len(jsonData) > 0 && jsonData[0] == '{' && gjson.ValidBytes(jsonData) {
 			rewritten := rewriteModelInResponse(jsonData, targetModel)
@@ -127,6 +130,9 @@ func (r *StreamRewriter) RewriteChunk(chunk []byte) []byte {
 	skipBlanks := false
 
 	for _, line := range lines {
+		// Trim trailing CR/LF introduced by splitting on "\n" so CRLF-terminated
+		// SSE lines do not leak a stray '\r' into prefix checks or JSON parsing.
+		line = bytes.TrimRight(line, "\r\n")
 		if len(line) == 0 && skipBlanks {
 			continue
 		}
@@ -186,7 +192,8 @@ func (r *StreamRewriter) RewriteChunk(chunk []byte) []byte {
 func extractLastDataPayload(chunk []byte) []byte {
 	lines := bytes.Split(chunk, []byte("\n"))
 	for i := len(lines) - 1; i >= 0; i-- {
-		if _, jsonData, found := extractSSEDataLine(lines[i]); found && len(jsonData) > 0 {
+		line := bytes.TrimRight(lines[i], "\r\n")
+		if _, jsonData, found := extractSSEDataLine(line); found && len(jsonData) > 0 {
 			return jsonData
 		}
 	}
