@@ -67,14 +67,14 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
 		// Only send message_stop if we have actually output content
 		if (*param).(*Params).HasContent {
-			return [][]byte{translatorcommon.AppendSSEEventString(nil, "message_stop", `{"type":"message_stop"}`, 3)}
+			return [][]byte{translatorcommon.AppendSSEEventString(nil, "message_stop", `{"type":"message_stop"}`, translatorcommon.SSEStandardTrailingNewlines)}
 		}
 		return [][]byte{}
 	}
 
 	output := make([]byte, 0, 1024)
 	appendEvent := func(event, payload string) {
-		output = translatorcommon.AppendSSEEventString(output, event, payload, 3)
+		output = translatorcommon.AppendSSEEventString(output, event, payload, translatorcommon.SSEStandardTrailingNewlines)
 	}
 	appendSignatureDelta := func(signature string) {
 		if signature == "" || (*param).(*Params).ResponseType != 2 {

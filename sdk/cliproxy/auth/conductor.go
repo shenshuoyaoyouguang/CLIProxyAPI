@@ -4251,7 +4251,9 @@ func isRequestInvalidError(err error) bool {
 		msg := err.Error()
 		return strings.Contains(msg, "invalid_request_error") ||
 			strings.Contains(msg, "INVALID_ARGUMENT") ||
-			strings.Contains(msg, "FAILED_PRECONDITION")
+			strings.Contains(msg, "FAILED_PRECONDITION") ||
+			strings.Contains(msg, "context_length_exceeded") ||
+			strings.Contains(msg, "max_context_window")
 	case http.StatusNotFound:
 		return isRequestScopedNotFoundMessage(err.Error())
 	case http.StatusUnprocessableEntity:

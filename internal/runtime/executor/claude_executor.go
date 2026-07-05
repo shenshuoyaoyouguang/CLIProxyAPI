@@ -478,6 +478,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, true, extraBetas, e.cfg); errHeaders != nil {
 		return nil, errHeaders
 	}
+	// Idempotency key ensures retries reference the same logical request,
+	// allowing conformant upstreams to deduplicate side effects.
+	idempotencyKey := helps.GenerateIdempotencyKey(ctx)
+	helps.ApplyIdempotencyKey(httpReq, idempotencyKey)
+	ctx = helps.ContextWithIdempotencyKey(ctx, idempotencyKey)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -551,18 +556,30 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		retryBodyForStream := bodyForUpstream
 		needReSign := oauthToken || experimentalCCHSigningEnabled(e.cfg, auth)
 
-		// Define a helper to make a retry HTTP request with degraded effort.
+		// Define a helper to make a retry HTTP request.
+		// retryIdx is the 0-based retry index (0 = first retry). When it falls
+		// under the DegradeAfterAttempts threshold, the request body is reused
+		// as-is so transient upstream disconnects have a chance to recover
+		// before the caller's reasoning_effort is silently lowered.
 		// Returns the new response body and an error.
-		retryRequest := func() (io.ReadCloser, error) {
-			retryBodyForStream = degradeReasoningForRetry(retryBodyForStream)
+		retryRequest := func(retryIdx int, cfg helps.StreamRetryConfig) (io.ReadCloser, error) {
+			degraded := false
+			if helps.ShouldDegradeReasoning(retryIdx, cfg) {
+				retryBodyForStream = degradeReasoningForRetry(retryBodyForStream)
+				degraded = true
+			}
 			reporter.SetTranslatedReasoningEffort(retryBodyForStream, to.String())
 			log.WithFields(log.Fields{
 				"provider": e.Identifier(),
 				"model":    baseModel,
-			}).Debug("claude executor: retrying stream after unexpected EOF with degraded reasoning |")
+				"degraded": degraded,
+				"retry":    retryIdx,
+			}).Debug("claude executor: retrying stream |")
 
-			// Re-sign if CCH signing was active.
-			if needReSign {
+			// Re-sign only when the body actually changed (degrade path) and CCH
+			// signing is active. Reusing the same body means the previous signature
+			// is still valid.
+			if degraded && needReSign {
 				retryBodyForStream = signAnthropicMessagesBody(retryBodyForStream)
 			}
 
@@ -602,11 +619,20 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			return decodedBody2, nil
 		}
 
+		// Configure retry for stream errors.
+		retryCfg := helps.DefaultStreamRetryConfig()
+		if e.cfg.Streaming.StreamRetryCount > 0 {
+			retryCfg.MaxAttempts = e.cfg.Streaming.StreamRetryCount
+		}
+		if e.cfg.Streaming.StreamRetryDegradeAfter != nil {
+			retryCfg.DegradeAfterAttempts = *e.cfg.Streaming.StreamRetryDegradeAfter
+		}
+
 		// If the response target is Claude, directly forward the SSE stream without translation.
 		if responseFormat == to {
-			for attempt := 0; attempt < 2; attempt++ {
+			for attempt := 0; attempt < retryCfg.MaxAttempts; attempt++ {
 				if attempt > 0 {
-					newBody, retryErr := retryRequest()
+					newBody, retryErr := retryRequest(attempt-1, retryCfg)
 					if retryErr != nil {
 						helps.RecordAPIResponseError(ctx, e.cfg, retryErr)
 						reporter.PublishFailure(ctx, retryErr)
@@ -646,7 +672,25 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					return
 				}
 				if errScan := scanner.Err(); errScan != nil {
-					if attempt == 0 && isRetryableStreamDisconnect(errScan, gotSSEData) {
+					decision := helps.ClassifyStreamError(errScan, gotSSEData)
+					if decision != helps.RetryNone && attempt < retryCfg.MaxAttempts-1 {
+						if decision == helps.RetryWithBackoff {
+							backoff := helps.ExponentialBackoffWithJitter(attempt, retryCfg)
+							log.WithFields(log.Fields{
+								"provider": e.Identifier(),
+								"model":    baseModel,
+							}).Debugf("claude executor: retrying stream (attempt %d/%d, backoff %v) after error |", attempt+1, retryCfg.MaxAttempts, backoff)
+							select {
+							case <-time.After(backoff):
+							case <-ctx.Done():
+								return
+							}
+						} else {
+							log.WithFields(log.Fields{
+								"provider": e.Identifier(),
+								"model":    baseModel,
+							}).Debugf("claude executor: retrying stream (attempt %d/%d, immediate) after error |", attempt+1, retryCfg.MaxAttempts)
+						}
 						continue // retry with degraded effort
 					}
 					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
@@ -663,9 +707,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 		// For other formats, use translation
 		var param any
-		for attempt := 0; attempt < 2; attempt++ {
+		for attempt := 0; attempt < retryCfg.MaxAttempts; attempt++ {
 			if attempt > 0 {
-				newBody, retryErr := retryRequest()
+				newBody, retryErr := retryRequest(attempt-1, retryCfg)
 				if retryErr != nil {
 					helps.RecordAPIResponseError(ctx, e.cfg, retryErr)
 					reporter.PublishFailure(ctx, retryErr)
@@ -713,7 +757,25 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				return
 			}
 			if errScan := scanner.Err(); errScan != nil {
-				if attempt == 0 && isRetryableStreamDisconnect(errScan, gotSSEData) {
+				decision := helps.ClassifyStreamError(errScan, gotSSEData)
+				if decision != helps.RetryNone && attempt < retryCfg.MaxAttempts-1 {
+					if decision == helps.RetryWithBackoff {
+						backoff := helps.ExponentialBackoffWithJitter(attempt, retryCfg)
+						log.WithFields(log.Fields{
+							"provider": e.Identifier(),
+							"model":    baseModel,
+						}).Debugf("claude executor: retrying stream (attempt %d/%d, backoff %v) after error |", attempt+1, retryCfg.MaxAttempts, backoff)
+						select {
+						case <-time.After(backoff):
+						case <-ctx.Done():
+							return
+						}
+					} else {
+						log.WithFields(log.Fields{
+							"provider": e.Identifier(),
+							"model":    baseModel,
+						}).Debugf("claude executor: retrying stream (attempt %d/%d, immediate) after error |", attempt+1, retryCfg.MaxAttempts)
+					}
 					continue // retry with degraded effort
 				}
 				helps.RecordAPIResponseError(ctx, e.cfg, errScan)

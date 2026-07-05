@@ -67,4 +67,18 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+
+	// StreamRetryCount controls the maximum number of retry attempts for a stream that
+	// disconnects before any SSE data is received. Each retry applies exponential backoff
+	// with jitter and degrades reasoning_effort if applicable.
+	// <= 0 uses the default of 2. Set to 1 to disable retries (only the initial attempt).
+	StreamRetryCount int `yaml:"stream-retry-count,omitempty" json:"stream-retry-count,omitempty"`
+
+	// StreamRetryDegradeAfter is the number of retry attempts to keep the
+	// original request body (backoff only, no reasoning_effort change) before
+	// starting to degrade. 0 = degrade on the first retry (legacy). 1 = first
+	// retry uses original body, later retries degrade. Negative values are
+	// treated as 0. Unset (nil) means the executor uses the default from
+	// helps.DefaultStreamRetryConfig (currently 1).
+	StreamRetryDegradeAfter *int `yaml:"stream-retry-degrade-after,omitempty" json:"stream-retry-degrade-after,omitempty"`
 }
