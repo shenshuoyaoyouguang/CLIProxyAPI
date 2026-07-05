@@ -164,49 +164,55 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	return &config, nil
 }
 
-// convertAutoToMidRange converts ModeAuto to a mid-range value when dynamic is not allowed.
+// convertAutoToMidRange converts ModeAuto to a fixed high-end value when dynamic is not allowed.
 //
 // This function handles the case where a model does not support dynamic/auto thinking.
-// The auto mode is silently converted to a fixed value based on model capability:
-//   - Level-only models: convert to ModeLevel with LevelMedium
-//   - Budget models: convert to ModeBudget with mid = (Min + Max) / 2
+// The auto mode is silently converted to the highest supported value so that users
+// who request "auto" get the model's best reasoning capability:
+//   - Models with Levels: convert to ModeLevel with the highest supported level
+//   - Budget-only models: convert to ModeBudget with Max budget
 //
 // Logging:
 //   - Debug level when conversion occurs
 //   - Fields: original_mode, clamped_to, reason
 func convertAutoToMidRange(config ThinkingConfig, support *registry.ThinkingSupport, provider, model string) ThinkingConfig {
-	// For level-only models (has Levels but no Min/Max range), use ModeLevel with medium
-	if len(support.Levels) > 0 && support.Min == 0 && support.Max == 0 {
+	// Prefer level path: models with levels get the highest supported level.
+	if len(support.Levels) > 0 {
+		highest := ThinkingLevel(support.Levels[len(support.Levels)-1])
 		config.Mode = ModeLevel
-		config.Level = LevelMedium
+		config.Level = highest
 		config.Budget = 0
 		log.WithFields(log.Fields{
 			"provider":      provider,
 			"model":         model,
 			"original_mode": "auto",
-			"clamped_to":    string(LevelMedium),
-		}).Debug("thinking: mode converted, dynamic not allowed, using medium level |")
+			"clamped_to":    string(highest),
+		}).Debug("thinking: mode converted, dynamic not allowed, using highest level |")
 		return config
 	}
 
-	// For budget models, use mid-range budget
-	mid := (support.Min + support.Max) / 2
-	if mid <= 0 && support.ZeroAllowed {
-		config.Mode = ModeNone
-		config.Budget = 0
-	} else if mid <= 0 {
+	// Budget-only model: use Max budget
+	if support.Max > 0 {
 		config.Mode = ModeBudget
-		config.Budget = support.Min
-	} else {
-		config.Mode = ModeBudget
-		config.Budget = mid
+		config.Budget = support.Max
+		log.WithFields(log.Fields{
+			"provider":      provider,
+			"model":         model,
+			"original_mode": "auto",
+			"clamped_to":    support.Max,
+		}).Debug("thinking: mode converted, dynamic not allowed, using max budget |")
+		return config
 	}
+
+	// Safety fallback: disable thinking (should not reach here for well-defined models)
+	config.Mode = ModeNone
+	config.Budget = 0
 	log.WithFields(log.Fields{
 		"provider":      provider,
 		"model":         model,
 		"original_mode": "auto",
-		"clamped_to":    config.Budget,
-	}).Debug("thinking: mode converted, dynamic not allowed |")
+		"clamped_to":    "none",
+	}).Debug("thinking: mode converted, dynamic not allowed, no levels or budget defined |")
 	return config
 }
 

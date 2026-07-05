@@ -94,7 +94,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "minimal",
 			expectErr:   false,
 		},
-		// Case 5: Level auto → DynamicAllowed=false → medium (mid-range)
+		// Case 5: Level auto → DynamicAllowed=false → high (highest level)
 		{
 			name:        "5",
 			from:        "openai",
@@ -102,7 +102,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "level-model(auto)",
 			inputJSON:   `{"model":"level-model(auto)","messages":[{"role":"user","content":"hi"}]}`,
 			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 6: No suffix from gemini → injected default → medium
@@ -149,7 +149,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "minimal",
 			expectErr:   false,
 		},
-		// Case 10: Budget -1 → auto → DynamicAllowed=false → medium (mid-range)
+		// Case 10: Budget -1 → auto → DynamicAllowed=false → high (highest level)
 		{
 			name:        "10",
 			from:        "gemini",
@@ -157,7 +157,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "level-model(-1)",
 			inputJSON:   `{"model":"level-model(-1)","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
 			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 11: Claude source no suffix → passthrough (no thinking)
@@ -203,7 +203,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "minimal",
 			expectErr:   false,
 		},
-		// Case 15: Budget -1 → auto → DynamicAllowed=false → medium (mid-range)
+		// Case 15: Budget -1 → auto → DynamicAllowed=false → high (highest level)
 		{
 			name:        "15",
 			from:        "claude",
@@ -211,7 +211,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "level-model(-1)",
 			inputJSON:   `{"model":"level-model(-1)","messages":[{"role":"user","content":"hi"}]}`,
 			expectField: "reasoning_effort",
-			expectValue: "medium",
+			expectValue: "high",
 			expectErr:   false,
 		},
 
@@ -524,7 +524,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "disabled",
 			expectErr:   false,
 		},
-		// Case 42: Effort auto → DynamicAllowed=false → 64512 (mid-range)
+		// Case 42: Effort auto → DynamicAllowed=false → 128000 (max budget)
 		{
 			name:        "42",
 			from:        "openai",
@@ -532,7 +532,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "claude-budget-model(auto)",
 			inputJSON:   `{"model":"claude-budget-model(auto)","messages":[{"role":"user","content":"hi"}]}`,
 			expectField: "thinking.budget_tokens",
-			expectValue: "64512",
+			expectValue: "128000",
 			expectErr:   false,
 		},
 		// Case 43: Gemini source no suffix → passthrough
@@ -578,7 +578,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "disabled",
 			expectErr:   false,
 		},
-		// Case 47: Budget -1 → auto → DynamicAllowed=false → 64512 (mid-range)
+		// Case 47: Budget -1 → auto → DynamicAllowed=false → 128000 (max budget)
 		{
 			name:        "47",
 			from:        "gemini",
@@ -586,7 +586,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			model:       "claude-budget-model(-1)",
 			inputJSON:   `{"model":"claude-budget-model(-1)","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
 			expectField: "thinking.budget_tokens",
-			expectValue: "64512",
+			expectValue: "128000",
 			expectErr:   false,
 		},
 
@@ -1152,7 +1152,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "minimal",
 			expectErr:   false,
 		},
-		// Case 5: reasoning_effort=auto → medium (DynamicAllowed=false)
+		// Case 5: reasoning_effort=auto → high (DynamicAllowed=false)
 		{
 			name:        "5",
 			from:        "openai",
@@ -1160,7 +1160,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"auto"}`,
 			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 6: No param from gemini → injected default → medium
@@ -1207,7 +1207,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "minimal",
 			expectErr:   false,
 		},
-		// Case 10: thinkingBudget=-1 → medium (DynamicAllowed=false)
+		// Case 10: thinkingBudget=-1 → high (DynamicAllowed=false)
 		{
 			name:        "10",
 			from:        "gemini",
@@ -1215,7 +1215,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":-1}}}`,
 			expectField: "reasoning.effort",
-			expectValue: "medium",
+			expectValue: "high",
 			expectErr:   false,
 		},
 		// Case 11: Claude no param → passthrough (no thinking)
@@ -1261,7 +1261,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "minimal",
 			expectErr:   false,
 		},
-		// Case 15: thinking.budget_tokens=-1 → medium (DynamicAllowed=false)
+		// Case 15: thinking.budget_tokens=-1 → high (DynamicAllowed=false)
 		{
 			name:        "15",
 			from:        "claude",
@@ -1269,7 +1269,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "level-model",
 			inputJSON:   `{"model":"level-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":-1}}`,
 			expectField: "reasoning_effort",
-			expectValue: "medium",
+			expectValue: "high",
 			expectErr:   false,
 		},
 
@@ -1622,7 +1622,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "disabled",
 			expectErr:   false,
 		},
-		// Case 42: reasoning_effort=auto → 64512 (mid-range)
+		// Case 42: reasoning_effort=auto → 128000 (max budget)
 		{
 			name:        "42",
 			from:        "openai",
@@ -1630,7 +1630,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "claude-budget-model",
 			inputJSON:   `{"model":"claude-budget-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"auto"}`,
 			expectField: "thinking.budget_tokens",
-			expectValue: "64512",
+			expectValue: "128000",
 			expectErr:   false,
 		},
 		// Case 43: Gemini no param → passthrough
@@ -1676,7 +1676,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "disabled",
 			expectErr:   false,
 		},
-		// Case 47: thinkingBudget=-1 → 64512 (mid-range)
+		// Case 47: thinkingBudget=-1 → 128000 (max budget)
 		{
 			name:        "47",
 			from:        "gemini",
@@ -1684,7 +1684,7 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			model:       "claude-budget-model",
 			inputJSON:   `{"model":"claude-budget-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":-1}}}`,
 			expectField: "thinking.budget_tokens",
-			expectValue: "64512",
+			expectValue: "128000",
 			expectErr:   false,
 		},
 
