@@ -118,7 +118,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		// Only send final events if we have actually output content
 		if params.HasContent {
 			appendFinalEvents(params, &output, true)
-			output = translatorcommon.AppendSSEEventString(output, "message_stop", `{"type":"message_stop"}`, 3)
+			output = translatorcommon.AppendSSEEventString(output, "message_stop", `{"type":"message_stop"}`, translatorcommon.SSEStandardTrailingNewlines)
 			return [][]byte{output}
 		}
 		return [][]byte{}
@@ -126,7 +126,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	output := make([]byte, 0, 1024)
 	appendEvent := func(event, payload string) {
-		output = translatorcommon.AppendSSEEventString(output, event, payload, 3)
+		output = translatorcommon.AppendSSEEventString(output, event, payload, translatorcommon.SSEStandardTrailingNewlines)
 	}
 	webSearchStreamMode := shouldTranslateWebSearchGrounding(originalRequestRawJSON, requestRawJSON)
 	appendThinkingSignature := func(signature string) {
@@ -409,7 +409,7 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 	}
 
 	if params.ResponseType != 0 {
-		*output = translatorcommon.AppendSSEEventString(*output, "content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex), 3)
+		*output = translatorcommon.AppendSSEEventString(*output, "content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex), translatorcommon.SSEStandardTrailingNewlines)
 		params.ResponseType = 0
 	}
 
@@ -434,7 +434,7 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 			log.Warnf("antigravity claude response: failed to set cache_read_input_tokens: %v", err)
 		}
 	}
-	*output = translatorcommon.AppendSSEEventString(*output, "message_delta", string(delta), 3)
+	*output = translatorcommon.AppendSSEEventString(*output, "message_delta", string(delta), translatorcommon.SSEStandardTrailingNewlines)
 
 	params.HasSentFinalEvents = true
 }

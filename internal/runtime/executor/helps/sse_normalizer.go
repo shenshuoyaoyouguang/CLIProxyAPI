@@ -100,6 +100,9 @@ func parseSSEEvents(chunk []byte) []sseEvent {
 			if currentType != "" {
 				flush()
 			}
+			if !translatorcommon.IsKnownSSEEventType(et) {
+				log.Debugf("SSENormalizer: unknown event type in parseSSEEvents: %s", et)
+			}
 			currentType = et
 			continue
 		}
@@ -108,7 +111,21 @@ func parseSSEEvents(chunk []byte) []sseEvent {
 				// data line without a preceding event line; ignore.
 				continue
 			}
-			currentData = data
+			// Append data lines (W3C SSE spec: multiple data: lines are
+			// concatenated with U+000A LINE FEED between them).
+			//
+			// NOTE: When multiple data: lines produce a payload containing
+			// embedded '\n', downstream gjson.GetBytes calls (e.g. blockIndex,
+			// handleMessageDelta) only parse the first JSON object. Fields
+			// present only in subsequent objects are invisible to the normalizer's
+			// internal logic. This is acceptable because (a) the Anthropic SSE
+			// protocol never uses multi-line data, and (b) the full concatenated
+			// payload is preserved and correctly re-serialized by
+			// AppendSSEEventBytes which splits on '\n' into multiple data: lines.
+			if hasData {
+				currentData = append(currentData, '\n')
+			}
+			currentData = append(currentData, data...)
 			hasData = true
 			continue
 		}
@@ -186,20 +203,27 @@ func (n *SSENormalizer) Process(chunk []byte) [][]byte {
 // normalizer state. It mutates state and returns emitted frames.
 func (n *SSENormalizer) processEvent(ev sseEvent) [][]byte {
 	switch ev.Type {
-	case "message_start":
+	case translatorcommon.SSEEventMessageStart:
 		return n.handleMessageStart(ev)
-	case "content_block_start":
+	case translatorcommon.SSEEventContentBlockStart:
 		return n.handleContentBlockStart(ev)
-	case "content_block_delta":
+	case translatorcommon.SSEEventContentBlockDelta:
 		return n.handleContentBlockDelta(ev)
-	case "content_block_stop":
+	case translatorcommon.SSEEventContentBlockStop:
 		return n.handleContentBlockStop(ev)
-	case "message_delta":
+	case translatorcommon.SSEEventMessageDelta:
 		return n.handleMessageDelta(ev)
-	case "message_stop":
+	case translatorcommon.SSEEventMessageStop:
 		return n.handleMessageStop(ev)
-	case "ping", "error":
+	case translatorcommon.SSEEventPing, translatorcommon.SSEEventError:
 		// Pass through control events untouched.
+		return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+	case translatorcommon.SSEEventHeartbeat, translatorcommon.SSEEventDataUpdate:
+		// Extension events pass through untouched.
+		return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+	case translatorcommon.SSEEventErrorNotification:
+		// Error notification events pass through but are logged.
+		log.Debugf("SSENormalizer: error notification event: %s", ev.Data)
 		return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
 	default:
 		// Unknown event types are forwarded as-is to avoid dropping data
@@ -321,7 +345,7 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 				if isContentBlockEvent(ev.Type) {
 					continue
 				}
-				if ev.Type == "message_delta" {
+				if ev.Type == translatorcommon.SSEEventMessageDelta {
 					n.messageDeltaSent = true
 				}
 				out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
@@ -333,12 +357,12 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 				continue
 			}
 			switch ev.Type {
-			case "content_block_start":
+			case translatorcommon.SSEEventContentBlockStart:
 				idx := blockIndex(ev.Data)
 				n.activeBlocks[idx] = true
 				out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
 				progress = true
-			case "content_block_delta":
+			case translatorcommon.SSEEventContentBlockDelta:
 				idx := blockIndex(ev.Data)
 				if n.activeBlocks[idx] {
 					out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
@@ -346,7 +370,7 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 				} else {
 					kept = append(kept, ev)
 				}
-			case "content_block_stop":
+			case translatorcommon.SSEEventContentBlockStop:
 				idx := blockIndex(ev.Data)
 				if n.activeBlocks[idx] {
 					delete(n.activeBlocks, idx)
@@ -355,7 +379,7 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 				} else {
 					kept = append(kept, ev)
 				}
-			case "message_delta":
+			case translatorcommon.SSEEventMessageDelta:
 				// Only release message_delta after every active content_block
 				// has been stopped (protocol ordering requirement).
 				if len(n.activeBlocks) == 0 {
@@ -365,7 +389,7 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 				} else {
 					kept = append(kept, ev)
 				}
-			case "message_stop":
+			case translatorcommon.SSEEventMessageStop:
 				// Only release message_stop after message_delta has been
 				// emitted (protocol ordering requirement).
 				if n.messageDeltaSent {
@@ -402,7 +426,7 @@ func (n *SSENormalizer) Flush() [][]byte {
 	// deterministic output).
 	for _, idx := range sortedActiveBlockIndexes(n.activeBlocks) {
 		payload := []byte(`{"type":"content_block_stop","index":` + strconv.FormatInt(idx, 10) + `}`)
-		out = append(out, translatorcommon.AppendSSEEventBytes(nil, "content_block_stop", payload, 2))
+		out = append(out, translatorcommon.AppendSSEEventBytes(nil, translatorcommon.SSEEventContentBlockStop, payload, 2))
 	}
 	n.activeBlocks = map[int64]bool{}
 
@@ -414,12 +438,12 @@ func (n *SSENormalizer) Flush() [][]byte {
 			reason = "end_turn"
 		}
 		payload := buildMessageDeltaPayload(reason, n.usageInputTokens, n.usageOutputTokens)
-		out = append(out, translatorcommon.AppendSSEEventBytes(nil, "message_delta", payload, 2))
+		out = append(out, translatorcommon.AppendSSEEventBytes(nil, translatorcommon.SSEEventMessageDelta, payload, 2))
 		n.messageDeltaSent = true
 	}
 
 	if !n.messageStopSent {
-		out = append(out, translatorcommon.AppendSSEEventBytes(nil, "message_stop", []byte(`{"type":"message_stop"}`), 2))
+		out = append(out, translatorcommon.AppendSSEEventBytes(nil, translatorcommon.SSEEventMessageStop, []byte(`{"type":"message_stop"}`), 2))
 		n.messageStopSent = true
 	}
 
@@ -443,7 +467,7 @@ func blockIndex(data []byte) int64 {
 // content_block_* family.
 func isContentBlockEvent(t string) bool {
 	switch t {
-	case "content_block_start", "content_block_delta", "content_block_stop":
+	case translatorcommon.SSEEventContentBlockStart, translatorcommon.SSEEventContentBlockDelta, translatorcommon.SSEEventContentBlockStop:
 		return true
 	}
 	return false

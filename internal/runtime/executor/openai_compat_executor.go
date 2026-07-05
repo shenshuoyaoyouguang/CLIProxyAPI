@@ -386,6 +386,13 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("Cache-Control", "no-cache")
+
+	// Attach an idempotency key so retries against the same upstream
+	// request coalesce on servers that honor it. The key is generated once
+	// and reused across retry attempts below.
+	idemKey := helps.GenerateIdempotencyKey(ctx)
+	ctx = helps.ContextWithIdempotencyKey(ctx, idemKey)
+	helps.ApplyIdempotencyKey(httpReq, idemKey)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -523,14 +530,59 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 		errScan := readStream(httpResp.Body)
 
-		// Retry once when the upstream disconnected before any SSE data arrived.
-		if isRetryableStreamDisconnect(errScan, gotSSEData) {
-			retryBody = degradeReasoningForRetry(retryBody)
-			reporter.SetTranslatedReasoningEffort(retryBody, to.String())
-			log.WithFields(log.Fields{
-				"provider": e.Identifier(),
-				"model":    baseModel,
-			}).Debug("stream: retrying after unexpected EOF with degraded reasoning |")
+		// Configurable retry loop for stream errors before any SSE data arrived.
+		retryCfg := helps.DefaultStreamRetryConfig()
+		if e.cfg.Streaming.StreamRetryCount > 0 {
+			retryCfg.MaxAttempts = e.cfg.Streaming.StreamRetryCount
+		}
+		if e.cfg.Streaming.StreamRetryDegradeAfter != nil {
+			retryCfg.DegradeAfterAttempts = *e.cfg.Streaming.StreamRetryDegradeAfter
+		}
+
+		for attempt := 0; attempt < retryCfg.MaxAttempts; attempt++ {
+			decision := helps.ClassifyStreamError(errScan, gotSSEData)
+			if decision == helps.RetryNone {
+				break
+			}
+			// No more retries left after this attempt.
+			if attempt >= retryCfg.MaxAttempts-1 {
+				break
+			}
+
+			// Apply backoff delay.
+			if decision == helps.RetryWithBackoff {
+				backoff := helps.ExponentialBackoffWithJitter(attempt, retryCfg)
+				log.WithFields(log.Fields{
+					"provider": e.Identifier(),
+					"model":    baseModel,
+				}).Debugf("stream: retrying (attempt %d/%d, backoff %v) after error |", attempt+1, retryCfg.MaxAttempts, backoff)
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return
+				}
+			} else {
+				log.WithFields(log.Fields{
+					"provider": e.Identifier(),
+					"model":    baseModel,
+				}).Debugf("stream: retrying (attempt %d/%d, immediate) after error |", attempt+1, retryCfg.MaxAttempts)
+			}
+
+			if helps.ShouldDegradeReasoning(attempt, retryCfg) {
+				retryBody = degradeReasoningForRetry(retryBody)
+				reporter.SetTranslatedReasoningEffort(retryBody, to.String())
+				log.WithFields(log.Fields{
+					"provider": e.Identifier(),
+					"model":    baseModel,
+					"attempt":  attempt + 1,
+				}).Debug("stream: retrying with degraded reasoning_effort |")
+			} else {
+				log.WithFields(log.Fields{
+					"provider": e.Identifier(),
+					"model":    baseModel,
+					"attempt":  attempt + 1,
+				}).Debug("stream: retrying with original body (same-params retry) |")
+			}
 
 			// Reset SSENormalizer so the new stream starts from a clean state.
 			if responseFormat == sdktranslator.FormatClaude {
@@ -538,36 +590,44 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			}
 
 			httpReq2, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(retryBody))
-			if errReq == nil {
-				httpReq2.Header = httpReq.Header.Clone()
-				// W3: record the retry request for observability.
-				helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-					URL:       url,
-					Method:    http.MethodPost,
-					Headers:   httpReq2.Header.Clone(),
-					Body:      retryBody,
-					Provider:  e.Identifier(),
-					AuthID:    authID,
-					AuthLabel: authLabel,
-					AuthType:  authType,
-					AuthValue: authValue,
-				})
-				httpClient2 := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-				httpClient2 = reporter.TrackHTTPClient(httpClient2)
-				httpResp2, errDo := httpClient2.Do(httpReq2)
-				if errDo == nil && httpResp2.StatusCode >= 200 && httpResp2.StatusCode < 300 {
-					errScan = readStream(httpResp2.Body)
-					if errClose := httpResp2.Body.Close(); errClose != nil {
-						log.Errorf("openai compat executor: close retry response body error: %v", errClose)
-					}
-				} else if errDo == nil {
-					// W3: log non-2xx retry response status and body.
-					b, _ := io.ReadAll(httpResp2.Body)
-					log.Debugf("openai compat executor: retry response non-2xx status: %d, error body: %s", httpResp2.StatusCode, string(b))
-					if errClose := httpResp2.Body.Close(); errClose != nil {
-						log.Errorf("openai compat executor: close retry response body error: %v", errClose)
-					}
+			if errReq != nil {
+				break
+			}
+			httpReq2.Header = httpReq.Header.Clone()
+			// W3: record the retry request for observability.
+			helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+				URL:       url,
+				Method:    http.MethodPost,
+				Headers:   httpReq2.Header.Clone(),
+				Body:      retryBody,
+				Provider:  e.Identifier(),
+				AuthID:    authID,
+				AuthLabel: authLabel,
+				AuthType:  authType,
+				AuthValue: authValue,
+			})
+			httpClient2 := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+			httpClient2 = reporter.TrackHTTPClient(httpClient2)
+			httpResp2, errDo := httpClient2.Do(httpReq2)
+			if errDo != nil {
+				break
+			}
+			if httpResp2.StatusCode >= 200 && httpResp2.StatusCode < 300 {
+				gotSSEData = false
+				errScan = readStream(httpResp2.Body)
+				if errClose := httpResp2.Body.Close(); errClose != nil {
+					log.Errorf("openai compat executor: close retry response body error: %v", errClose)
 				}
+			} else {
+				// W3: log non-2xx retry response status and body.
+				b, _ := io.ReadAll(httpResp2.Body)
+				log.Debugf("openai compat executor: retry response non-2xx status: %d, error body: %s", httpResp2.StatusCode, string(b))
+				if errClose := httpResp2.Body.Close(); errClose != nil {
+					log.Errorf("openai compat executor: close retry response body error: %v", errClose)
+				}
+				errScan = statusErr{code: httpResp2.StatusCode, msg: string(b)}
+				gotSSEData = false
+				continue // re-classify in next iteration
 			}
 		}
 

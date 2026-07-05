@@ -385,3 +385,152 @@ func TestSSENormalizer_PingAndErrorPassThrough(t *testing.T) {
 		t.Fatalf("error not passed through: %q", all)
 	}
 }
+
+func TestParseSSEEvents_MultiLineData(t *testing.T) {
+	t.Run("single data line", func(t *testing.T) {
+		chunk := []byte("event: message\ndata: {\"a\":1}\n\n")
+		events := parseSSEEvents(chunk)
+		if len(events) != 1 {
+			t.Fatalf("got %d events, want 1", len(events))
+		}
+		if string(events[0].Data) != `{"a":1}` {
+			t.Fatalf("data = %q, want %q", events[0].Data, `{"a":1}`)
+		}
+	})
+
+	t.Run("multi-line data concatenated with LF", func(t *testing.T) {
+		// W3C SSE spec: multiple data: lines are joined with U+000A (LF).
+		chunk := []byte("event: message\ndata: line1\ndata: line2\n\n")
+		events := parseSSEEvents(chunk)
+		if len(events) != 1 {
+			t.Fatalf("got %d events, want 1", len(events))
+		}
+		expected := "line1\nline2"
+		if string(events[0].Data) != expected {
+			t.Fatalf("data = %q, want %q", events[0].Data, expected)
+		}
+	})
+
+	t.Run("three data lines", func(t *testing.T) {
+		chunk := []byte("event: message\ndata: a\ndata: b\ndata: c\n\n")
+		events := parseSSEEvents(chunk)
+		if len(events) != 1 {
+			t.Fatalf("got %d events, want 1", len(events))
+		}
+		expected := "a\nb\nc"
+		if string(events[0].Data) != expected {
+			t.Fatalf("data = %q, want %q", events[0].Data, expected)
+		}
+	})
+
+	t.Run("multi-line data across events", func(t *testing.T) {
+		chunk := []byte("event: a\ndata: a1\ndata: a2\n\n" +
+			"event: b\ndata: b1\n\n")
+		events := parseSSEEvents(chunk)
+		if len(events) != 2 {
+			t.Fatalf("got %d events, want 2", len(events))
+		}
+		if string(events[0].Data) != "a1\na2" {
+			t.Fatalf("event 0 data = %q, want %q", events[0].Data, "a1\na2")
+		}
+		if string(events[1].Data) != "b1" {
+			t.Fatalf("event 1 data = %q, want %q", events[1].Data, "b1")
+		}
+	})
+
+	t.Run("data lines with no event type are ignored", func(t *testing.T) {
+		chunk := []byte("data: orphan1\ndata: orphan2\n\n")
+		events := parseSSEEvents(chunk)
+		if len(events) != 0 {
+			t.Fatalf("got %d events, want 0", len(events))
+		}
+	})
+
+	t.Run("multi-line data in normalizer preserves LF", func(t *testing.T) {
+		n := NewSSENormalizer()
+		chunk := []byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_type\":\"text\"}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"line1\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"line2\"}}\n\n" +
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		out := n.Process(chunk)
+		flush := n.Flush()
+		if len(flush) != 0 {
+			t.Fatalf("Flush should produce nothing, got %d chunks", len(flush))
+		}
+		if len(out) < 6 {
+			t.Fatalf("expected at least 6 output chunks, got %d", len(out))
+		}
+	})
+}
+
+func TestSSENormalizer_MultiLineDataPayload(t *testing.T) {
+	// Test that multi-line data payloads are correctly concatenated with LF
+	// when processed through the normalizer, and that the serializer splits
+	// them back into multiple data: lines per W3C SSE spec.
+	n := NewSSENormalizer()
+
+	// Simulate an upstream that sends multi-line data (e.g., multi-line JSON).
+	// This is valid per W3C SSE spec but was previously broken.
+	chunk := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"model\":\"claude-3\"}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0}\n\n" +
+		// Multi-line data: two data: lines for one event.
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello \"}}\n" +
+		"data: {\"continued\":true}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+
+	out := n.Process(chunk)
+	flush := n.Flush()
+	if len(flush) != 0 {
+		t.Fatalf("Flush should produce nothing, got %d chunks", len(flush))
+	}
+
+	all := bytes.Join(out, nil)
+	if !bytes.Contains(all, []byte("content_block_delta")) {
+		t.Fatalf("missing content_block_delta in output: %q", all)
+	}
+
+	// Verify the output has all expected event types in correct order.
+	order := []string{"message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"}
+	prev := -1
+	for _, et := range order {
+		idx := bytes.Index(all, []byte("event: "+et))
+		if idx == -1 {
+			t.Fatalf("event %s not found in output: %q", et, all)
+		}
+		if idx < prev {
+			t.Fatalf("event %s at %d precedes previous event at %d", et, idx, prev)
+		}
+		prev = idx
+	}
+
+	// Verify that the multi-line data payload is correctly re-serialized
+	// as two separate "data:" lines (W3C SSE spec), NOT as a single line
+	// with an embedded newline that would break SSE framing.
+	deltaIdx := bytes.Index(all, []byte("event: content_block_delta"))
+	if deltaIdx == -1 {
+		t.Fatalf("content_block_delta event not found")
+	}
+	// The content_block_delta frame should contain "data: ...<first json>\ndata: ...<second json>"
+	// Find the frame boundaries (from event: to the next blank line).
+	frameStart := deltaIdx
+	frameEnd := bytes.Index(all[frameStart:], []byte("\n\n"))
+	if frameEnd == -1 {
+		t.Fatalf("content_block_delta frame not terminated")
+	}
+	frameEnd += frameStart + 2
+	frame := all[frameStart:frameEnd]
+	// Count "data: " occurrences within the frame — must be exactly 2 for multi-line data.
+	dataCount := bytes.Count(frame, []byte("\ndata: "))
+	if dataCount != 2 {
+		t.Fatalf("content_block_delta frame should have 2 data: lines, got %d; frame=%q", dataCount, frame)
+	}
+	// Verify the second data: line contains the continued field.
+	if !bytes.Contains(frame, []byte(`{"continued":true}`)) {
+		t.Fatalf("second data line missing continued field in frame: %q", frame)
+	}
+}

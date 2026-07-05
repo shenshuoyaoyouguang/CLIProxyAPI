@@ -56,3 +56,13 @@ _bmad-output/*
 .DS_Store
 ._*
 .gocache/
+
+
+cliproxy_coverage/
+coverage/
+coverage.out
+build.ps1
+build.sh
+.omc/*
+.trae/*
+reasonix.toml
