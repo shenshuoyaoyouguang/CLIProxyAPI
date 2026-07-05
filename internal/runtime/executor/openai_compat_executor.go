@@ -195,6 +195,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	// Translate response back to source format when needed
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, body, &param)
+	// Normalize content block ordering for Claude-format non-stream responses.
+	if responseFormat == sdktranslator.FormatClaude {
+		out = helps.NormalizeNonStreamContentOrder(out)
+	}
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
@@ -393,6 +397,48 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
+		// SSENormalizer enforces Anthropic SSE event ordering for Claude-format
+		// responses. It is a pass-through for other response formats.
+		var normalizer *helps.SSENormalizer
+		if responseFormat == sdktranslator.FormatClaude {
+			normalizer = helps.NewSSENormalizer()
+		}
+		flushNormalizer := func() {
+		if normalizer == nil {
+			return
+		}
+		for _, chunk := range normalizer.Flush() {
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+	// sendChunks fans out translator-produced chunks to the output channel,
+	// applying the SSENormalizer when enabled. It returns true if the stream
+	// was cancelled mid-send so callers can bail out of the scan loop.
+	sendChunks := func(chunks [][]byte) bool {
+		for i := range chunks {
+			if normalizer != nil {
+				normalized := normalizer.Process(chunks[i])
+				for j := range normalized {
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: normalized[j]}:
+					case <-ctx.Done():
+						return true
+					}
+				}
+			} else {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+				case <-ctx.Done():
+					return true
+				}
+			}
+		}
+		return false
+	}
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -424,12 +470,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 			// OpenAI-compatible streams must use SSE data lines.
 			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
-				}
+			if sendChunks(chunks) {
+				return
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
@@ -444,14 +486,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			// Feed a synthetic done marker through the translator so pending
 			// response.completed events are still emitted exactly once.
 			chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
-				}
+			if sendChunks(chunks) {
+				return
 			}
 		}
+		// Flush any pending buffered events and emit terminal events if missing.
+		flushNormalizer()
 		// Ensure we record the request if no usage chunk was ever seen
 		reporter.EnsurePublished(ctx)
 	}()

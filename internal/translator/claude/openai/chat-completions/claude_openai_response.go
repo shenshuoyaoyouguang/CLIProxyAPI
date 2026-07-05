@@ -307,6 +307,9 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 
 	lines := bytes.Split(rawJSON, []byte("\n"))
 	for _, line := range lines {
+		// Trim trailing CR/LF introduced by splitting on "\n" so CRLF-terminated
+		// SSE lines do not leak a stray '\r' into prefix checks or JSON parsing.
+		line = bytes.TrimRight(line, "\r\n")
 		if !bytes.HasPrefix(line, dataTag) {
 			continue
 		}
