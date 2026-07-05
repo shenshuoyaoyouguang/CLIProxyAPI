@@ -294,10 +294,12 @@ func (n *SSENormalizer) handleMessageDelta(ev sseEvent, buf *bytes.Buffer) {
 	}
 	// Always update finish_reason and usage from the delta payload so the
 	// final synthesized message_delta (if any) carries the latest values.
-	if reason := gjson.GetBytes(ev.Data, "delta.stop_reason"); reason.Exists() {
+	// Parse once and reuse the root to avoid repeated tokenization.
+	root := gjson.ParseBytes(ev.Data)
+	if reason := root.Get("delta.stop_reason"); reason.Exists() {
 		n.finishReason = reason.String()
 	}
-	if usage := gjson.GetBytes(ev.Data, "usage"); usage.Exists() {
+	if usage := root.Get("usage"); usage.Exists() {
 		if v := usage.Get("input_tokens"); v.Exists() {
 			n.usageInputTokens = v.Int()
 		}
