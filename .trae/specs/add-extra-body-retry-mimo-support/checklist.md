@@ -132,16 +132,22 @@
 
 ### 全量编译与测试
 
-- [ ] `go build ./...` 全量编译通过
-- [ ] `go vet ./...` 无 lint 错误
-- [ ] `go test ./internal/modelkind/... -v` 全部通过
-- [ ] `go test ./internal/thinking/... -v` 全部通过
-- [ ] `go test ./internal/runtime/executor/... -v` 全部通过
-- [ ] `go test ./...` 全量回归通过
-- [ ] 阶段 3 已提交独立 commit
+- [x] `go build ./...` 全量编译通过
+- [x] `go vet ./...` 无 lint 错误（本次改动包 vet 全通过；预先存在的 vet 错误与本次改动无关）
+- [x] `go test ./internal/modelkind/... -v` 全部通过（13 个子测试）
+- [x] `go test ./internal/thinking/... -v` 全部通过（含 extractMIMOConfig 14 + deepseek 8 + mimo 11）
+- [x] `go test ./internal/runtime/executor/... -v` 全部通过（含 SSE normalizer、场景 8、mimo_normalize 14、stream_retry 25）
+- [x] `go test ./...` 全量回归通过（修复 isOpenAIFamily 误添加 xai 导致的 4 个 X 系列测试失败）
+- [x] 阶段 3 已提交独立 commit（commit `f300cb19`）
+
+### 阶段 3 修复偏差记录
+
+- [x] **偏差 1**：`isOpenAIFamily` 移除 `xai`（manual 方案要求添加 xai/deepseek/mimo，但 X 系列测试期望 openai→xai 走跨家族 clamping；最终保留 deepseek/mimo，移除 xai）
+- [x] **偏差 2**：阶段 3 拆分为 2 个 commit（`011469f6` Task 14-18 注册逻辑 + `f300cb19` Task 19-24 规范化/测试/修复），非单一 commit
+- [x] **偏差 3**：commit message 调整为 `feat: add MiMo request normalization and thinking provider test coverage`（比 Task 24 原定 message 更准确反映实际内容）
 
 ## 跨阶段验证
 
-- [x] 阶段 1、2、3 各自独立 commit，commit message 清晰（阶段 1: `f8268824`，阶段 2: `9eacb53a`，阶段 3: 待提交）
+- [x] 阶段 1、2、3 各自独立 commit，commit message 清晰（阶段 1: `f8268824`，阶段 2: `9eacb53a`，阶段 3: `011469f6` + `f300cb19`）
 - [x] 三个 commit 均可单独 cherry-pick（无强依赖）
-- [x] Agent.md 已更新（记录 user-defined 假设偏差、param 作用域、MiMo 响应格式等协作陷阱）
+- [x] Agent.md 已更新（记录 user-defined 假设偏差、param 作用域、MiMo 响应格式、isOpenAIFamily 误添加 xai 等协作陷阱）
