@@ -141,6 +141,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if updated, errDel := sjson.DeleteBytes(translated, "extra_body"); errDel == nil {
 		translated = updated
 	}
+	// MiMo-specific request normalization: ensure reasoning_content passback for
+	// multi-turn tool calls and lock thinking params in deep-thinking mode.
+	if modelkind.IsMIMOModel(baseModel) {
+		translated = normalizeMimoToolMessageReasoning(translated)
+		translated = mimoLockThinkingParams(translated)
+	}
 	if opts.Alt == "responses/compact" {
 		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
 			translated = updated
@@ -349,6 +355,13 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Strip OpenAI SDK private field "extra_body" that strict upstreams (e.g. z.ai GLM) reject with 400.
 	if updated, errDel := sjson.DeleteBytes(translated, "extra_body"); errDel == nil {
 		translated = updated
+	}
+
+	// MiMo-specific request normalization: ensure reasoning_content passback for
+	// multi-turn tool calls and lock thinking params in deep-thinking mode.
+	if modelkind.IsMIMOModel(baseModel) {
+		translated = normalizeMimoToolMessageReasoning(translated)
+		translated = mimoLockThinkingParams(translated)
 	}
 
 	// Request usage data in the final streaming chunk so that token statistics
@@ -717,6 +730,13 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTargetForModel(baseModel, to.String()), e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
+	}
+
+	// MiMo-specific request normalization: ensure reasoning_content passback for
+	// multi-turn tool calls and lock thinking params in deep-thinking mode.
+	if modelkind.IsMIMOModel(baseModel) {
+		translated = normalizeMimoToolMessageReasoning(translated)
+		translated = mimoLockThinkingParams(translated)
 	}
 
 	enc, err := helps.TokenizerForModel(modelForCounting)

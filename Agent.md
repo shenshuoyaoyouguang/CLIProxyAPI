@@ -278,3 +278,50 @@ ed20fd04 的 `mimo_executor.go` 实现了 `mimoLockThinkingParams` 函数，在
 **记录位置**
 
 - 调研依据：MiMo 官方文档、ed20fd04 的 `internal/runtime/executor/mimo_executor.go`
+
+---
+
+### [Thinking 验证] isOpenAIFamily 误添加 xai 破坏跨家族 level clamping
+
+**问题描述**
+
+`internal/thinking/validate.go` 的 `isOpenAIFamily` 函数用于 `isSameProviderFamily(from, to)`
+判断，控制 `allowClampUnsupported` 和 `strictBudget` 两个验证行为：
+- 同家族（`isSameProviderFamily=true`）：`allowClampUnsupported=false`，不支持的 level
+  直接报错；`strictBudget=true`，budget 严格范围验证
+- 跨家族（`isSameProviderFamily=false`）：`allowClampUnsupported=true`，不支持的 level
+  会被 `clampLevel` 降级到最近的支持值；`strictBudget=false`，budget 会被 clamp
+
+manual 方案 Task 16.2 要求添加 `xai/deepseek/mimo` 到 `isOpenAIFamily`，代码示例也包含
+xai。但 `test/thinking_conversion_test.go` 的 `TestThinkingE2ENewProviderTargets`
+X 系列测试（X2/X3/X6/X7）**期望** `openai→xai` 走跨家族 clamping 路径：
+- X2: `xai-level-model(xhigh)` 期望 `reasoning.effort=high`（xhigh clamp 到 high）
+- X3: `xai-level-model(max)` 期望 `reasoning.effort=high`（max clamp 到 high）
+- X6: body `reasoning_effort=xhigh` 期望 `reasoning.effort=high`
+- X7: body `reasoning.effort=minimal` 期望 `reasoning.effort=low`（minimal clamp 到 low）
+
+`xai-level-model` 的 `Thinking.Levels=["none","low","medium","high"]`，不含
+xhigh/max/minimal。若 xai 在 `isOpenAIFamily` 中，`openai→xai` 变成同家族，
+`allowClampUnsupported=false`，xhigh/max/minimal 直接报错而非 clamp，破坏 4 个测试。
+
+**影响范围**
+
+- `internal/thinking/validate.go` 的 `isOpenAIFamily` 函数
+- `test/thinking_conversion_test.go` 的 `TestThinkingE2ENewProviderTargets` X 系列测试
+- 后续 AI agent 修改 `isOpenAIFamily` 时，若误添加 xai，会破坏跨家族 clamping 行为
+
+**解决方案**
+
+`isOpenAIFamily` **不应**包含 `xai`。xai 虽然使用 OpenAI 兼容请求格式，但在 thinking
+验证中被视为独立家族，以便跨家族 level clamping 生效。最终实现：
+```go
+case "openai", "openai-response", "codex", "deepseek", "mimo":
+    return true
+```
+（保留 deepseek/mimo 遵循 manual 方案；移除 xai 修复测试失败）
+
+**记录位置**
+
+- 修复：`internal/thinking/validate.go` 的 `isOpenAIFamily` 函数
+- 测试：`test/thinking_conversion_test.go` 的 `TestThinkingE2ENewProviderTargets`
+- 注意：后续 AI agent 不要将 xai 添加回 `isOpenAIFamily`

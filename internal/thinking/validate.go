@@ -373,7 +373,12 @@ func isGeminiFamily(provider string) bool {
 
 func isOpenAIFamily(provider string) bool {
 	switch provider {
-	case "openai", "openai-response", "codex", "xai", "deepseek", "mimo": // added xai, deepseek, mimo
+	// Note: xai is intentionally NOT in this list. xai uses OpenAI-compatible
+	// request format but is treated as a separate family for thinking validation
+	// so that cross-family level clamping applies (e.g., openai->xai with level
+	// "xhigh" clamps to "high" instead of erroring). See TestThinkingE2ENewProviderTargets
+	// cases X2/X3/X6/X7. deepseek and mimo follow the same pattern.
+	case "openai", "openai-response", "codex", "deepseek", "mimo":
 		return true
 	default:
 		return false

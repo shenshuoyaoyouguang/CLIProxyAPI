@@ -92,19 +92,20 @@
 
 ### 条件性任务（取决于前置调研结果）
 
-- [ ] Task 19: （条件性）若 MiMo 响应含 `reasoning_content`，补充响应翻译逻辑
-  - [ ] SubTask 19.1: 根据 Task 10 调研结果决定实现方式（mimo_executor.go 或 openai_compat_executor 响应翻译补丁）
-  - [ ] SubTask 19.2: 实现响应翻译逻辑，确保 reasoning_content 被正确处理
+- [x] Task 19: （条件性）若 MiMo 响应含 `reasoning_content`，补充响应翻译逻辑
+  - [x] SubTask 19.1: 根据 Task 10 调研结果决定实现方式（**选择：openai_compat_executor 条件性响应翻译补丁 + 新建 mimo_normalize.go**）
+  - [x] SubTask 19.2: 实现响应翻译逻辑：`normalizeMimoToolMessageReasoning`（回填 reasoning_content，参考 Kimi 模式）+ `mimoLockThinkingParams`（thinking.type=enabled 时锁定 temperature=1.0, top_p=0.95）+ 在 `Execute`/`ExecuteStream`/`CountTokens` 三处添加条件性调用
 
 ### 测试
 
-- [ ] Task 20: 补充 thinking provider 独立测试
-  - [ ] SubTask 20.1: 新建 `internal/modelkind/modelkind_test.go`（测试 IsDeepSeekModel/IsMIMOModel 各种前缀和大小写）
-  - [ ] SubTask 20.2: 新建 `internal/thinking/provider/deepseek/apply_test.go`（测试各 Mode 的 Apply 行为）
-  - [ ] SubTask 20.3: 新建 `internal/thinking/provider/mimo/apply_test.go`（测试各 Mode 的 Apply 行为 + mimoBoostMaxCompletion）
-  - [ ] SubTask 20.4: 新建 `internal/thinking/apply_test.go` 的 `extractMIMOConfig` 测试（thinking.type 优先 + reasoning_effort fallback）
-- [ ] Task 21: 补充流重试测试
-  - [ ] SubTask 21.1: 新建 `internal/runtime/executor/openai_compat_stream_retry_test.go`（测试 isRetryableStreamDisconnect、degradeEffort、degradeReasoningForRetry）
+- [x] Task 20: 补充 thinking provider 独立测试
+  - [x] SubTask 20.1: 新建 `internal/modelkind/modelkind_test.go`（13 个子测试，覆盖各种前缀和大小写）
+  - [x] SubTask 20.2: 新建 `internal/thinking/provider/deepseek/apply_test.go`（8 个测试，覆盖各 Mode 的 Apply 行为）
+  - [x] SubTask 20.3: 新建 `internal/thinking/provider/mimo/apply_test.go`（11 个测试，覆盖各 Mode + mimoBoostMaxCompletion）
+  - [x] SubTask 20.4: 新建 `internal/thinking/apply_test.go` 的 `extractMIMOConfig` 测试（14 个测试，覆盖 thinking.type 优先 + reasoning_effort fallback）
+  - [x] SubTask 20.5: 新建 `internal/runtime/executor/mimo_normalize_test.go`（14 个测试，覆盖 normalizeMimoToolMessageReasoning + mimoLockThinkingParams）
+- [x] Task 21: 补充流重试测试
+  - [x] SubTask 21.1: 新建 `internal/runtime/executor/openai_compat_stream_retry_test.go`（25 个子测试，覆盖 isRetryableStreamDisconnect、detectReasoningEffort、degradeEffort、degradeReasoningForRetry）
 
 ### 全量验证与提交
 
