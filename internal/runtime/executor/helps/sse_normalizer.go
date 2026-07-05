@@ -121,7 +121,7 @@ func parseSSEEvents(chunk []byte) []sseEvent {
 			// internal logic. This is acceptable because (a) the Anthropic SSE
 			// protocol never uses multi-line data, and (b) the full concatenated
 			// payload is preserved and correctly re-serialized by
-			// AppendSSEEventBytes which splits on '\n' into multiple data: lines.
+			// WriteSSEEventBytes which splits on '\n' into multiple data: lines.
 			if hasData {
 				currentData = append(currentData, '\n')
 			}
@@ -182,109 +182,115 @@ func NewSSENormalizer() *SSENormalizer {
 }
 
 // Process processes a single SSE chunk (which may contain multiple events)
-// and returns normalized chunks ready to be forwarded to the client. Each
-// returned chunk is a complete SSE event frame ending with two newlines.
-func (n *SSENormalizer) Process(chunk []byte) [][]byte {
+// and returns a single concatenated frame ready to be forwarded to the client.
+// The returned slice is caller-owned; each embedded SSE event frame ends with
+// two newlines. Returns nil when the chunk is empty or when nothing is
+// eligible to be emitted yet.
+func (n *SSENormalizer) Process(chunk []byte) []byte {
 	if len(chunk) == 0 {
 		return nil
 	}
+	var buf bytes.Buffer
+	buf.Grow(len(chunk) + 128)
 	events := parseSSEEvents(chunk)
-	var out [][]byte
 	for _, ev := range events {
-		out = append(out, n.processEvent(ev)...)
+		n.processEvent(ev, &buf)
 	}
 	// After processing a new chunk, try to release any previously buffered
 	// events that are now ready.
-	out = append(out, n.releaseReady()...)
-	return out
+	n.releaseReady(&buf)
+	if buf.Len() == 0 {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // processEvent handles a single event according to its type and the current
-// normalizer state. It mutates state and returns emitted frames.
-func (n *SSENormalizer) processEvent(ev sseEvent) [][]byte {
+// normalizer state. It mutates state and appends emitted frames into buf.
+func (n *SSENormalizer) processEvent(ev sseEvent, buf *bytes.Buffer) {
 	switch ev.Type {
 	case translatorcommon.SSEEventMessageStart:
-		return n.handleMessageStart(ev)
+		n.handleMessageStart(ev, buf)
 	case translatorcommon.SSEEventContentBlockStart:
-		return n.handleContentBlockStart(ev)
+		n.handleContentBlockStart(ev, buf)
 	case translatorcommon.SSEEventContentBlockDelta:
-		return n.handleContentBlockDelta(ev)
+		n.handleContentBlockDelta(ev, buf)
 	case translatorcommon.SSEEventContentBlockStop:
-		return n.handleContentBlockStop(ev)
+		n.handleContentBlockStop(ev, buf)
 	case translatorcommon.SSEEventMessageDelta:
-		return n.handleMessageDelta(ev)
+		n.handleMessageDelta(ev, buf)
 	case translatorcommon.SSEEventMessageStop:
-		return n.handleMessageStop(ev)
+		n.handleMessageStop(ev, buf)
 	case translatorcommon.SSEEventPing, translatorcommon.SSEEventError:
 		// Pass through control events untouched.
-		return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+		translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 	case translatorcommon.SSEEventHeartbeat, translatorcommon.SSEEventDataUpdate:
 		// Extension events pass through untouched.
-		return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+		translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 	case translatorcommon.SSEEventErrorNotification:
 		// Error notification events pass through but are logged.
 		log.Debugf("SSENormalizer: error notification event: %s", ev.Data)
-		return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+		translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 	default:
 		// Unknown event types are forwarded as-is to avoid dropping data
 		// from upstream providers that emit non-Anthropic events.
-		return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+		translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 	}
 }
 
-func (n *SSENormalizer) handleMessageStart(ev sseEvent) [][]byte {
+func (n *SSENormalizer) handleMessageStart(ev sseEvent, buf *bytes.Buffer) {
 	if n.messageStartSent {
 		// Duplicate message_start; drop to keep output idempotent.
-		return nil
+		return
 	}
 	n.messageStartSent = true
-	return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+	translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 }
 
-func (n *SSENormalizer) handleContentBlockStart(ev sseEvent) [][]byte {
+func (n *SSENormalizer) handleContentBlockStart(ev sseEvent, buf *bytes.Buffer) {
 	if n.messageStopSent {
 		// Late arrival after message_stop: drop.
-		return nil
+		return
 	}
 	if !n.messageStartSent {
 		// Buffer until message_start has been sent.
 		n.pending = append(n.pending, ev)
-		return nil
+		return
 	}
 	idx := blockIndex(ev.Data)
 	n.activeBlocks[idx] = true
-	return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+	translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 }
 
-func (n *SSENormalizer) handleContentBlockDelta(ev sseEvent) [][]byte {
+func (n *SSENormalizer) handleContentBlockDelta(ev sseEvent, buf *bytes.Buffer) {
 	if n.messageStopSent {
-		return nil
+		return
 	}
 	idx := blockIndex(ev.Data)
 	if !n.activeBlocks[idx] {
 		// Corresponding block has not started yet; buffer.
 		n.pending = append(n.pending, ev)
-		return nil
+		return
 	}
-	return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+	translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 }
 
-func (n *SSENormalizer) handleContentBlockStop(ev sseEvent) [][]byte {
+func (n *SSENormalizer) handleContentBlockStop(ev sseEvent, buf *bytes.Buffer) {
 	if n.messageStopSent {
-		return nil
+		return
 	}
 	idx := blockIndex(ev.Data)
 	if !n.activeBlocks[idx] {
 		// Block never started; drop the stop to avoid emitting an orphan.
-		return nil
+		return
 	}
 	delete(n.activeBlocks, idx)
-	return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+	translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 }
 
-func (n *SSENormalizer) handleMessageDelta(ev sseEvent) [][]byte {
+func (n *SSENormalizer) handleMessageDelta(ev sseEvent, buf *bytes.Buffer) {
 	if n.messageStopSent {
-		return nil
+		return
 	}
 	// Always update finish_reason and usage from the delta payload so the
 	// final synthesized message_delta (if any) carries the latest values.
@@ -303,22 +309,22 @@ func (n *SSENormalizer) handleMessageDelta(ev sseEvent) [][]byte {
 		// A message_delta has already been emitted; suppress duplicates so
 		// the client observes exactly one message_delta per stream. Internal
 		// state (finishReason/usage) is still updated above.
-		return nil
+		return
 	}
 	// Buffer the message_delta until every active content_block has been
 	// stopped. Anthropic protocol requires message_delta to appear after
 	// all content_block_stop events.
 	if len(n.activeBlocks) > 0 {
 		n.pending = append(n.pending, ev)
-		return nil
+		return
 	}
 	n.messageDeltaSent = true
-	return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+	translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 }
 
-func (n *SSENormalizer) handleMessageStop(ev sseEvent) [][]byte {
+func (n *SSENormalizer) handleMessageStop(ev sseEvent, buf *bytes.Buffer) {
 	if n.messageStopSent {
-		return nil
+		return
 	}
 	// If message_delta hasn't been emitted yet (e.g. it's buffered in
 	// pending because activeBlocks was non-empty), buffer message_stop too
@@ -326,16 +332,15 @@ func (n *SSENormalizer) handleMessageStop(ev sseEvent) [][]byte {
 	// message_stop.
 	if !n.messageDeltaSent {
 		n.pending = append(n.pending, ev)
-		return nil
+		return
 	}
 	n.messageStopSent = true
-	return [][]byte{translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2)}
+	translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 }
 
-// releaseReady emits any buffered events that are now eligible to be sent.
-// It iterates until no further progress is made.
-func (n *SSENormalizer) releaseReady() [][]byte {
-	var out [][]byte
+// releaseReady emits any buffered events that are now eligible to be sent
+// into buf. It iterates until no further progress is made.
+func (n *SSENormalizer) releaseReady(buf *bytes.Buffer) {
 	for {
 		progress := false
 		kept := n.pending[:0]
@@ -348,7 +353,7 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 				if ev.Type == translatorcommon.SSEEventMessageDelta {
 					n.messageDeltaSent = true
 				}
-				out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
+				translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 				continue
 			}
 			if !n.messageStartSent {
@@ -360,12 +365,12 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 			case translatorcommon.SSEEventContentBlockStart:
 				idx := blockIndex(ev.Data)
 				n.activeBlocks[idx] = true
-				out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
+				translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 				progress = true
 			case translatorcommon.SSEEventContentBlockDelta:
 				idx := blockIndex(ev.Data)
 				if n.activeBlocks[idx] {
-					out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
+					translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 					progress = true
 				} else {
 					kept = append(kept, ev)
@@ -374,7 +379,7 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 				idx := blockIndex(ev.Data)
 				if n.activeBlocks[idx] {
 					delete(n.activeBlocks, idx)
-					out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
+					translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 					progress = true
 				} else {
 					kept = append(kept, ev)
@@ -384,7 +389,7 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 				// has been stopped (protocol ordering requirement).
 				if len(n.activeBlocks) == 0 {
 					n.messageDeltaSent = true
-					out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
+					translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 					progress = true
 				} else {
 					kept = append(kept, ev)
@@ -394,13 +399,13 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 				// emitted (protocol ordering requirement).
 				if n.messageDeltaSent {
 					n.messageStopSent = true
-					out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
+					translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 					progress = true
 				} else {
 					kept = append(kept, ev)
 				}
 			default:
-				out = append(out, translatorcommon.AppendSSEEventBytes(nil, ev.Type, ev.Data, 2))
+				translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 				progress = true
 			}
 		}
@@ -409,24 +414,27 @@ func (n *SSENormalizer) releaseReady() [][]byte {
 			break
 		}
 	}
-	return out
 }
 
 // Flush is called when the stream ends. It emits any missing terminal events:
 //   - content_block_stop for every still-active block
 //   - message_delta if not already sent (using finishReason or "stop")
 //   - message_stop if not already sent
-func (n *SSENormalizer) Flush() [][]byte {
-	var out [][]byte
+//
+// The returned slice is a single concatenated frame that is caller-owned.
+// Returns nil when there is nothing to emit.
+func (n *SSENormalizer) Flush() []byte {
+	var buf bytes.Buffer
+	buf.Grow(256)
 
 	// First, try to release any buffered content events that became eligible.
-	out = append(out, n.releaseReady()...)
+	n.releaseReady(&buf)
 
 	// Emit content_block_stop for every active block (sorted by index for
 	// deterministic output).
 	for _, idx := range sortedActiveBlockIndexes(n.activeBlocks) {
 		payload := []byte(`{"type":"content_block_stop","index":` + strconv.FormatInt(idx, 10) + `}`)
-		out = append(out, translatorcommon.AppendSSEEventBytes(nil, translatorcommon.SSEEventContentBlockStop, payload, 2))
+		translatorcommon.WriteSSEEventBytes(&buf, translatorcommon.SSEEventContentBlockStop, payload, 2)
 	}
 	n.activeBlocks = map[int64]bool{}
 
@@ -438,19 +446,19 @@ func (n *SSENormalizer) Flush() [][]byte {
 			reason = "end_turn"
 		}
 		payload := buildMessageDeltaPayload(reason, n.usageInputTokens, n.usageOutputTokens)
-		out = append(out, translatorcommon.AppendSSEEventBytes(nil, translatorcommon.SSEEventMessageDelta, payload, 2))
+		translatorcommon.WriteSSEEventBytes(&buf, translatorcommon.SSEEventMessageDelta, payload, 2)
 		n.messageDeltaSent = true
 	}
 
 	if !n.messageStopSent {
-		out = append(out, translatorcommon.AppendSSEEventBytes(nil, translatorcommon.SSEEventMessageStop, []byte(`{"type":"message_stop"}`), 2))
+		translatorcommon.WriteSSEEventBytes(&buf, translatorcommon.SSEEventMessageStop, []byte(`{"type":"message_stop"}`), 2)
 		n.messageStopSent = true
 	}
 
-	if len(out) == 0 {
+	if buf.Len() == 0 {
 		return nil
 	}
-	return out
+	return buf.Bytes()
 }
 
 // blockIndex extracts the "index" field from a content_block_* event payload.

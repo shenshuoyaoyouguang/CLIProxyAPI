@@ -453,13 +453,30 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			if normalizer == nil {
 				return
 			}
-			for _, chunk := range normalizer.Flush() {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
-				case <-ctx.Done():
-					return
-				}
+			frame := normalizer.Flush()
+			if len(frame) == 0 {
+				return
 			}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: frame}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		// sendFrame forwards a single frame to the output channel. It returns
+		// true if the stream was cancelled mid-send so callers can bail out of
+		// the scan loop. Empty frames are short-circuited so a normalizer that
+		// buffered the input does not produce a zero-length StreamChunk.
+		sendFrame := func(frame []byte) bool {
+			if len(frame) == 0 {
+				return false
+			}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: frame}:
+			case <-ctx.Done():
+				return true
+			}
+			return false
 		}
 		// sendChunks fans out translator-produced chunks to the output channel,
 		// applying the SSENormalizer when enabled. It returns true if the stream
@@ -467,18 +484,11 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		sendChunks := func(chunks [][]byte) bool {
 			for i := range chunks {
 				if normalizer != nil {
-					normalized := normalizer.Process(chunks[i])
-					for j := range normalized {
-						select {
-						case out <- cliproxyexecutor.StreamChunk{Payload: normalized[j]}:
-						case <-ctx.Done():
-							return true
-						}
+					if sendFrame(normalizer.Process(chunks[i])) {
+						return true
 					}
 				} else {
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-					case <-ctx.Done():
+					if sendFrame(chunks[i]) {
 						return true
 					}
 				}
