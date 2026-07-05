@@ -27,6 +27,8 @@ var nativeProviderAppliers = map[string]ProviderApplier{
 	"antigravity": nil,
 	"kimi":        nil,
 	"xai":         nil,
+	"deepseek":    nil,
+	"mimo":        nil,
 }
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.
@@ -421,6 +423,8 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 	case "kimi":
 		// Kimi uses OpenAI-compatible reasoning_effort format
 		return extractOpenAIConfig(body)
+	case "mimo":
+		return extractMIMOConfig(body)
 	default:
 		return ThinkingConfig{}
 	}
@@ -642,6 +646,48 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
 		}
 		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	}
+
+	return ThinkingConfig{}
+}
+
+// extractMIMOConfig extracts thinking configuration from MiMo format request body.
+//
+// MiMo API format (primary):
+//   - thinking.type: "enabled" or "disabled"
+//
+// OpenAI-compatible format (fallback when thinking.type is absent):
+//   - reasoning_effort: "none", "low", "medium", "high", "max", "auto"
+func extractMIMOConfig(body []byte) ThinkingConfig {
+	thinkingType := gjson.GetBytes(body, "thinking.type")
+	if thinkingType.Exists() {
+		switch thinkingType.String() {
+		case "enabled":
+			return ThinkingConfig{Mode: ModeLevel, Level: LevelHigh}
+		case "disabled":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		default:
+			return ThinkingConfig{}
+		}
+	}
+
+	// Fallback: accept OpenAI-compatible reasoning_effort
+	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+		value := strings.ToLower(strings.TrimSpace(effort.String()))
+		switch value {
+		case "none":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "low":
+			return ThinkingConfig{Mode: ModeBudget, Budget: 8192}
+		case "medium":
+			return ThinkingConfig{Mode: ModeBudget, Budget: 24576}
+		case "high", "max":
+			return ThinkingConfig{Mode: ModeBudget, Budget: 64512}
+		case "auto":
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		default:
+			return ThinkingConfig{}
+		}
 	}
 
 	return ThinkingConfig{}

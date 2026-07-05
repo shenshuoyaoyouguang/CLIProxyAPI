@@ -10,32 +10,32 @@
   - [x] SubTask 2.2: 在 `ApplyPayloadConfigWithRequest` 之后、`stream_options` 设置之前添加 `sjson.DeleteBytes(translated, "extra_body")` 调用
 - [x] Task 3: 阶段 1 编译验证
   - [x] SubTask 3.1: 运行 `go build ./internal/runtime/executor/...` 验证编译通过
-- [ ] Task 4: 阶段 1 提交 commit（commit message: `fix: strip extra_body field for strict schema upstreams`）
+- [x] Task 4: 阶段 1 提交 commit（commit message: `fix: strip extra_body field for strict schema upstreams`）
 
 ## 阶段 2：SSE 流重试机制（中风险，需修复 Blocker）
 
-- [ ] Task 5: 新建 `internal/runtime/executor/openai_compat_stream_retry.go`
-  - [ ] SubTask 5.1: 实现 `isRetryableStreamDisconnect(err error, gotSSEData bool) bool`（仅 `io.ErrUnexpectedEOF` 且 `!gotSSEData` 时返回 true）
-  - [ ] SubTask 5.2: 实现 `detectReasoningEffort(body []byte) (effort, format string)`（flat: `reasoning_effort`，nested: `reasoning.effort`）
-  - [ ] SubTask 5.3: 实现 `degradeEffort(effort string) string`（max/xhigh→high→medium→low→minimal→""）
-  - [ ] SubTask 5.4: 实现 `degradeReasoningForRetry(body []byte) []byte`（根据 format 删除或降级 effort）
-- [ ] Task 6: 重构 `ExecuteStream` goroutine 实现流重试（修复 B1/B2/W1/W2/W3）
-  - [ ] SubTask 6.1: 将 `var param any` 提升到 goroutine 作用域（**B1 修复**：readStream 闭包和合成 [DONE] 共享同一 param）
-  - [ ] SubTask 6.2: 保留 `SSENormalizer`/`flushNormalizer`/`sendChunks` 闭包（SSE 修复集成）
-  - [ ] SubTask 6.3: 实现 `readStream` 闭包，签名 `func(body io.Reader) error`（**W1 修复**：仅返回 error，无 done 死代码）
-  - [ ] SubTask 6.4: readStream 内遇到 JSON 错误体时仅返回 `streamErr`，不调用 `PublishFailure`/不发 error chunk/不 `RecordAPIResponseError`（**B2 修复**：统一由外层上报）
-  - [ ] SubTask 6.5: readStream 内通过 `sendChunks` 输出 chunks，跟踪 `gotSSEData` 标志
-  - [ ] SubTask 6.6: 首次调用 `readStream(httpResp.Body)` 获取 `errScan`
-  - [ ] SubTask 6.7: 若 `isRetryableStreamDisconnect(errScan, gotSSEData)`，降级 `retryBody`，重置 `normalizer`（若 FormatClaude），创建 `httpReq2`，调用 `helps.RecordAPIRequest` 记录（**W3 修复**），发起重试
-  - [ ] SubTask 6.8: 重试响应 2xx 时调用 `readStream(httpResp2.Body)` 更新 `errScan`；非 2xx 时 `log.Debugf` 记录状态码和错误体（**W3 修复**）
-  - [ ] SubTask 6.9: 外层错误处理：`if errScan != nil && !errors.Is(errScan, context.Canceled) && !errors.Is(errScan, context.DeadlineExceeded)` 时才 `PublishFailure` + error chunk + `RecordAPIResponseError`（**W2 修复**）
-  - [ ] SubTask 6.10: 正常结束时合成 `data: [DONE]`（使用 goroutine 作用域的 `param`），`flushNormalizer()`，`reporter.EnsurePublished(ctx)`
-- [ ] Task 7: 阶段 2 编译验证
-  - [ ] SubTask 7.1: 运行 `go build ./internal/runtime/executor/...` 验证编译通过
-- [ ] Task 8: 阶段 2 SSE 回归测试
-  - [ ] SubTask 8.1: 运行 `go test ./internal/runtime/executor/... -run "SSE" -v` 验证 SSE normalizer 无回归
-  - [ ] SubTask 8.2: 运行 `go test ./internal/runtime/executor/... -run "SSEIntegration" -v` 验证集成测试无回归
-- [ ] Task 9: 阶段 2 提交 commit（commit message: `feat: add stream retry with reasoning effort degradation`）
+- [x] Task 5: 新建 `internal/runtime/executor/openai_compat_stream_retry.go`
+  - [x] SubTask 5.1: 实现 `isRetryableStreamDisconnect(err error, gotSSEData bool) bool`（仅 `io.ErrUnexpectedEOF` 且 `!gotSSEData` 时返回 true）
+  - [x] SubTask 5.2: 实现 `detectReasoningEffort(body []byte) (effort, format string)`（flat: `reasoning_effort`，nested: `reasoning.effort`）
+  - [x] SubTask 5.3: 实现 `degradeEffort(effort string) string`（max/xhigh→high→medium→low→minimal→""）
+  - [x] SubTask 5.4: 实现 `degradeReasoningForRetry(body []byte) []byte`（根据 format 删除或降级 effort）
+- [x] Task 6: 重构 `ExecuteStream` goroutine 实现流重试（修复 B1/B2/W1/W2/W3）
+  - [x] SubTask 6.1: 将 `var param any` 提升到 goroutine 作用域（**B1 修复**：readStream 闭包和合成 [DONE] 共享同一 param）
+  - [x] SubTask 6.2: 保留 `SSENormalizer`/`flushNormalizer`/`sendChunks` 闭包（SSE 修复集成）
+  - [x] SubTask 6.3: 实现 `readStream` 闭包，签名 `func(body io.Reader) error`（**W1 修复**：仅返回 error，无 done 死代码）
+  - [x] SubTask 6.4: readStream 内遇到 JSON 错误体时仅返回 `streamErr`，不调用 `PublishFailure`/不发 error chunk/不 `RecordAPIResponseError`（**B2 修复**：统一由外层上报）
+  - [x] SubTask 6.5: readStream 内通过 `sendChunks` 输出 chunks，跟踪 `gotSSEData` 标志
+  - [x] SubTask 6.6: 首次调用 `readStream(httpResp.Body)` 获取 `errScan`
+  - [x] SubTask 6.7: 若 `isRetryableStreamDisconnect(errScan, gotSSEData)`，降级 `retryBody`，重置 `normalizer`（若 FormatClaude），创建 `httpReq2`，调用 `helps.RecordAPIRequest` 记录（**W3 修复**），发起重试
+  - [x] SubTask 6.8: 重试响应 2xx 时调用 `readStream(httpResp2.Body)` 更新 `errScan`；非 2xx 时 `log.Debugf` 记录状态码和错误体（**W3 修复**）
+  - [x] SubTask 6.9: 外层错误处理：`if errScan != nil && !errors.Is(errScan, context.Canceled) && !errors.Is(errScan, context.DeadlineExceeded)` 时才 `PublishFailure` + error chunk + `RecordAPIResponseError`（**W2 修复**）
+  - [x] SubTask 6.10: 正常结束时合成 `data: [DONE]`（使用 goroutine 作用域的 `param`），`flushNormalizer()`，`reporter.EnsurePublished(ctx)`
+- [x] Task 7: 阶段 2 编译验证
+  - [x] SubTask 7.1: 运行 `go build ./internal/runtime/executor/...` 验证编译通过
+- [x] Task 8: 阶段 2 SSE 回归测试
+  - [x] SubTask 8.1: 运行 `go test ./internal/runtime/executor/... -run "SSE" -v` 验证 SSE normalizer 无回归
+  - [x] SubTask 8.2: 运行 `go test ./internal/runtime/executor/... -run "SSEIntegration" -v` 验证集成测试无回归（当前分支无此测试，预期）
+- [x] Task 9: 阶段 2 提交 commit（commit message: `feat: add stream retry with reasoning effort degradation`）
 
 ## 阶段 3：MiMo/DeepSeek thinking provider 支持（高复杂度，需前置调研）
 
@@ -49,46 +49,46 @@
 
 ### 新建包与 provider
 
-- [ ] Task 11: 新建 `internal/modelkind/modelkind.go`
-  - [ ] SubTask 11.1: 实现 `IsDeepSeekModel(model string) bool`（前缀 `deepseek-`，大小写不敏感）
-  - [ ] SubTask 11.2: 实现 `IsMIMOModel(model string) bool`（前缀 `mimo-`，大小写不敏感）
-- [ ] Task 12: 新建 `internal/thinking/provider/deepseek/apply.go`
-  - [ ] SubTask 12.1: 实现 `Applier` 结构体 + `NewApplier()` + `init()` 注册 `thinking.RegisterProvider("deepseek", NewApplier())`
-  - [ ] SubTask 12.2: 实现 `Apply` 方法：user-defined 路径（`applyCompatibleDeepSeek`）+ 非 user-defined 路径
-  - [ ] SubTask 12.3: 实现 `normalizeDeepSeekEffort`（xhigh→max）
-  - [ ] SubTask 12.4: 实现 `applyReasoningEffort`（删除 thinking，设置 reasoning_effort）
-  - [ ] SubTask 12.5: 实现 `applyDisabledThinking`（删除 thinking 和 reasoning_effort，设置 thinking.type=disabled）
-- [ ] Task 13: 新建 `internal/thinking/provider/mimo/apply.go`
-  - [ ] SubTask 13.1: 实现 `Applier` 结构体 + `NewApplier()` + `init()` 注册 `thinking.RegisterProvider("mimo", NewApplier())`
-  - [ ] SubTask 13.2: 实现 `Apply` 方法：user-defined 路径（`applyCompatibleMimo`）+ 非 user-defined 路径
-  - [ ] SubTask 13.3: 实现 `applyEnabledThinking`（设置 thinking.type=enabled）
-  - [ ] SubTask 13.4: 实现 `applyDisabledThinking`（设置 thinking.type=disabled）
-  - [ ] SubTask 13.5: 实现 `mimoBoostMaxCompletion`（thinking.type=enabled 时提升 max_completion_tokens 到 budget）
+- [x] Task 11: 新建 `internal/modelkind/modelkind.go`
+  - [x] SubTask 11.1: 实现 `IsDeepSeekModel(model string) bool`（前缀 `deepseek-`，大小写不敏感）
+  - [x] SubTask 11.2: 实现 `IsMIMOModel(model string) bool`（前缀 `mimo-`，大小写不敏感）
+- [x] Task 12: 新建 `internal/thinking/provider/deepseek/apply.go`
+  - [x] SubTask 12.1: 实现 `Applier` 结构体 + `NewApplier()` + `init()` 注册 `thinking.RegisterProvider("deepseek", NewApplier())`
+  - [x] SubTask 12.2: 实现 `Apply` 方法：user-defined 路径（`applyCompatibleDeepSeek`）+ 非 user-defined 路径
+  - [x] SubTask 12.3: 实现 `normalizeDeepSeekEffort`（xhigh→max）
+  - [x] SubTask 12.4: 实现 `applyReasoningEffort`（删除 thinking，设置 reasoning_effort）
+  - [x] SubTask 12.5: 实现 `applyDisabledThinking`（删除 thinking 和 reasoning_effort，设置 thinking.type=disabled）
+- [x] Task 13: 新建 `internal/thinking/provider/mimo/apply.go`
+  - [x] SubTask 13.1: 实现 `Applier` 结构体 + `NewApplier()` + `init()` 注册 `thinking.RegisterProvider("mimo", NewApplier())`
+  - [x] SubTask 13.2: 实现 `Apply` 方法：user-defined 路径（`applyCompatibleMimo`）+ 非 user-defined 路径
+  - [x] SubTask 13.3: 实现 `applyEnabledThinking`（设置 thinking.type=enabled）
+  - [x] SubTask 13.4: 实现 `applyDisabledThinking`（设置 thinking.type=disabled）
+  - [x] SubTask 13.5: 实现 `mimoBoostMaxCompletion`（thinking.type=enabled 时提升 max_completion_tokens 到 budget）
 
 ### 修改注册逻辑
 
-- [ ] Task 14: 修改 `internal/runtime/executor/helps/thinking_providers.go`
-  - [ ] SubTask 14.1: 添加 `_ "...deepseek"` blank import
-  - [ ] SubTask 14.2: 添加 `_ "...mimo"` blank import
-- [ ] Task 15: 修改 `internal/thinking/apply.go`
-  - [ ] SubTask 15.1: `nativeProviderAppliers` map 添加 `"deepseek": nil` 和 `"mimo": nil` 占位
-  - [ ] SubTask 15.2: `extractThinkingConfig` switch 添加 `case "mimo": return extractMIMOConfig(body)` 分支
-  - [ ] SubTask 15.3: 新增 `extractMIMOConfig(body []byte) ThinkingConfig` 函数（thinking.type 优先，reasoning_effort fallback）
-- [ ] Task 16: 修改 `internal/thinking/validate.go`
-  - [ ] SubTask 16.1: `isBudgetCapableProvider` 添加 `mimo`
-  - [ ] SubTask 16.2: `isOpenAIFamily` 添加 `xai`、`deepseek`、`mimo`（注释标明添加 xai/deepseek/mimo 三项）
-- [ ] Task 17: 修改 `internal/thinking/strip.go`
-  - [ ] SubTask 17.1: `StripThinkingConfig` switch 添加 `case "mimo"` 分支（paths: `thinking`, `reasoning_effort`）
-  - [ ] SubTask 17.2: 添加 `case "deepseek"` 分支（paths: `thinking`, `reasoning_effort`）
+- [x] Task 14: 修改 `internal/runtime/executor/helps/thinking_providers.go`
+  - [x] SubTask 14.1: 添加 `_ "...deepseek"` blank import
+  - [x] SubTask 14.2: 添加 `_ "...mimo"` blank import
+- [x] Task 15: 修改 `internal/thinking/apply.go`
+  - [x] SubTask 15.1: `nativeProviderAppliers` map 添加 `"deepseek": nil` 和 `"mimo": nil` 占位
+  - [x] SubTask 15.2: `extractThinkingConfig` switch 添加 `case "mimo": return extractMIMOConfig(body)` 分支
+  - [x] SubTask 15.3: 新增 `extractMIMOConfig(body []byte) ThinkingConfig` 函数（thinking.type 优先，reasoning_effort fallback）
+- [x] Task 16: 修改 `internal/thinking/validate.go`
+  - [x] SubTask 16.1: `isBudgetCapableProvider` 添加 `mimo`
+  - [x] SubTask 16.2: `isOpenAIFamily` 添加 `xai`、`deepseek`、`mimo`（注释标明添加 xai/deepseek/mimo 三项）
+- [x] Task 17: 修改 `internal/thinking/strip.go`
+  - [x] SubTask 17.1: `StripThinkingConfig` switch 添加 `case "mimo"` 分支（paths: `thinking`, `reasoning_effort`）
+  - [x] SubTask 17.2: 添加 `case "deepseek"` 分支（paths: `thinking`, `reasoning_effort`）
 
 ### 修改 executor 路由
 
-- [ ] Task 18: 修改 `internal/runtime/executor/openai_compat_executor.go`
-  - [ ] SubTask 18.1: 添加 `modelkind` import
-  - [ ] SubTask 18.2: 新增 `thinkingTargetForModel(model, defaultTarget string) string` 函数（deepseek-→"deepseek"，mimo-→"mimo"，其余→defaultTarget）
-  - [ ] SubTask 18.3: `Execute` 的 `ApplyThinking` 调用（约 L117）替换 `to.String()` 为 `thinkingTargetForModel(baseModel, to.String())`
-  - [ ] SubTask 18.4: `ExecuteStream` 的 `ApplyThinking` 调用（约 L322）同样替换
-  - [ ] SubTask 18.5: `CountTokens` 的 `ApplyThinking` 调用（约 L628）同样替换
+- [x] Task 18: 修改 `internal/runtime/executor/openai_compat_executor.go`
+  - [x] SubTask 18.1: 添加 `modelkind` import
+  - [x] SubTask 18.2: 新增 `thinkingTargetForModel(model, defaultTarget string) string` 函数（deepseek-→"deepseek"，mimo-→"mimo"，其余→defaultTarget）
+  - [x] SubTask 18.3: `Execute` 的 `ApplyThinking` 调用（约 L117）替换 `to.String()` 为 `thinkingTargetForModel(baseModel, to.String())`
+  - [x] SubTask 18.4: `ExecuteStream` 的 `ApplyThinking` 调用（约 L322）同样替换
+  - [x] SubTask 18.5: `CountTokens` 的 `ApplyThinking` 调用（约 L628）同样替换
 
 ### 条件性任务（取决于前置调研结果）
 
