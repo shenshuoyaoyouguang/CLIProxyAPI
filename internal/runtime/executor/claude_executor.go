@@ -649,6 +649,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				gotSSEData := false
 				scanner := bufio.NewScanner(decodedBody)
 				scanner.Buffer(nil, 52_428_800) // 50MB
+				// Accumulate lines into complete SSE events before emitting. A blank
+				// line terminates an event. Emitting each event as a single chunk
+				// prevents downstream keep-alive heartbeats from being interleaved
+				// inside a frame and breaking the SSE structure.
+				var eventBuf []byte
 			passthroughLoop:
 				for scanner.Scan() {
 					gotSSEData = true
@@ -658,14 +663,30 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 						reporter.Publish(ctx, detail)
 					}
 					line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
-					// Forward the line as-is to preserve SSE format
-					cloned := make([]byte, len(line)+1)
-					copy(cloned, line)
-					cloned[len(line)] = '\n'
+					eventBuf = append(eventBuf, line...)
+					eventBuf = append(eventBuf, '\n')
+					// A blank line ends the current SSE event; flush it whole.
+					if len(line) != 0 {
+						continue
+					}
+					chunk := make([]byte, len(eventBuf))
+					copy(chunk, eventBuf)
+					eventBuf = eventBuf[:0]
 					select {
-					case out <- cliproxyexecutor.StreamChunk{Payload: cloned}:
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
 					case <-ctx.Done():
 						break passthroughLoop
+					}
+				}
+				// Emit a trailing partial event if the stream ended without a final blank line.
+				// Skip it when the scanner reported an error: a truncated event would be
+				// malformed, and the outer retry logic re-reads the body below.
+				if len(eventBuf) > 0 && ctx.Err() == nil && scanner.Err() == nil {
+					chunk := make([]byte, len(eventBuf))
+					copy(chunk, eventBuf)
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+					case <-ctx.Done():
 					}
 				}
 				if ctx.Err() != nil {
