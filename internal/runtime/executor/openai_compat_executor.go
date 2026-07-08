@@ -437,7 +437,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				log.Errorf("openai compat executor: close response body error: %v", errClose)
 			}
 		}()
-
+		var streamUsage helps.StreamUsageBuffer
+		defer streamUsage.Publish(ctx, reporter)
 		// B1: param lives at goroutine scope so readStream and the synthetic
 		// [DONE] marker share the same translator state across retries.
 		var param any
@@ -509,9 +510,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			for scanner.Scan() {
 				line := scanner.Bytes()
 				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-				if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
-					reporter.Publish(ctx, detail)
-				}
+				streamUsage.Observe(helps.ParseOpenAIStreamUsage(line))
 				trimmedLine := bytes.TrimSpace(line)
 				if len(trimmedLine) == 0 {
 					continue
@@ -663,6 +662,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		// Flush any pending buffered events and emit terminal events if missing.
 		flushNormalizer()
 		// Ensure we record the request if no usage chunk was ever seen
+		streamUsage.Publish(ctx, reporter)
 		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
