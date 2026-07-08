@@ -29,11 +29,8 @@ func SSEEventData(event string, payload []byte) []byte {
 	out = append(out, "event: "...)
 	out = append(out, event...)
 	out = append(out, '\n')
-	for _, line := range bytes.Split(payload, []byte("\n")) {
-		out = append(out, "data: "...)
-		out = append(out, line...)
-		out = append(out, '\n')
-	}
+	out = append(out, "data: "...)
+	out = append(out, payload...)
 	return out
 }
 
