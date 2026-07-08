@@ -645,23 +645,51 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
 		var pendingEventLine []byte
-		emitTranslatedLine := func(translatedLine []byte) bool {
+		var pendingTranslated [][]byte
+		// bufferTranslatedLine accumulates translated chunks into pendingTranslated
+		// instead of sending them to the output channel immediately. Call
+		// flushTranslated to combine all buffered chunks into a single atomic send,
+		// preventing downstream keep-alive heartbeats from being interleaved between
+		// the event: and data: lines of the same SSE frame.
+		bufferTranslatedLine := func(translatedLine []byte) bool {
 			chunks := sdktranslator.TranslateStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return false
-				}
-			}
+			pendingTranslated = append(pendingTranslated, chunks...)
 			return true
+		}
+		flushTranslated := func() bool {
+			if len(pendingTranslated) == 0 {
+				return true
+			}
+			combined := bytes.Join(pendingTranslated, []byte("\n"))
+			pendingTranslated = pendingTranslated[:0]
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: combined}:
+				return true
+			case <-ctx.Done():
+				return false
+			}
 		}
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 
+			// Blank line terminates an SSE event; flush accumulated event+data
+			// as a single atomic chunk to prevent keep-alive interleaving.
+			if len(line) == 0 {
+				if !flushTranslated() {
+					return
+				}
+				continue
+			}
+
 			if bytes.HasPrefix(line, xaiEventTag) {
-				if pendingEventLine != nil && !emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
+				// Flush any previously accumulated data before starting a new event.
+				// Also flush any orphaned pendingEventLine (event: without matching data:).
+				if pendingEventLine != nil {
+					bufferTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
+					pendingEventLine = nil
+				}
+				if !flushTranslated() {
 					return
 				}
 				pendingEventLine = bytes.Clone(line)
@@ -692,29 +720,45 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 							eventLine = xaiNormalizeReasoningSummaryEventLine(pendingEventLine, normalizedEventName)
 							pendingEventLine = nil
 						}
-						if !emitTranslatedLine(eventLine) {
+						if !bufferTranslatedLine(eventLine) {
 							return
 						}
 					}
-					if !emitTranslatedLine(append([]byte("data: "), eventData...)) {
+					if !bufferTranslatedLine(append([]byte("data: "), eventData...)) {
+						return
+					}
+					if !flushTranslated() {
 						return
 					}
 				}
 				continue
 			}
 
+			// Non-event, non-data (comment, etc.)
 			if pendingEventLine != nil {
-				if !emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
+				if !bufferTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
 					return
 				}
 				pendingEventLine = nil
 			}
-			if !emitTranslatedLine(bytes.Clone(line)) {
+			if !bufferTranslatedLine(bytes.Clone(line)) {
+				return
+			}
+			if !flushTranslated() {
 				return
 			}
 		}
+		// Flush any remaining content at end of stream
+		if !flushTranslated() {
+			return
+		}
 		if pendingEventLine != nil {
-			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
+			if !bufferTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
+				return
+			}
+			if !flushTranslated() {
+				return
+			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)

@@ -672,9 +672,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					chunk := make([]byte, len(eventBuf))
 					copy(chunk, eventBuf)
 					eventBuf = eventBuf[:0]
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
-					case <-ctx.Done():
+					if !sendStreamChunk(ctx, out, chunk) {
 						break passthroughLoop
 					}
 				}
@@ -682,12 +680,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				// Skip it when the scanner reported an error: a truncated event would be
 				// malformed, and the outer retry logic re-reads the body below.
 				if len(eventBuf) > 0 && ctx.Err() == nil && scanner.Err() == nil {
-					chunk := make([]byte, len(eventBuf))
-					copy(chunk, eventBuf)
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
-					case <-ctx.Done():
-					}
+					sendStreamChunk(ctx, out, eventBuf)
 				}
 				if ctx.Err() != nil {
 					return
@@ -810,6 +803,19 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+// sendStreamChunk sends a payload chunk to the output stream channel, respecting
+// context cancellation. Returns false if the context was cancelled before the
+// chunk could be sent. This is a convenience wrapper for the common
+// select { case out <- ...: case <-ctx.Done(): } pattern used in streaming paths.
+func sendStreamChunk(ctx context.Context, out chan<- cliproxyexecutor.StreamChunk, payload []byte) bool {
+	select {
+	case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func validateClaudeStreamingResponse(data []byte) error {
