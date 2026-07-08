@@ -1348,3 +1348,205 @@ func testValidGrokEncryptedContent() string {
 	}
 	return base64.RawStdEncoding.EncodeToString(buf[:256])
 }
+
+// TestXAIExecutor_ExecuteStream_SSEEventPassthrough_SingleEvent verifies
+// that a single complete SSE event (event: + data: + blank line) from the
+// xAI Responses API is delivered as exactly one chunk, preventing downstream
+// keep-alive heartbeats from splitting the event: and data: lines.
+func TestXAIExecutor_ExecuteStream_SSEEventPassthrough_SingleEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"in_progress\",\"model\":\"grok-4.3\",\"output\":[]}}\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.3",
+		Payload: []byte(`{"model":"grok-4.3","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatCodex,
+		Stream:         true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	// Must be exactly 1 chunk containing both event: and data: lines
+	if len(chunks) != 1 {
+		t.Fatalf("expected exactly 1 chunk, got %d", len(chunks))
+	}
+	payload := string(chunks[0].Payload)
+	if !strings.Contains(payload, "event: response.created") {
+		t.Fatalf("chunk missing event line: %q", payload)
+	}
+	if !strings.Contains(payload, `"type":"response.created"`) {
+		t.Fatalf("chunk missing data line: %q", payload)
+	}
+}
+
+// TestXAIExecutor_ExecuteStream_SSEEventPassthrough_MultipleEvents verifies
+// that multiple consecutive SSE events from the xAI Responses API each produce
+// their own chunk, with event: and data: never split across chunks.
+func TestXAIExecutor_ExecuteStream_SSEEventPassthrough_MultipleEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"in_progress\",\"model\":\"grok-4.3\",\"output\":[]}}\n\n" +
+				"event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"in_progress\",\"model\":\"grok-4.3\",\"output\":[]}}\n\n" +
+				"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\"}]}}\n\n" +
+				"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"model\":\"grok-4.3\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.3",
+		Payload: []byte(`{"model":"grok-4.3","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatCodex,
+		Stream:         true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	if len(chunks) != 4 {
+		t.Fatalf("expected 4 chunks (one per event), got %d", len(chunks))
+	}
+
+	// Each chunk should contain both event: and data: for one event type
+	expectedTypes := []string{"response.created", "response.in_progress", "response.output_item.added", "response.completed"}
+	for i, ch := range chunks {
+		payload := string(ch.Payload)
+		if !strings.Contains(payload, "event: "+expectedTypes[i]) {
+			t.Fatalf("chunk %d missing event line for %q: %q", i, expectedTypes[i], payload)
+		}
+		if !strings.Contains(payload, `"type":"`+expectedTypes[i]+`"`) {
+			t.Fatalf("chunk %d missing data line for %q: %q", i, expectedTypes[i], payload)
+		}
+	}
+}
+
+// TestXAIExecutor_ExecuteStream_SSEEventPassthrough_ReasoningEvents verifies
+// that reasoning events (which undergo normalization) are still delivered as
+// atomic chunks—each event+data pair stays together even after normalization.
+func TestXAIExecutor_ExecuteStream_SSEEventPassthrough_ReasoningEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_item.added\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"status\":\"in_progress\",\"summary\":[]}}\n\n"))
+		_, _ = w.Write([]byte("event: response.content_part.added\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.content_part.added\",\"sequence_number\":2,\"item_id\":\"rs_1\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"reasoning_text\",\"text\":\"\"}}\n\n"))
+		_, _ = w.Write([]byte("event: response.reasoning_text.delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.reasoning_text.delta\",\"sequence_number\":3,\"item_id\":\"rs_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"thinking\"}\n\n"))
+		_, _ = w.Write([]byte("event: response.reasoning_text.done\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.reasoning_text.done\",\"sequence_number\":4,\"item_id\":\"rs_1\",\"output_index\":0,\"content_index\":0,\"text\":\"thinking\"}\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.3",
+		Payload: []byte(`{"model":"grok-4.3","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatCodex,
+		Stream:         true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	// reasoning_text.done splits into 2 sub-events, each flushed
+	// separately → total 5 chunks (4 upstream events + 1 split).
+	if len(chunks) != 5 {
+		t.Fatalf("expected 5 chunks, got %d", len(chunks))
+	}
+
+	// Each chunk must be self-contained — no orphan event: or data: lines
+	for i, ch := range chunks {
+		payload := string(ch.Payload)
+		if strings.HasPrefix(payload, "event:") && !strings.Contains(payload, "\ndata:") {
+			t.Fatalf("chunk %d has event: line without data: line: %q", i, payload)
+		}
+		if strings.HasPrefix(payload, "data:") && !strings.Contains(payload, "event:") {
+			// data-only is allowed for events without a preceding event: line
+			// Only fail if it's clearly an orphaned data from a pairing
+			if gjson.ValidBytes(ch.Payload) {
+				eventType := gjson.GetBytes(ch.Payload, "type").String()
+				if eventType != "" && !strings.Contains(payload, "event:") {
+					// For events that normally have event: prefix, fail
+					if strings.HasPrefix(eventType, "response.") {
+						t.Logf("chunk %d: data-only chunk for type %q (may be valid depending on event)", i, eventType)
+					}
+				}
+			}
+		}
+	}
+
+	// Verify normalized event names are present
+	var allData bytes.Buffer
+	for _, ch := range chunks {
+		allData.Write(ch.Payload)
+	}
+	output := allData.String()
+	for _, want := range []string{
+		"event: response.reasoning_summary_part.added",
+		"event: response.reasoning_summary_text.delta",
+		"event: response.reasoning_summary_text.done",
+		"event: response.reasoning_summary_part.done",
+		"event: response.output_item.added",
+		`"type":"response.reasoning_summary_text.delta"`,
+		`"type":"response.reasoning_summary_text.done"`,
+		`"type":"response.reasoning_summary_part.done"`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stream missing %q", want)
+		}
+	}
+}

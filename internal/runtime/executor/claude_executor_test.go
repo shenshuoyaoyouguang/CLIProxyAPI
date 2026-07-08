@@ -2887,3 +2887,293 @@ func TestRestoreClaudeOAuthToolNamesFromStreamLine_MixedCaseWithPrefix(t *testin
 		t.Fatalf("Glob should be restored to glob, got: %s", string(out))
 	}
 }
+
+// TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_SingleEvent verifies
+// that a single complete SSE event (event + data + blank line) is delivered
+// as exactly one chunk in the Claude passthrough path.
+func TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_SingleEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	expected := "event: message_start\ndata: {\"type\":\"message_start\"}\n\n"
+	if string(chunks[0].Payload) != expected {
+		t.Fatalf("chunk payload mismatch:\nexpected: %q\ngot:      %q", expected, string(chunks[0].Payload))
+	}
+}
+
+// TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_MultipleEvents
+// verifies that each complete SSE event in a stream is delivered as its own
+// separate chunk.
+func TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_MultipleEvents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w,
+			"event: message_start\ndata: {\"type\":\"message_start\"}\n\n"+
+				"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"+
+				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n"+
+				"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"+
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n"+
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	// Expect 6 chunks (one per SSE event)
+	if len(chunks) != 6 {
+		t.Fatalf("expected 6 chunks, got %d", len(chunks))
+	}
+
+	// Each chunk should end with \n\n (SSE event boundary)
+	for i, ch := range chunks {
+		if !bytes.HasSuffix(ch.Payload, []byte("\n\n")) {
+			t.Fatalf("chunk %d payload does not end with \\n\\n: %q", i, string(ch.Payload))
+		}
+	}
+
+	// Verify each event type is in the correct chunk
+	expectedTypes := []string{"message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"}
+	for i, ch := range chunks {
+		if !bytes.Contains(ch.Payload, []byte(expectedTypes[i])) {
+			t.Fatalf("chunk %d missing event type %q: %q", i, expectedTypes[i], string(ch.Payload))
+		}
+	}
+}
+
+// TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_KeepAliveInsideEvent
+// verifies that a keep-alive comment (": keep-alive") between the event: and data:
+// lines of the same SSE frame does NOT split the event into multiple chunks.
+// The entire frame (from event: through the blank line) must be delivered as one
+// atomic chunk, even when interleaved with heartbeats.
+func TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_KeepAliveInsideEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Send an event with a keep-alive line between event: and data: lines.
+		// This simulates the scenario where the downstream keep-alive ticker
+		// fires between the lines of a single SSE frame.
+		_, _ = w.Write([]byte("event: message_start\n: keep-alive\ndata: {\"type\":\"message_start\"}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	// Must be exactly 1 chunk — the entire event including keep-alive must be atomic.
+	if len(chunks) != 1 {
+		t.Fatalf("expected exactly 1 chunk (complete event with keep-alive), got %d", len(chunks))
+	}
+
+	gotPayload := string(chunks[0].Payload)
+	if !strings.Contains(gotPayload, ": keep-alive") {
+		t.Fatalf("chunk payload missing keep-alive line: %q", gotPayload)
+	}
+	if !strings.HasPrefix(gotPayload, "event: message_start") {
+		t.Fatalf("chunk payload should start with event line: %q", gotPayload)
+	}
+	if !strings.HasSuffix(gotPayload, "\n\n") {
+		t.Fatalf("chunk payload should end with blank line terminator: %q", gotPayload)
+	}
+}
+
+// TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_TrailingPartial
+// verifies that when the upstream stream ends without a final blank line and
+// without a scanner error, the remaining partial event content is still emitted
+// as a chunk rather than being silently dropped.
+func TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_TrailingPartial(t *testing.T) {
+	// Construct a partial event without a trailing blank line.
+	partialInput := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(partialInput))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-3-5-sonnet-20241022",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	// The partial event content should have been emitted as one chunk.
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk (partial event), got %d", len(chunks))
+	}
+
+	// The payload should match the partial input plus the newline appended
+	// by the scanner for the last line.
+	if string(chunks[0].Payload) != partialInput {
+		t.Fatalf("chunk payload mismatch:\nexpected: %q\ngot:      %q", partialInput, string(chunks[0].Payload))
+	}
+}
+
+// TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_FullRealisticStream
+// verifies that a realistic Anthropic SSE conversation stream is correctly
+// split into complete events, with each event delivered as one chunk in the
+// correct order.
+func TestClaudeExecutor_ExecuteStream_SSEEventPassthrough_FullRealisticStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Simulate a complete Anthropic streaming conversation with thinking.
+		_, _ = fmt.Fprint(w,
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-20250514\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":15,\"output_tokens\":1}}}\n\n"+
+				"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n"+
+				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think about this step by step...\"}}\n\n"+
+				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"First, I need to understand the problem.\"}}\n\n"+
+				"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"+
+				"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"+
+				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Here is my answer.\"}}\n\n"+
+				"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n"+
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":15,\"output_tokens\":50}}\n\n"+
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"Solve this step by step."}]}],"max_tokens":4096}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-sonnet-4-20250514",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	// 10 events = message_start + 2× content_block_start + 3× content_block_delta + 2× content_block_stop + message_delta + message_stop
+	if len(chunks) != 10 {
+		t.Fatalf("expected 10 chunks, got %d", len(chunks))
+	}
+
+	// Verify event type sequence
+	expectedSequence := []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_delta",
+		"content_block_stop",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}
+	for i, ch := range chunks {
+		if !bytes.Contains(ch.Payload, []byte(`"type":"`+expectedSequence[i]+`"`)) {
+			t.Fatalf("chunk %d: expected event type %q, payload: %q", i, expectedSequence[i], string(ch.Payload))
+		}
+		// Each chunk must be a complete SSE event (ending with blank line)
+		if !bytes.HasSuffix(ch.Payload, []byte("\n\n")) {
+			t.Fatalf("chunk %d: payload does not end with \\n\\n: %q", i, string(ch.Payload))
+		}
+	}
+}
