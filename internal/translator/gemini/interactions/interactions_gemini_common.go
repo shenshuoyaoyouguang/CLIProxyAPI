@@ -262,7 +262,7 @@ func geminiPartToInteractionsContent(part gjson.Result) []byte {
 	return nil
 }
 
-func ConvertGeminiResponseToInteractionsStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
+func convertGeminiResponseToInteractionsStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	_ = ctx
 	if *param == nil {
 		*param = &StreamState{ID: fmt.Sprintf("interaction_%d", time.Now().UnixNano())}

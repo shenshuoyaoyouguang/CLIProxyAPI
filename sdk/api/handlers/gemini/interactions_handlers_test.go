@@ -93,8 +93,8 @@ func TestBuildInteractionsExecutionRequestUsesAgentAuthSelectionModel(t *testing
 	if req.ForcedProvider != "gemini-interactions" {
 		t.Fatalf("ForcedProvider = %q, want gemini-interactions", req.ForcedProvider)
 	}
-	if req.AuthSelectionModel != interactionsAgentAuthSelectionModel {
-		t.Fatalf("AuthSelectionModel = %q, want %q", req.AuthSelectionModel, interactionsAgentAuthSelectionModel)
+	if req.AuthSelectionModel != defaultInteractionsAgentAuthSelectionModel() {
+		t.Fatalf("AuthSelectionModel = %q, want %q", req.AuthSelectionModel, defaultInteractionsAgentAuthSelectionModel())
 	}
 	if req.Model != "agents/test-agent" {
 		t.Fatalf("Model = %q, want agents/test-agent", req.Model)
@@ -150,8 +150,8 @@ func TestInteractionsRejectsBothModelAndAgent(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "exactly one of model or agent") {
-		t.Fatalf("body = %s, want model/agent validation error", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "mutually exclusive") {
+		t.Fatalf("body = %s, want mutually exclusive error", rec.Body.String())
 	}
 }
 
@@ -204,7 +204,7 @@ func TestInteractionsAgentUsesNativeInteractionsEndpoint(t *testing.T) {
 	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
 		t.Fatalf("manager.Register(): %v", errRegister)
 	}
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: interactionsAgentAuthSelectionModel}})
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: defaultInteractionsAgentAuthSelectionModel()}})
 	t.Cleanup(func() {
 		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
 	})
