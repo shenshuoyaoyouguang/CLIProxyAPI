@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -2348,6 +2349,18 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
 
+// transientUpstreamBackoff is the short delay inserted before retrying a
+// different credential after a transient upstream failure (5xx or connection
+// error). It avoids an instant full-credential retry storm when a single
+// provider is flailing while keeping total added latency small.
+const transientUpstreamBackoff = 150 * time.Millisecond
+
+// transientUpstreamThrottle reports whether a short backoff should be applied
+// before the next credential attempt, given the most recent upstream error.
+func transientUpstreamThrottle(lastUpstreamErr error) bool {
+	return isTransientUpstreamError(lastUpstreamErr)
+}
+
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
@@ -2494,12 +2507,18 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
 	var lastErr error
+	var lastUpstreamErr error
 	for {
 		if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, lastErr
 			}
 			return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+		}
+		if transientUpstreamThrottle(lastUpstreamErr) {
+			if errWait := waitForCooldown(ctx, transientUpstreamBackoff, 0); errWait != nil {
+				return cliproxyexecutor.Response{}, errWait
+			}
 		}
 		pickOpts := opts
 		if homeMode {
@@ -2568,6 +2587,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
+				if isTransientUpstreamError(errExec) {
+					lastUpstreamErr = errExec
+				} else {
+					lastUpstreamErr = nil
+				}
 				authErr = errExec
 				continue
 			}
@@ -2600,12 +2624,18 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
 	var lastErr error
+	var lastUpstreamErr error
 	for {
 		if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, lastErr
 			}
 			return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+		}
+		if transientUpstreamThrottle(lastUpstreamErr) {
+			if errWait := waitForCooldown(ctx, transientUpstreamBackoff, 0); errWait != nil {
+				return cliproxyexecutor.Response{}, errWait
+			}
 		}
 		pickOpts := opts
 		if homeMode {
@@ -2674,6 +2704,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
+				if isTransientUpstreamError(errExec) {
+					lastUpstreamErr = errExec
+				} else {
+					lastUpstreamErr = nil
+				}
 				authErr = errExec
 				continue
 			}
@@ -2706,12 +2741,18 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	tried := make(map[string]struct{})
 	attempted := make(map[string]struct{})
 	var lastErr error
+	var lastUpstreamErr error
 	for {
 		if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 			if lastErr != nil {
 				return nil, lastErr
 			}
 			return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+		}
+		if transientUpstreamThrottle(lastUpstreamErr) {
+			if errWait := waitForCooldown(ctx, transientUpstreamBackoff, 0); errWait != nil {
+				return nil, errWait
+			}
 		}
 		pickOpts := opts
 		if homeMode {
@@ -2763,6 +2804,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
+			}
+			if isTransientUpstreamError(errStream) {
+				lastUpstreamErr = errStream
+			} else {
+				lastUpstreamErr = nil
 			}
 			lastErr = errStream
 			if homeMode {
@@ -3771,6 +3817,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		m.persistCooldownStates(context.Background())
 	}
 
+	// When an auth fails, clear its session-affinity bindings so the next
+	// retry won't hit a cached auth that is now in cooldown.
+	if !result.Success {
+		m.invalidateSessionAffinity(result.AuthID)
+	}
+
 	if clearModelQuota && result.Model != "" {
 		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, result.Model)
 	}
@@ -3978,6 +4030,57 @@ func statusCodeFromError(err error) int {
 		return sc.StatusCode()
 	}
 	return 0
+}
+
+// isTransientUpstreamError reports whether err represents a transient upstream
+// failure (5xx or connection/transport failure) rather than a client-side error.
+// Such failures justify a short backoff before retrying a different credential so
+// a single flailing provider does not trigger an instant full-credential retry storm.
+func isTransientUpstreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isRequestInvalidError(err) {
+		return false
+	}
+	status := statusCodeFromError(err)
+	switch status {
+	case http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	if status == 0 {
+		var netErr *net.OpError
+		if errors.As(err, &netErr) {
+			// 精确检查net.OpError的Err字段是否包含connection refused
+			if netErr.Err != nil {
+				errMsg := strings.ToLower(netErr.Err.Error())
+				if strings.Contains(errMsg, "connection refused") {
+					return true
+				}
+			}
+			return true // 其他net.OpError也视为瞬态错误
+		}
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) {
+			return true
+		}
+		var sysErr *net.UnknownNetworkError
+		if errors.As(err, &sysErr) {
+			return true
+		}
+		// 使用errors.Is精确匹配context.DeadlineExceeded错误
+		if errors.Is(err, context.DeadlineExceeded) {
+			return true
+		}
+		// Fallback: 字符串匹配处理边缘情况
+		if strings.Contains(strings.ToLower(err.Error()), "connection refused") {
+			return true
+		}
+	}
+	return false
 }
 
 func isUnauthorizedError(err error) bool {

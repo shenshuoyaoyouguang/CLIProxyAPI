@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"testing"
@@ -1212,5 +1213,84 @@ func TestManager_RequestScopedNotFoundStopsRetryWithoutSuspendingAuth(t *testing
 	}
 	if state := updatedBad.ModelStates[model]; state != nil {
 		t.Fatalf("expected request-scoped 404 to avoid bad auth model cooldown state, got %#v", state)
+	}
+}
+
+// TestManager_TransientUpstreamError_BacksOffBetweenCredentials verifies that
+// when every credential fails with a transient upstream error (5xx), the manager
+// inserts a short backoff before trying the next credential instead of retrying
+// instantly. This prevents a single flailing provider from causing an instant
+// full-credential retry storm (see transientUpstreamBackoff).
+func TestManager_TransientUpstreamError_BacksOffBetweenCredentials(t *testing.T) {
+	ctx := context.Background()
+	request := cliproxyexecutor.Request{Model: "test-model"}
+
+	// Use the existing executor that always returns HTTP 500 for every auth.
+	executor := &credentialRetryLimitExecutor{id: "claude"}
+	m := NewManager(nil, nil, nil)
+	// No outer request retry, allow up to 3 credential attempts.
+	m.SetRetryConfig(0, 0, 3)
+	m.RegisterExecutor(executor)
+
+	baseID := uuid.NewString()
+	auths := []*Auth{
+		{ID: baseID + "-auth-1", Provider: "claude"},
+		{ID: baseID + "-auth-2", Provider: "claude"},
+		{ID: baseID + "-auth-3", Provider: "claude"},
+	}
+	reg := registry.GetGlobalRegistry()
+	for _, a := range auths {
+		reg.RegisterClient(a.ID, "claude", []*registry.ModelInfo{{ID: "test-model"}})
+		if _, errRegister := m.Register(ctx, a); errRegister != nil {
+			t.Fatalf("register %s: %v", a.ID, errRegister)
+		}
+	}
+	t.Cleanup(func() {
+		for _, a := range auths {
+			reg.UnregisterClient(a.ID)
+		}
+	})
+
+	start := time.Now()
+	_, errExecute := m.Execute(ctx, []string{"claude"}, request, cliproxyexecutor.Options{})
+	elapsed := time.Since(start)
+	if errExecute == nil {
+		t.Fatalf("expected error for all-500 execution")
+	}
+	if calls := executor.Calls(); calls != 3 {
+		t.Fatalf("expected 3 credential attempts, got %d", calls)
+	}
+	// Two backoffs (between attempt 1->2 and 2->3) must be observed.
+	if elapsed < 2*transientUpstreamBackoff {
+		t.Fatalf("expected elapsed >= %v due to transient backoff, got %v", 2*transientUpstreamBackoff, elapsed)
+	}
+}
+
+// TestIsTransientUpstreamError classifies errors that should trigger backoff.
+func TestIsTransientUpstreamError(t *testing.T) {
+	testCases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"500", &Error{HTTPStatus: 500, Message: "boom"}, true},
+		{"502", &Error{HTTPStatus: 502, Message: "bad gateway"}, true},
+		{"503", &Error{HTTPStatus: 503, Message: "unavailable"}, true},
+		{"504", &Error{HTTPStatus: 504, Message: "timeout"}, true},
+		{"400", &Error{HTTPStatus: 400, Message: "invalid_request_error: x"}, false},
+		{"401", &Error{HTTPStatus: 401, Message: "unauthorized"}, false},
+		{"429", &Error{HTTPStatus: 429, Message: "quota"}, false},
+		{"500_request_invalid_msg", &Error{HTTPStatus: 500, Message: "context_length_exceeded"}, true},
+		{"connection_refused", errors.New("dial tcp 1.2.3.4:443: connect: connection refused"), true},
+		{"context_deadline_exceeded", context.DeadlineExceeded, true},
+		{"nil", nil, false},
+	}
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTransientUpstreamError(tc.err); got != tc.want {
+				t.Fatalf("isTransientUpstreamError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
