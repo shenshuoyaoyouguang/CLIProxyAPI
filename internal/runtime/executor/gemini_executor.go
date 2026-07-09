@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -73,7 +74,7 @@ func (e *GeminiExecutor) Identifier() string {
 
 // RequestToFormat reports the upstream request format used after auth selection.
 func (e *GeminiExecutor) RequestToFormat(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) sdktranslator.Format {
-	if strings.EqualFold(strings.TrimSpace(e.Identifier()), "gemini-interactions") && nativeInteractionsSourceFormat(opts.SourceFormat) {
+	if strings.EqualFold(strings.TrimSpace(e.Identifier()), "gemini-interactions") && constant.SupportsNativeInteractionsProtocol(string(opts.SourceFormat)) {
 		return sdktranslator.FormatInteractions
 	}
 	return sdktranslator.FormatGemini
@@ -761,16 +762,7 @@ func (e *GeminiExecutor) resolveGeminiConfig(auth *cliproxyauth.Auth) *config.Ge
 }
 
 func shouldExecuteNativeInteractions(auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) bool {
-	return nativeInteractionsSourceFormat(opts.SourceFormat) && isNativeInteractionsAuth(auth)
-}
-
-func nativeInteractionsSourceFormat(format sdktranslator.Format) bool {
-	switch format {
-	case sdktranslator.FormatInteractions, sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAIResponse, sdktranslator.FormatClaude, sdktranslator.FormatGemini:
-		return true
-	default:
-		return false
-	}
+	return constant.SupportsNativeInteractionsProtocol(string(opts.SourceFormat)) && isNativeInteractionsAuth(auth)
 }
 
 func translateGeminiInteractionsRequestBody(model string, payload []byte, opts cliproxyexecutor.Options, stream bool) []byte {

@@ -28,3 +28,15 @@ const (
 	// Interactions represents the Google Interactions API format identifier.
 	Interactions = "interactions"
 )
+
+// SupportsNativeInteractionsProtocol reports whether the given protocol supports
+// the native Interactions execution path. These protocols can route directly to
+// the native Interactions executor without format translation.
+func SupportsNativeInteractionsProtocol(protocol string) bool {
+	switch protocol {
+	case Interactions, OpenAI, OpenaiResponse, Claude, Gemini:
+		return true
+	default:
+		return false
+	}
+}

@@ -10,12 +10,25 @@ import (
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-const interactionsAgentAuthSelectionModel = "gemini-2.5-flash"
+// interactionsAgentAuthSelectionFallback is the fallback model name used for auth
+// selection when the registry has no Gemini models registered.
+const interactionsAgentAuthSelectionFallback = "gemini-2.5-flash"
+
+// defaultInteractionsAgentAuthSelectionModel returns the first registered Gemini
+// model ID for auth selection in agent mode. It falls back to a hardcoded
+// default when the registry is empty.
+func defaultInteractionsAgentAuthSelectionModel() string {
+	if models := registry.GetGeminiModels(); len(models) > 0 && models[0].ID != "" {
+		return models[0].ID
+	}
+	return interactionsAgentAuthSelectionFallback
+}
 
 type interactionsRequestTarget struct {
 	Model  string
@@ -34,7 +47,7 @@ func parseInteractionsRequestTarget(rawJSON []byte) (interactionsRequestTarget, 
 		return interactionsRequestTarget{}, fmt.Errorf("request requires exactly one of model or agent")
 	}
 	if model != "" && agent != "" {
-		return interactionsRequestTarget{}, fmt.Errorf("request requires exactly one of model or agent")
+		return interactionsRequestTarget{}, fmt.Errorf("model and agent are mutually exclusive")
 	}
 	streamNode := root.Get("stream")
 	stream := false
@@ -75,7 +88,7 @@ func buildInteractionsExecutionRequest(target interactionsRequestTarget, modelNa
 	authSelectionModel := ""
 	if target.Agent != "" {
 		forcedProvider = GeminiInteractions
-		authSelectionModel = interactionsAgentAuthSelectionModel
+		authSelectionModel = defaultInteractionsAgentAuthSelectionModel()
 	}
 	return handlers.ProtocolExecutionRequest{
 		EntryProtocol:      Interactions,

@@ -77,7 +77,7 @@ func ConvertInteractionsResponseToClaudeNonStream(_ context.Context, modelName s
 			if signature := interactionsSignature(step); signature != "" {
 				block, _ = sjson.SetBytes(block, "signature", signature)
 			}
-			args := firstExisting(step, "arguments", "args")
+			args := firstExistingPath(step, "arguments", "args")
 			if args.Exists() && args.IsObject() {
 				block, _ = sjson.SetRawBytes(block, "input", []byte(args.Raw))
 			}
@@ -356,7 +356,7 @@ func interactionsSignature(root gjson.Result) string {
 	)
 }
 
-func firstExisting(root gjson.Result, paths ...string) gjson.Result {
+func firstExistingPath(root gjson.Result, paths ...string) gjson.Result {
 	for _, path := range paths {
 		if value := root.Get(path); value.Exists() {
 			return value

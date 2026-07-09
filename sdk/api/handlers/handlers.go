@@ -1470,19 +1470,10 @@ func adjustExecutionProvidersForEntryProtocol(entryProtocol string, providers []
 	if entryProtocol == Interactions {
 		return preferExecutionProvider(providers, GeminiInteractions)
 	}
-	if supportsNativeInteractionsEntryProtocol(entryProtocol) {
+	if SupportsNativeInteractionsProtocol(entryProtocol) {
 		return providers
 	}
 	return excludeExecutionProvider(providers, GeminiInteractions)
-}
-
-func supportsNativeInteractionsEntryProtocol(entryProtocol string) bool {
-	switch entryProtocol {
-	case Interactions, OpenAI, OpenaiResponse, Claude, Gemini:
-		return true
-	default:
-		return false
-	}
 }
 
 func excludeExecutionProvider(providers []string, excluded string) []string {

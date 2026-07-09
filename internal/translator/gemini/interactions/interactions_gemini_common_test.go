@@ -250,7 +250,7 @@ func TestConvertGeminiResponseToInteractionsNonStreamFunctionCallPreservesCallID
 
 func TestConvertGeminiResponseToInteractionsStreamFunctionCallCallID(t *testing.T) {
 	var param any
-	out := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","call_id":"call_stream_1","args":{"q":"x"}}}]}}]}`), &param)
+	out := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","call_id":"call_stream_1","args":{"q":"x"}}}]}}]}`), &param)
 	payload := findStepDeltaPayload(out)
 	if len(payload) == 0 {
 		t.Fatalf("step.delta payload not found")
@@ -266,9 +266,9 @@ func TestConvertGeminiResponseToInteractionsStreamFunctionCallCallID(t *testing.
 
 func TestConvertGeminiResponseToInteractionsStreamFunctionCallThoughtSignature(t *testing.T) {
 	var param any
-	thoughtOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"thinking","thought":true}]}}]}`), &param)
-	textOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"I will call the tool."}]}}]}`), &param)
-	callOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"thoughtSignature":"sig-call","functionCall":{"name":"lookup","id":"call_1","args":{"q":"x"}}}]}}]}`), &param)
+	thoughtOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"thinking","thought":true}]}}]}`), &param)
+	textOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"I will call the tool."}]}}]}`), &param)
+	callOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"thoughtSignature":"sig-call","functionCall":{"name":"lookup","id":"call_1","args":{"q":"x"}}}]}}]}`), &param)
 
 	out := append(append(thoughtOut, textOut...), callOut...)
 	signaturePayload := findStepDeltaPayloadByType(out, "thought_signature")
@@ -296,9 +296,9 @@ func TestConvertGeminiResponseToInteractionsStreamFunctionCallThoughtSignature(t
 
 func TestConvertGeminiResponseToInteractionsStreamStepLifecycle(t *testing.T) {
 	var param any
-	thoughtOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"thinking","thought":true}]}}]}`), &param)
-	textOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"answer"}]}}]}`), &param)
-	callOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","id":"call_1","args":{"q":"x"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"totalTokenCount":7,"thoughtsTokenCount":2}}`), &param)
+	thoughtOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"thinking","thought":true}]}}]}`), &param)
+	textOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"answer"}]}}]}`), &param)
+	callOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","id":"call_1","args":{"q":"x"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"totalTokenCount":7,"thoughtsTokenCount":2}}`), &param)
 
 	out := append(append(thoughtOut, textOut...), callOut...)
 	if got := eventTypes(out); !bytes.Equal(got, []byte("interaction.created,interaction.status_update,step.start,step.delta,step.stop,step.start,step.delta,step.stop,step.start,step.delta,step.stop,interaction.completed")) {
@@ -333,9 +333,9 @@ func TestConvertGeminiResponseToInteractionsStreamStepLifecycle(t *testing.T) {
 
 func TestConvertGeminiResponseToInteractionsStreamEmitsTerminalOnce(t *testing.T) {
 	var param any
-	finishOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"finishReason":"STOP"}]}`), &param)
-	usageOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`), &param)
-	doneOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`[DONE]`), &param)
+	finishOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"finishReason":"STOP"}]}`), &param)
+	usageOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`), &param)
+	doneOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`[DONE]`), &param)
 
 	if got := countEventType(finishOut, "step.stop"); got != 0 {
 		t.Fatalf("finish step.stop count = %d, want 0", got)
@@ -366,7 +366,7 @@ func TestConvertGeminiResponseToInteractionsStreamEmitsTerminalOnce(t *testing.T
 
 func TestConvertGeminiResponseToInteractionsStreamDoesNotCompleteOnNonTerminalUsage(t *testing.T) {
 	var param any
-	thoughtOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"thinking"}]}}],"usageMetadata":{"promptTokenCount":124,"totalTokenCount":124}}`), &param)
+	thoughtOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"thinking"}]}}],"usageMetadata":{"promptTokenCount":124,"totalTokenCount":124}}`), &param)
 	if got := countEventType(thoughtOut, "interaction.completed"); got != 0 {
 		t.Fatalf("thought interaction.completed count = %d, want 0. Events: %s", got, eventTypes(thoughtOut))
 	}
@@ -374,9 +374,9 @@ func TestConvertGeminiResponseToInteractionsStreamDoesNotCompleteOnNonTerminalUs
 		t.Fatalf("thought step.stop count = %d, want 0. Events: %s", got, eventTypes(thoughtOut))
 	}
 
-	textOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"好的，我将为您调用天气查询工具。"}]}}],"usageMetadata":{"promptTokenCount":124,"candidatesTokenCount":17,"totalTokenCount":452,"thoughtsTokenCount":311}}`), &param)
-	callOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"location":"北京"},"id":"nriii75p"}}]}}],"usageMetadata":{"promptTokenCount":124,"candidatesTokenCount":33,"totalTokenCount":468,"thoughtsTokenCount":311}}`), &param)
-	finishOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":124,"candidatesTokenCount":33,"totalTokenCount":468,"thoughtsTokenCount":311}}`), &param)
+	textOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"好的，我将为您调用天气查询工具。"}]}}],"usageMetadata":{"promptTokenCount":124,"candidatesTokenCount":17,"totalTokenCount":452,"thoughtsTokenCount":311}}`), &param)
+	callOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"location":"北京"},"id":"nriii75p"}}]}}],"usageMetadata":{"promptTokenCount":124,"candidatesTokenCount":33,"totalTokenCount":468,"thoughtsTokenCount":311}}`), &param)
+	finishOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash-low", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":124,"candidatesTokenCount":33,"totalTokenCount":468,"thoughtsTokenCount":311}}`), &param)
 
 	out := append(append(append(thoughtOut, textOut...), callOut...), finishOut...)
 	if got := countEventType(out, "interaction.completed"); got != 1 {
@@ -393,7 +393,7 @@ func TestConvertGeminiResponseToInteractionsStreamDoesNotCompleteOnNonTerminalUs
 
 func TestConvertGeminiResponseToInteractionsStreamIgnoresTrafficOnlyUsageMetadata(t *testing.T) {
 	var param any
-	out := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[]}}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"}}`), &param)
+	out := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"content":{"role":"model","parts":[]}}],"usageMetadata":{"trafficType":"PROVISIONED_THROUGHPUT"}}`), &param)
 	if got := countEventType(out, "interaction.completed"); got != 0 {
 		t.Fatalf("interaction.completed count = %d, want 0. Events: %q", got, out)
 	}
@@ -404,8 +404,8 @@ func TestConvertGeminiResponseToInteractionsStreamIgnoresTrafficOnlyUsageMetadat
 
 func TestConvertGeminiResponseToInteractionsStreamCompletesOnDoneWithoutUsage(t *testing.T) {
 	var param any
-	finishOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"finishReason":"STOP"}]}`), &param)
-	doneOut := ConvertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`[DONE]`), &param)
+	finishOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`{"candidates":[{"finishReason":"STOP"}]}`), &param)
+	doneOut := convertGeminiResponseToInteractionsStream(context.Background(), "gemini-3.5-flash", nil, nil, []byte(`[DONE]`), &param)
 
 	if got := countEventType(finishOut, "interaction.completed"); got != 0 {
 		t.Fatalf("finish interaction.completed count = %d, want 0", got)

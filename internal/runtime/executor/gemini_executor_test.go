@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -556,13 +557,13 @@ func TestNativeInteractionsSourceFormatAllowsSupportedEntryProtocols(t *testing.
 		sdktranslator.FormatGemini,
 	}
 	for _, format := range supported {
-		if !nativeInteractionsSourceFormat(format) {
-			t.Fatalf("nativeInteractionsSourceFormat(%q) = false, want true", format)
+		if !constant.SupportsNativeInteractionsProtocol(string(format)) {
+			t.Fatalf("SupportsNativeInteractionsProtocol(%q) = false, want true", format)
 		}
 	}
 	for _, format := range []sdktranslator.Format{sdktranslator.FormatCodex, sdktranslator.FormatAntigravity} {
-		if nativeInteractionsSourceFormat(format) {
-			t.Fatalf("nativeInteractionsSourceFormat(%q) = true, want false", format)
+		if constant.SupportsNativeInteractionsProtocol(string(format)) {
+			t.Fatalf("SupportsNativeInteractionsProtocol(%q) = true, want false", format)
 		}
 	}
 }

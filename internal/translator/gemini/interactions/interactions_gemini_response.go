@@ -22,7 +22,7 @@ type interactionsToGeminiStreamState struct {
 }
 
 func ConvertGeminiResponseToInteractions(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
-	return ConvertGeminiResponseToInteractionsStream(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, param)
+	return convertGeminiResponseToInteractionsStream(ctx, modelName, originalRequestRawJSON, requestRawJSON, rawJSON, param)
 }
 
 func ConvertGeminiResponseToInteractionsNonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {

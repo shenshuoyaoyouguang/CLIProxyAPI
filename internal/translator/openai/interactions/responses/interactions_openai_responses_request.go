@@ -363,8 +363,8 @@ func functionToolToInteractions(tool gjson.Result) ([]byte, bool) {
 	}
 	out := []byte(`{"type":"function","name":""}`)
 	out, _ = sjson.SetBytes(out, "name", name)
-	copyOptionalString(&out, "description", firstExisting(tool.Get("description"), tool.Get("function.description")))
-	copyOptionalRaw(&out, "parameters", firstExisting(tool.Get("parameters"), tool.Get("function.parameters")))
+	copyOptionalString(&out, "description", firstExistingResult(tool.Get("description"), tool.Get("function.description")))
+	copyOptionalRaw(&out, "parameters", firstExistingResult(tool.Get("parameters"), tool.Get("function.parameters")))
 	return out, true
 }
 
@@ -375,8 +375,8 @@ func functionDeclarationFromTool(tool gjson.Result) ([]byte, bool) {
 	}
 	out := []byte(`{"name":""}`)
 	out, _ = sjson.SetBytes(out, "name", name)
-	copyOptionalString(&out, "description", firstExisting(tool.Get("description"), tool.Get("function.description")))
-	copyOptionalRaw(&out, "parameters", firstExisting(tool.Get("parameters"), tool.Get("function.parameters")))
+	copyOptionalString(&out, "description", firstExistingResult(tool.Get("description"), tool.Get("function.description")))
+	copyOptionalRaw(&out, "parameters", firstExistingResult(tool.Get("parameters"), tool.Get("function.parameters")))
 	return out, true
 }
 
@@ -558,8 +558,8 @@ func responsesToolFromInteractionsTool(tool gjson.Result) ([]byte, bool) {
 	}
 	out := []byte(`{"type":"function","name":""}`)
 	out, _ = sjson.SetBytes(out, "name", name)
-	copyOptionalString(&out, "description", firstExisting(tool.Get("description"), tool.Get("function.description")))
-	copyOptionalRaw(&out, "parameters", firstExisting(tool.Get("parameters"), tool.Get("function.parameters"), tool.Get("parametersJsonSchema")))
+	copyOptionalString(&out, "description", firstExistingResult(tool.Get("description"), tool.Get("function.description")))
+	copyOptionalRaw(&out, "parameters", firstExistingResult(tool.Get("parameters"), tool.Get("function.parameters"), tool.Get("parametersJsonSchema")))
 	return out, true
 }
 
@@ -657,7 +657,7 @@ func copyOptionalRaw(out *[]byte, path string, value gjson.Result) {
 	}
 }
 
-func firstExisting(values ...gjson.Result) gjson.Result {
+func firstExistingResult(values ...gjson.Result) gjson.Result {
 	for _, value := range values {
 		if value.Exists() {
 			return value
