@@ -141,8 +141,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if updated, errDel := sjson.DeleteBytes(translated, "extra_body"); errDel == nil {
 		translated = updated
 	}
-	// MiMo-specific request normalization: ensure reasoning_content passback for
-	// multi-turn tool calls and lock thinking params in deep-thinking mode.
+	// Provider-specific request normalization for models that require
+	// reasoning_content passback in multi-turn tool-calling conversations.
+	if modelkind.IsDeepSeekModel(baseModel) {
+		translated = normalizeDeepSeekToolMessageReasoning(translated)
+	}
+	// MiMo also locks temperature/top_p in deep-thinking mode.
 	if modelkind.IsMIMOModel(baseModel) {
 		translated = normalizeMimoToolMessageReasoning(translated)
 		translated = mimoLockThinkingParams(translated)
@@ -214,6 +218,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	if modelkind.IsDeepSeekModel(baseModel) {
+		body = helps.NormalizeDeepSeekOpenAIUsage(body)
+	}
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.EnsurePublished(ctx)
@@ -357,8 +364,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		translated = updated
 	}
 
-	// MiMo-specific request normalization: ensure reasoning_content passback for
-	// multi-turn tool calls and lock thinking params in deep-thinking mode.
+	// Provider-specific request normalization for models that require
+	// reasoning_content passback in multi-turn tool-calling conversations.
+	if modelkind.IsDeepSeekModel(baseModel) {
+		translated = normalizeDeepSeekToolMessageReasoning(translated)
+	}
+	// MiMo also locks temperature/top_p in deep-thinking mode.
 	if modelkind.IsMIMOModel(baseModel) {
 		translated = normalizeMimoToolMessageReasoning(translated)
 		translated = mimoLockThinkingParams(translated)
@@ -511,10 +522,11 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			for scanner.Scan() {
 				line := scanner.Bytes()
 				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-				if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
-					reporter.Publish(ctx, detail)
-				}
 				trimmedLine := bytes.TrimSpace(line)
+				if modelkind.IsDeepSeekModel(baseModel) {
+					trimmedLine = helps.NormalizeDeepSeekOpenAIUsage(trimmedLine)
+				}
+				streamUsage.Observe(helps.ParseOpenAIStreamUsage(trimmedLine))
 				if len(trimmedLine) == 0 {
 					continue
 				}
@@ -803,8 +815,12 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 		return cliproxyexecutor.Response{}, err
 	}
 
-	// MiMo-specific request normalization: ensure reasoning_content passback for
-	// multi-turn tool calls and lock thinking params in deep-thinking mode.
+	// Provider-specific request normalization for models that require
+	// reasoning_content passback in multi-turn tool-calling conversations.
+	if modelkind.IsDeepSeekModel(baseModel) {
+		translated = normalizeDeepSeekToolMessageReasoning(translated)
+	}
+	// MiMo also locks temperature/top_p in deep-thinking mode.
 	if modelkind.IsMIMOModel(baseModel) {
 		translated = normalizeMimoToolMessageReasoning(translated)
 		translated = mimoLockThinkingParams(translated)

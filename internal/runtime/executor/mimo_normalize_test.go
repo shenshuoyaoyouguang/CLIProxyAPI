@@ -52,6 +52,36 @@ func TestNormalizeMimoToolMessageReasoning_UsesReasoningField(t *testing.T) {
 	}
 }
 
+func TestNormalizeMimoToolMessageReasoning_UsesPreviousReasoningFallback(t *testing.T) {
+	body := []byte(`{
+		"messages":[
+			{"role":"assistant","content":"plan","reasoning_content":"previous reasoning"},
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list_directory","arguments":"{}"}}]}
+		]
+	}`)
+
+	out := normalizeMimoToolMessageReasoning(body)
+	got := gjson.GetBytes(out, "messages.1.reasoning_content").String()
+	if got != "previous reasoning" {
+		t.Fatalf("messages.1.reasoning_content = %q, want %q", got, "previous reasoning")
+	}
+}
+
+func TestNormalizeMimoToolMessageReasoning_InterveningAssistantClearsPreviousReasoningFallback(t *testing.T) {
+	body := []byte(`{
+		"messages":[
+			{"role":"assistant","content":"plan","reasoning_content":"previous reasoning"},
+			{"role":"assistant","content":"plain follow-up"},
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list_directory","arguments":"{}"}}]}
+		]
+	}`)
+
+	out := normalizeMimoToolMessageReasoning(body)
+	if got := gjson.GetBytes(out, "messages.2.reasoning_content").String(); got != "[reasoning unavailable]" {
+		t.Fatalf("messages.2.reasoning_content = %q, want %q", got, "[reasoning unavailable]")
+	}
+}
+
 func TestNormalizeMimoToolMessageReasoning_UsesContentStringFallback(t *testing.T) {
 	body := []byte(`{
 		"messages":[
