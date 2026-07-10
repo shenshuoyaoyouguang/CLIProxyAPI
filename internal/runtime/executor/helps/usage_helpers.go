@@ -573,6 +573,7 @@ func hasOpenAIStyleUsageTokenFields(usageNode gjson.Result) bool {
 		usageNode.Get("completion_tokens").Exists() ||
 		usageNode.Get("output_tokens").Exists() ||
 		usageNode.Get("total_tokens").Exists() ||
+		usageNode.Get("prompt_cache_hit_tokens").Exists() ||
 		usageNode.Get("prompt_tokens_details.cached_tokens").Exists() ||
 		usageNode.Get("input_tokens_details.cached_tokens").Exists() ||
 		usageNode.Get("prompt_tokens_details.cache_write_tokens").Exists() ||
@@ -600,6 +601,9 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	cached := usageNode.Get("prompt_tokens_details.cached_tokens")
 	if !cached.Exists() {
 		cached = usageNode.Get("input_tokens_details.cached_tokens")
+	}
+	if !cached.Exists() {
+		cached = usageNode.Get("prompt_cache_hit_tokens")
 	}
 	if cached.Exists() {
 		detail.CachedTokens = cached.Int()
