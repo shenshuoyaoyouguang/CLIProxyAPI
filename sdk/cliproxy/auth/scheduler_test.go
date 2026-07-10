@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 type schedulerTestExecutor struct{}
@@ -1044,5 +1048,219 @@ func TestManager_SchedulerTracksMarkResultCooldownAndRecovery(t *testing.T) {
 	}
 	if len(seen) != 2 {
 		t.Fatalf("len(seen) = %d, want %d", len(seen), 2)
+	}
+}
+
+func newAuthInfoHook(t *testing.T) *logtest.Hook {
+	t.Helper()
+
+	previousLevel := log.GetLevel()
+	log.SetLevel(log.InfoLevel)
+	hook := logtest.NewLocal(log.StandardLogger())
+	t.Cleanup(func() {
+		hook.Reset()
+		log.SetLevel(previousLevel)
+	})
+	return hook
+}
+
+func TestManager_PickNext_LogsDeepSeekKVCacheHintWithoutSessionAffinity(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	registerSchedulerModels(t, "gemini", "deepseek-chat", "auth-a", "auth-b")
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-a) error = %v", errRegister)
+	}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-b", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-b) error = %v", errRegister)
+	}
+
+	hook := newAuthInfoHook(t)
+
+	got, _, errPick := manager.pickNext(context.Background(), "gemini", "deepseek-chat", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() error = %v", errPick)
+	}
+	if got == nil {
+		t.Fatalf("pickNext() auth = nil")
+	}
+
+	found := false
+	for _, entry := range hook.AllEntries() {
+		if entry.Level != log.InfoLevel {
+			continue
+		}
+		if !strings.Contains(entry.Message, "DeepSeek KV cache may have reduced hit rate because routing.session-affinity is disabled") {
+			continue
+		}
+		if entry.Data["provider"] != "gemini" {
+			t.Fatalf("provider field = %v, want gemini", entry.Data["provider"])
+		}
+		if entry.Data["model"] != "deepseek-chat" {
+			t.Fatalf("model field = %v, want deepseek-chat", entry.Data["model"])
+		}
+		if entry.Data["candidate_auths"] != 2 {
+			t.Fatalf("candidate_auths field = %v, want 2", entry.Data["candidate_auths"])
+		}
+		if entry.Data["session_id_detected"] != false {
+			t.Fatalf("session_id_detected field = %v, want false", entry.Data["session_id_detected"])
+		}
+		if _, ok := entry.Data["session_id_source"]; ok {
+			t.Fatalf("session_id_source should be absent when no session id is supplied, got %v", entry.Data["session_id_source"])
+		}
+		if !strings.Contains(entry.Message, "enable session affinity to keep the same conversation on the same auth") {
+			t.Fatalf("expected generic session-affinity guidance, got message %q", entry.Message)
+		}
+		found = true
+	}
+	if !found {
+		var dump bytes.Buffer
+		for _, entry := range hook.AllEntries() {
+			dump.WriteString(entry.Level.String())
+			dump.WriteString(": ")
+			dump.WriteString(entry.Message)
+			dump.WriteString("\n")
+		}
+		t.Fatalf("expected DeepSeek KV cache hint log, got entries:\n%s", dump.String())
+	}
+}
+
+func TestManager_PickNext_DoesNotLogDeepSeekKVCacheHintWhenSessionAffinityEnabled(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{SessionAffinity: true},
+	})
+	registerSchedulerModels(t, "gemini", "deepseek-chat", "auth-a", "auth-b")
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-a) error = %v", errRegister)
+	}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-b", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-b) error = %v", errRegister)
+	}
+
+	hook := newAuthInfoHook(t)
+
+	got, _, errPick := manager.pickNext(context.Background(), "gemini", "deepseek-chat", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() error = %v", errPick)
+	}
+	if got == nil {
+		t.Fatalf("pickNext() auth = nil")
+	}
+
+	for _, entry := range hook.AllEntries() {
+		if strings.Contains(entry.Message, "DeepSeek KV cache may have reduced hit rate because routing.session-affinity is disabled") {
+			t.Fatalf("unexpected DeepSeek KV cache hint log when session affinity is enabled: %+v", entry)
+		}
+	}
+}
+
+func TestManager_PickNext_LogsDeepSeekKVCacheHintWithClientSessionID(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	registerSchedulerModels(t, "gemini", "deepseek-chat", "auth-a", "auth-b")
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-a) error = %v", errRegister)
+	}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-b", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-b) error = %v", errRegister)
+	}
+
+	headers := make(http.Header)
+	headers.Set("X-Session-ID", "client-session-1")
+	hook := newAuthInfoHook(t)
+
+	got, _, errPick := manager.pickNext(context.Background(), "gemini", "deepseek-chat", cliproxyexecutor.Options{Headers: headers}, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() error = %v", errPick)
+	}
+	if got == nil {
+		t.Fatalf("pickNext() auth = nil")
+	}
+
+	found := false
+	for _, entry := range hook.AllEntries() {
+		if entry.Level != log.InfoLevel {
+			continue
+		}
+		if !strings.Contains(entry.Message, "DeepSeek KV cache may have reduced hit rate because routing.session-affinity is disabled") {
+			continue
+		}
+		if entry.Data["session_id_detected"] != true {
+			t.Fatalf("session_id_detected field = %v, want true", entry.Data["session_id_detected"])
+		}
+		if entry.Data["session_id_source"] != "header" {
+			t.Fatalf("session_id_source field = %v, want header", entry.Data["session_id_source"])
+		}
+		if !strings.Contains(entry.Message, "client supplied a session identifier") {
+			t.Fatalf("expected client-session-specific guidance, got message %q", entry.Message)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("expected DeepSeek KV cache hint log with client session identifier")
+	}
+}
+
+func TestManager_PickNext_IgnoresClientSessionIDWhenSessionAffinityDisabled(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	registerSchedulerModels(t, "gemini", "deepseek-chat", "auth-a", "auth-b")
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-a) error = %v", errRegister)
+	}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-b", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-b) error = %v", errRegister)
+	}
+
+	headers := make(http.Header)
+	headers.Set("X-Session-ID", "client-session-1")
+	opts := cliproxyexecutor.Options{Headers: headers}
+
+	first, _, errPick := manager.pickNext(context.Background(), "gemini", "deepseek-chat", opts, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() first error = %v", errPick)
+	}
+	second, _, errPick := manager.pickNext(context.Background(), "gemini", "deepseek-chat", opts, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() second error = %v", errPick)
+	}
+	if first == nil || second == nil {
+		t.Fatalf("pickNext() auths = %v, %v; want non-nil", first, second)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("session header should not pin auth when session affinity is disabled, got %q twice", first.ID)
+	}
+}
+
+func TestManager_PickNext_UsesClientSessionIDWhenSessionAffinityEnabled(t *testing.T) {
+	manager := NewManager(nil, NewSessionAffinitySelector(&RoundRobinSelector{}), nil)
+	manager.executors["gemini"] = schedulerTestExecutor{}
+	registerSchedulerModels(t, "gemini", "deepseek-chat", "auth-a", "auth-b")
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-a) error = %v", errRegister)
+	}
+	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-b", Provider: "gemini"}); errRegister != nil {
+		t.Fatalf("Register(auth-b) error = %v", errRegister)
+	}
+
+	headers := make(http.Header)
+	headers.Set("X-Session-ID", "client-session-1")
+	opts := cliproxyexecutor.Options{Headers: headers}
+
+	first, _, errPick := manager.pickNext(context.Background(), "gemini", "deepseek-chat", opts, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() first error = %v", errPick)
+	}
+	second, _, errPick := manager.pickNext(context.Background(), "gemini", "deepseek-chat", opts, nil)
+	if errPick != nil {
+		t.Fatalf("pickNext() second error = %v", errPick)
+	}
+	if first == nil || second == nil {
+		t.Fatalf("pickNext() auths = %v, %v; want non-nil", first, second)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("session header should pin auth when session affinity is enabled, got %q then %q", first.ID, second.ID)
 	}
 }

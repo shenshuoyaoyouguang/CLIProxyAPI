@@ -199,6 +199,51 @@ func (s *authScheduler) pickSingle(ctx context.Context, provider, model string, 
 	return s.pickSingleWithStrategy(ctx, provider, model, opts, tried, schedulerStrategyCurrent)
 }
 
+func (s *authScheduler) readyCandidateCountSingle(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) int {
+	if s == nil {
+		return 0
+	}
+	providerKey := strings.ToLower(strings.TrimSpace(provider))
+	modelKey := canonicalModelKey(model)
+	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	preferWebsocket := cliproxyexecutor.DownstreamWebsocket(ctx) && providerPrefersWebsocketTransport(providerKey) && pinnedAuthID == ""
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	providerState := s.providers[providerKey]
+	if providerState == nil {
+		return 0
+	}
+	shard := providerState.ensureModelLocked(modelKey, time.Now())
+	if shard == nil {
+		return 0
+	}
+	predicate := func(entry *scheduledAuth) bool {
+		if entry == nil || entry.auth == nil {
+			return false
+		}
+		if pinnedAuthID != "" && entry.auth.ID != pinnedAuthID {
+			return false
+		}
+		if disallowFreeAuth && isFreeCodexAuth(entry.auth) {
+			return false
+		}
+		if len(tried) > 0 {
+			if _, ok := tried[entry.auth.ID]; ok {
+				return false
+			}
+		}
+		return true
+	}
+	priorityReady, okPriority := shard.highestReadyPriorityLocked(preferWebsocket, predicate)
+	if !okPriority {
+		return 0
+	}
+	return shard.readyCountMatchingAtPriorityLocked(preferWebsocket, priorityReady, predicate)
+}
+
 func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, strategy schedulerStrategy) (*Auth, error) {
 	if s == nil {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -253,6 +298,102 @@ func providerPrefersWebsocketTransport(providerKey string) bool {
 // pickMixed returns the next auth and provider for a mixed-provider request.
 func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, string, error) {
 	return s.pickMixedWithStrategy(ctx, providers, model, opts, tried, schedulerStrategyCurrent)
+}
+
+func (s *authScheduler) readyCandidateCountMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) int {
+	if s == nil {
+		return 0
+	}
+	normalized := normalizeProviderKeys(providers)
+	if len(normalized) == 0 {
+		return 0
+	}
+	if len(normalized) == 1 {
+		return s.readyCandidateCountSingle(ctx, normalized[0], model, opts, tried)
+	}
+
+	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	modelKey := canonicalModelKey(model)
+	predicate := func(entry *scheduledAuth) bool {
+		if entry == nil || entry.auth == nil {
+			return false
+		}
+		if disallowFreeAuth && isFreeCodexAuth(entry.auth) {
+			return false
+		}
+		if len(tried) > 0 {
+			if _, ok := tried[entry.auth.ID]; ok {
+				return false
+			}
+		}
+		return true
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if pinnedAuthID != "" {
+		providerKey := s.authProviders[pinnedAuthID]
+		if providerKey == "" || !containsProvider(normalized, providerKey) {
+			return 0
+		}
+		providerState := s.providers[providerKey]
+		if providerState == nil {
+			return 0
+		}
+		shard := providerState.ensureModelLocked(modelKey, time.Now())
+		if shard == nil {
+			return 0
+		}
+		pinnedPredicate := func(entry *scheduledAuth) bool {
+			if entry == nil || entry.auth == nil || entry.auth.ID != pinnedAuthID {
+				return false
+			}
+			return predicate(entry)
+		}
+		priorityReady, okPriority := shard.highestReadyPriorityLocked(false, pinnedPredicate)
+		if !okPriority {
+			return 0
+		}
+		return shard.readyCountMatchingAtPriorityLocked(false, priorityReady, pinnedPredicate)
+	}
+
+	candidateShards := make([]*modelScheduler, len(normalized))
+	bestPriority := 0
+	hasCandidate := false
+	now := time.Now()
+	for providerIndex, providerKey := range normalized {
+		providerState := s.providers[providerKey]
+		if providerState == nil {
+			continue
+		}
+		shard := providerState.ensureModelLocked(modelKey, now)
+		candidateShards[providerIndex] = shard
+		if shard == nil {
+			continue
+		}
+		priorityReady, okPriority := shard.highestReadyPriorityLocked(false, predicate)
+		if !okPriority {
+			continue
+		}
+		if !hasCandidate || priorityReady > bestPriority {
+			bestPriority = priorityReady
+			hasCandidate = true
+		}
+	}
+	if !hasCandidate {
+		return 0
+	}
+
+	total := 0
+	for _, shard := range candidateShards {
+		if shard == nil {
+			continue
+		}
+		total += shard.readyCountMatchingAtPriorityLocked(false, bestPriority, predicate)
+	}
+	return total
 }
 
 func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, strategy schedulerStrategy) (*Auth, string, error) {
@@ -812,6 +953,27 @@ func (m *modelScheduler) readyCountAtPriorityLocked(preferWebsocket bool, priori
 		return len(bucket.ws.flat)
 	}
 	return len(bucket.all.flat)
+}
+
+func (m *modelScheduler) readyCountMatchingAtPriorityLocked(preferWebsocket bool, priority int, predicate func(*scheduledAuth) bool) int {
+	if m == nil {
+		return 0
+	}
+	bucket := m.readyByPriority[priority]
+	if bucket == nil {
+		return 0
+	}
+	view := &bucket.all
+	if preferWebsocket && bucket.ws.pickFirst(predicate) != nil {
+		view = &bucket.ws
+	}
+	count := 0
+	for _, entry := range view.flat {
+		if predicate == nil || predicate(entry) {
+			count++
+		}
+	}
+	return count
 }
 
 // unavailableErrorLocked returns the correct unavailable or cooldown error for the shard.

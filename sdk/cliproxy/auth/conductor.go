@@ -22,6 +22,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -1423,6 +1424,74 @@ func selectionArgForSelector(selector Selector, routeModel string) string {
 		return ""
 	}
 	return routeModel
+}
+
+func (m *Manager) sessionAffinityEnabled() bool {
+	if m == nil {
+		return false
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	return cfg != nil && cfg.Routing.SessionAffinity
+}
+
+func (m *Manager) shouldLogDeepSeekKVCacheHint(routeModel string, opts cliproxyexecutor.Options, tried map[string]struct{}) bool {
+	if m == nil {
+		return false
+	}
+	if len(tried) > 0 {
+		return false
+	}
+	if m.sessionAffinityEnabled() {
+		return false
+	}
+	if pinnedAuthIDFromMetadata(opts.Metadata) != "" {
+		return false
+	}
+	return modelkind.IsDeepSeekModel(canonicalModelKey(routeModel))
+}
+
+func (m *Manager) maybeLogDeepSeekKVCacheHint(ctx context.Context, provider, routeModel string, candidateCountFn func() int, opts cliproxyexecutor.Options, tried map[string]struct{}) {
+	if !m.shouldLogDeepSeekKVCacheHint(routeModel, opts, tried) {
+		return
+	}
+	if candidateCountFn == nil {
+		return
+	}
+	candidateCount := candidateCountFn()
+	if candidateCount <= 1 {
+		return
+	}
+
+	sessionID := ExtractSessionID(opts.Headers, opts.OriginalRequest, opts.Metadata)
+	entry := logEntryWithRequestID(ctx).WithFields(log.Fields{
+		"provider":            strings.TrimSpace(provider),
+		"model":               canonicalModelKey(routeModel),
+		"candidate_auths":     candidateCount,
+		"session_id_detected": sessionID != "",
+	})
+	if source := deepSeekKVCacheHintSessionSource(sessionID); source != "" {
+		entry = entry.WithField("session_id_source", source)
+	}
+	entry.Info(deepSeekKVCacheHintMessage(sessionID != ""))
+}
+
+func deepSeekKVCacheHintMessage(sessionDetected bool) string {
+	if sessionDetected {
+		return "DeepSeek KV cache may have reduced hit rate because routing.session-affinity is disabled; client supplied a session identifier, but it will not pin the conversation to one auth until session affinity is enabled"
+	}
+	return "DeepSeek KV cache may have reduced hit rate because routing.session-affinity is disabled; enable session affinity to keep the same conversation on the same auth"
+}
+
+func deepSeekKVCacheHintSessionSource(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	prefix, _, found := strings.Cut(sessionID, ":")
+	if !found {
+		return ""
+	}
+	return strings.TrimSpace(prefix)
 }
 
 func schedulerAttributeSensitive(key string) bool {
@@ -4673,6 +4742,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	available = cloneAuthSlice(available)
 	m.mu.RUnlock()
+	m.maybeLogDeepSeekKVCacheHint(ctx, provider, model, func() int {
+		return len(available)
+	}, opts, tried)
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available)
 	if errPick != nil {
@@ -4739,6 +4811,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	m.maybeLogDeepSeekKVCacheHint(ctx, provider, model, func() int {
+		return m.scheduler.readyCandidateCountSingle(ctx, provider, model, opts, tried)
+	}, opts, tried)
 	for {
 		selected, errPick := m.scheduler.pickSingle(ctx, provider, model, opts, tried)
 		if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
@@ -4843,6 +4918,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	available = cloneAuthSlice(available)
 	m.mu.RUnlock()
+	m.maybeLogDeepSeekKVCacheHint(ctx, "mixed", model, func() int {
+		return len(available)
+	}, opts, tried)
 
 	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
 	if errPick != nil {
@@ -4927,6 +5005,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
+	m.maybeLogDeepSeekKVCacheHint(ctx, "mixed", model, func() int {
+		return m.scheduler.readyCandidateCountMixed(ctx, eligibleProviders, model, opts, tried)
+	}, opts, tried)
 	for {
 		selected, providerKey, errPick := m.scheduler.pickMixed(ctx, eligibleProviders, model, opts, tried)
 		if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
