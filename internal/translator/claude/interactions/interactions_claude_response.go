@@ -16,17 +16,9 @@ import (
 var claudeInteractionsDataTag = []byte("data:")
 
 type claudeToInteractionsStreamState struct {
-	ID                 string
-	Model              string
-	Created            bool
-	StatusUpdated      bool
-	Completed          bool
-	Done               bool
+	// Builder 承载 interactions SSE 事件的公共流状态与构造逻辑。
+	Builder            *translatorcommon.InteractionsSSEBuilder
 	UsageRaw           []byte
-	StepIndex          int
-	ActiveStepIndex    int
-	ActiveStepType     string
-	ActiveStepOpen     bool
 	CurrentStepByIndex map[int]string
 	ToolNames          map[int]string
 	ToolIDs            map[int]string
@@ -42,10 +34,13 @@ func ConvertClaudeResponseToInteractions(ctx context.Context, modelName string, 
 		param = &local
 	}
 	if *param == nil {
-		*param = &claudeToInteractionsStreamState{Model: modelName}
+		*param = &claudeToInteractionsStreamState{
+			Builder: &translatorcommon.InteractionsSSEBuilder{Model: modelName, SetUsage: setInteractionsUsageFromClaude},
+		}
 	}
 	st := (*param).(*claudeToInteractionsStreamState)
-	st.Model = firstNonEmptyString(st.Model, modelName)
+	// 同步 Model 到 Builder，保留流式状态在多次调用间的连续性。
+	st.Builder.Model = firstNonEmptyString(st.Builder.Model, modelName)
 	st.ensureMaps()
 	return convertClaudeEventToInteractions(modelName, rawJSON, st)
 }
@@ -79,7 +74,8 @@ func convertClaudeSSEToInteractionsNonStream(modelName string, rawJSON []byte) [
 	out := []byte(`{"id":"","object":"interaction","status":"completed","model":"","steps":[]}`)
 	out, _ = sjson.SetBytes(out, "id", fmt.Sprintf("interaction_%d", time.Now().UnixNano()))
 	out, _ = sjson.SetBytes(out, "model", modelName)
-	st := &claudeToInteractionsStreamState{Model: modelName}
+	// 非流式路径不使用 Builder，仅复用 usage 合并与工具追踪能力。
+	st := &claudeToInteractionsStreamState{}
 	st.ensureMaps()
 	scanner := bufio.NewScanner(bytes.NewReader(rawJSON))
 	buffer := make([]byte, 1024*1024)
@@ -126,16 +122,16 @@ func convertClaudeEventToInteractions(modelName string, rawJSON []byte, st *clau
 		return nil
 	}
 	if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
-		return appendClaudeInteractionsDone(nil, st)
+		return st.Builder.AppendDone(nil)
 	}
 	root := gjson.ParseBytes(payload)
 	switch root.Get("type").String() {
 	case "message_start":
 		msg := root.Get("message")
-		st.ID = firstNonEmptyString(msg.Get("id").String(), st.ID, fmt.Sprintf("interaction_%d", time.Now().UnixNano()))
-		st.Model = firstNonEmptyString(msg.Get("model").String(), st.Model, modelName)
+		st.Builder.ID = firstNonEmptyString(msg.Get("id").String(), st.Builder.ID, fmt.Sprintf("interaction_%d", time.Now().UnixNano()))
+		st.Builder.Model = firstNonEmptyString(msg.Get("model").String(), st.Builder.Model, modelName)
 		mergeClaudeUsage(st, msg.Get("usage"))
-		return appendClaudeInteractionsCreated(nil, st, st.Model)
+		return st.Builder.AppendCreated(nil, st.Builder.Model)
 	case "content_block_start":
 		return claudeContentBlockStartToInteractions(modelName, root, st)
 	case "content_block_delta":
@@ -144,24 +140,24 @@ func convertClaudeEventToInteractions(modelName string, rawJSON []byte, st *clau
 		return claudeContentBlockStopToInteractions(root, st)
 	case "message_delta":
 		mergeClaudeUsage(st, root.Get("usage"))
-		out := appendClaudeInteractionsStepStop(nil, st)
-		out = appendClaudeInteractionsCompleted(out, st, modelName, root)
+		out := st.Builder.AppendStepStop(nil)
+		out = st.Builder.AppendCompleted(out, modelName, claudeCompletedUsage(st, root))
 		return out
 	case "message_stop":
-		if st.Completed {
+		if st.Builder.Completed {
 			return nil
 		}
-		return appendClaudeInteractionsCompleted(nil, st, modelName, root)
+		return st.Builder.AppendCompleted(nil, modelName, claudeCompletedUsage(st, root))
 	case "error":
-		out := appendClaudeInteractionsCreated(nil, st, modelName)
-		return appendClaudeInteractionsCompleted(out, st, modelName, root)
+		out := st.Builder.AppendCreated(nil, modelName)
+		return st.Builder.AppendCompleted(out, modelName, claudeCompletedUsage(st, root))
 	}
 	return nil
 }
 
 func claudeContentBlockStartToInteractions(modelName string, root gjson.Result, st *claudeToInteractionsStreamState) [][]byte {
-	out := appendClaudeInteractionsCreated(nil, st, modelName)
-	out = appendClaudeInteractionsStepStop(out, st)
+	out := st.Builder.AppendCreated(nil, modelName)
+	out = st.Builder.AppendStepStop(out)
 	index := int(root.Get("index").Int())
 	block := root.Get("content_block")
 	stepType := claudeBlockInteractionsStepType(block.Get("type").String())
@@ -179,8 +175,7 @@ func claudeContentBlockStartToInteractions(modelName string, root gjson.Result, 
 			st.ToolArgs[index] = builder
 		}
 	}
-	step := claudeBlockToInteractionsStep(block, stepType)
-	return appendClaudeInteractionsStepStart(out, st, stepType, step)
+	return st.Builder.AppendStepStart(out, claudeStepStartParams(stepType, block.Get("name").String(), block.Get("id").String()))
 }
 
 func claudeContentBlockDeltaToInteractions(modelName string, root gjson.Result, st *claudeToInteractionsStreamState) [][]byte {
@@ -188,17 +183,16 @@ func claudeContentBlockDeltaToInteractions(modelName string, root gjson.Result, 
 	stepType := st.CurrentStepByIndex[index]
 	if stepType == "" {
 		stepType = claudeDeltaInteractionsStepType(root.Get("delta.type").String())
-		out := appendClaudeInteractionsCreated(nil, st, modelName)
-		out = appendClaudeInteractionsStepStop(out, st)
-		out = appendClaudeInteractionsStepStart(out, st, stepType, []byte(`{"type":"`+stepType+`"}`))
+		out := st.Builder.AppendCreated(nil, modelName)
+		out = st.Builder.AppendStepStop(out)
+		out = st.Builder.AppendStepStart(out, claudeStepStartParams(stepType, "", ""))
 		st.CurrentStepByIndex[index] = stepType
 		return appendClaudeDeltaToInteractions(out, st, root.Get("delta"), index)
 	}
-	if !st.ActiveStepOpen || st.ActiveStepIndex != index {
-		out := appendClaudeInteractionsCreated(nil, st, modelName)
-		out = appendClaudeInteractionsStepStop(out, st)
-		step := claudeStepForKnownIndex(stepType, index, st)
-		out = appendClaudeInteractionsStepStart(out, st, stepType, step)
+	if !st.Builder.ActiveStepOpen || st.Builder.ActiveStepIndex != index {
+		out := st.Builder.AppendCreated(nil, modelName)
+		out = st.Builder.AppendStepStop(out)
+		out = st.Builder.AppendStepStart(out, claudeStepStartParams(stepType, st.ToolNames[index], st.ToolIDs[index]))
 		return appendClaudeDeltaToInteractions(out, st, root.Get("delta"), index)
 	}
 	return appendClaudeDeltaToInteractions(nil, st, root.Get("delta"), index)
@@ -206,7 +200,7 @@ func claudeContentBlockDeltaToInteractions(modelName string, root gjson.Result, 
 
 func claudeContentBlockStopToInteractions(root gjson.Result, st *claudeToInteractionsStreamState) [][]byte {
 	index := int(root.Get("index").Int())
-	out := appendClaudeInteractionsStepStop(nil, st)
+	out := st.Builder.AppendStepStop(nil)
 	delete(st.CurrentStepByIndex, index)
 	delete(st.ToolNames, index)
 	delete(st.ToolIDs, index)
@@ -217,16 +211,16 @@ func claudeContentBlockStopToInteractions(root gjson.Result, st *claudeToInterac
 func appendClaudeDeltaToInteractions(out [][]byte, st *claudeToInteractionsStreamState, delta gjson.Result, index int) [][]byte {
 	switch delta.Get("type").String() {
 	case "text_delta":
-		return appendClaudeInteractionsTextDelta(out, st, delta.Get("text").String(), false)
+		return st.Builder.AppendTextDelta(out, delta.Get("text").String())
 	case "thinking_delta":
-		return appendClaudeInteractionsTextDelta(out, st, delta.Get("thinking").String(), true)
+		return st.Builder.AppendThoughtDelta(out, delta.Get("thinking").String())
 	case "input_json_delta":
 		if st.ToolArgs[index] == nil {
 			st.ToolArgs[index] = &strings.Builder{}
 		}
 		partial := delta.Get("partial_json").String()
 		st.ToolArgs[index].WriteString(partial)
-		return appendClaudeInteractionsArgumentsDelta(out, st, partial)
+		return st.Builder.AppendArgumentsDelta(out, partial)
 	}
 	return out
 }
@@ -260,34 +254,6 @@ func claudeToolUseToInteractionsStep(part gjson.Result, argsRaw string) []byte {
 	}
 	if argsRaw != "" && gjson.Valid(argsRaw) {
 		step, _ = sjson.SetRawBytes(step, "arguments", []byte(argsRaw))
-	}
-	return step
-}
-
-func claudeBlockToInteractionsStep(block gjson.Result, stepType string) []byte {
-	step := []byte(`{"type":""}`)
-	step, _ = sjson.SetBytes(step, "type", stepType)
-	if stepType == "function_call" {
-		step, _ = sjson.SetBytes(step, "name", block.Get("name").String())
-		if id := block.Get("id").String(); id != "" {
-			step, _ = sjson.SetBytes(step, "id", id)
-			step, _ = sjson.SetBytes(step, "call_id", id)
-		}
-		step, _ = sjson.SetRawBytes(step, "arguments", []byte(`{}`))
-	}
-	return step
-}
-
-func claudeStepForKnownIndex(stepType string, index int, st *claudeToInteractionsStreamState) []byte {
-	step := []byte(`{"type":""}`)
-	step, _ = sjson.SetBytes(step, "type", stepType)
-	if stepType == "function_call" {
-		step, _ = sjson.SetBytes(step, "name", st.ToolNames[index])
-		if id := st.ToolIDs[index]; id != "" {
-			step, _ = sjson.SetBytes(step, "id", id)
-			step, _ = sjson.SetBytes(step, "call_id", id)
-		}
-		step, _ = sjson.SetRawBytes(step, "arguments", []byte(`{}`))
 	}
 	return step
 }
@@ -423,106 +389,24 @@ func setInteractionsUsageFromClaude(out []byte, path string, usage gjson.Result)
 	return out
 }
 
-func appendClaudeInteractionsCreated(out [][]byte, st *claudeToInteractionsStreamState, modelName string) [][]byte {
-	if st.Created {
-		return out
+// claudeStepStartParams 根据步骤类型与 function_call 元信息构造 Builder 入参。
+// function_call 在 name/id 至少一个非空时由 Builder 生成完整字段，否则退化为仅 type。
+func claudeStepStartParams(stepType, name, id string) translatorcommon.StepStartParams {
+	params := translatorcommon.StepStartParams{Type: stepType}
+	if stepType == "function_call" {
+		params.Name = name
+		params.CallID = id
 	}
-	st.ID = firstNonEmptyString(st.ID, fmt.Sprintf("interaction_%d", time.Now().UnixNano()))
-	created := []byte(`{"interaction":{"id":"","status":"in_progress","object":"interaction","model":""},"event_type":"interaction.created"}`)
-	created, _ = sjson.SetBytes(created, "interaction.id", st.ID)
-	created, _ = sjson.SetBytes(created, "interaction.model", firstNonEmptyString(st.Model, modelName))
-	out = append(out, translatorcommon.SSEEventData("interaction.created", created))
-	st.Created = true
-	return appendClaudeInteractionsStatusUpdate(out, st)
+	return params
 }
 
-func appendClaudeInteractionsStatusUpdate(out [][]byte, st *claudeToInteractionsStreamState) [][]byte {
-	if st.StatusUpdated {
-		return out
-	}
-	statusUpdate := []byte(`{"interaction_id":"","status":"in_progress","event_type":"interaction.status_update"}`)
-	statusUpdate, _ = sjson.SetBytes(statusUpdate, "interaction_id", st.ID)
-	out = append(out, translatorcommon.SSEEventData("interaction.status_update", statusUpdate))
-	st.StatusUpdated = true
-	return out
-}
-
-func appendClaudeInteractionsStepStart(out [][]byte, st *claudeToInteractionsStreamState, stepType string, step []byte) [][]byte {
-	st.ActiveStepIndex = st.StepIndex
-	st.ActiveStepType = stepType
-	st.ActiveStepOpen = true
-	payload := []byte(`{"index":0,"step":{"type":""},"event_type":"step.start"}`)
-	payload, _ = sjson.SetBytes(payload, "index", st.ActiveStepIndex)
-	if len(step) > 0 && gjson.ValidBytes(step) {
-		payload, _ = sjson.SetRawBytes(payload, "step", step)
-	} else {
-		payload, _ = sjson.SetBytes(payload, "step.type", stepType)
-	}
-	return append(out, translatorcommon.SSEEventData("step.start", payload))
-}
-
-func appendClaudeInteractionsTextDelta(out [][]byte, st *claudeToInteractionsStreamState, text string, thought bool) [][]byte {
-	payload := []byte(`{"index":0,"delta":{"text":"","type":"text"},"event_type":"step.delta"}`)
-	payload, _ = sjson.SetBytes(payload, "index", st.ActiveStepIndex)
-	if thought {
-		payload, _ = sjson.SetBytes(payload, "delta.type", "thought_summary")
-		payload, _ = sjson.SetBytes(payload, "delta.content.type", "text")
-		payload, _ = sjson.SetBytes(payload, "delta.content.text", text)
-		payload, _ = sjson.DeleteBytes(payload, "delta.text")
-	} else {
-		payload, _ = sjson.SetBytes(payload, "delta.text", text)
-	}
-	return append(out, translatorcommon.SSEEventData("step.delta", payload))
-}
-
-func appendClaudeInteractionsArgumentsDelta(out [][]byte, st *claudeToInteractionsStreamState, arguments string) [][]byte {
-	payload := []byte(`{"index":0,"delta":{"arguments":"","type":"arguments_delta"},"event_type":"step.delta"}`)
-	payload, _ = sjson.SetBytes(payload, "index", st.ActiveStepIndex)
-	payload, _ = sjson.SetBytes(payload, "delta.arguments", arguments)
-	return append(out, translatorcommon.SSEEventData("step.delta", payload))
-}
-
-func appendClaudeInteractionsStepStop(out [][]byte, st *claudeToInteractionsStreamState) [][]byte {
-	if !st.ActiveStepOpen {
-		return out
-	}
-	payload := []byte(`{"index":0,"event_type":"step.stop"}`)
-	payload, _ = sjson.SetBytes(payload, "index", st.ActiveStepIndex)
-	out = append(out, translatorcommon.SSEEventData("step.stop", payload))
-	st.ActiveStepOpen = false
-	st.ActiveStepType = ""
-	st.StepIndex++
-	return out
-}
-
-func appendClaudeInteractionsCompleted(out [][]byte, st *claudeToInteractionsStreamState, modelName string, root gjson.Result) [][]byte {
-	if st.Completed {
-		return out
-	}
-	out = appendClaudeInteractionsCreated(out, st, modelName)
-	now := time.Now().UTC().Format(time.RFC3339)
-	completed := []byte(`{"interaction":{"id":"","status":"completed","usage":{},"created":"","updated":"","service_tier":"standard","object":"interaction","model":""},"event_type":"interaction.completed"}`)
-	completed, _ = sjson.SetBytes(completed, "interaction.id", st.ID)
-	completed, _ = sjson.SetBytes(completed, "interaction.created", now)
-	completed, _ = sjson.SetBytes(completed, "interaction.updated", now)
-	completed, _ = sjson.SetBytes(completed, "interaction.model", firstNonEmptyString(st.Model, modelName))
+// claudeCompletedUsage 返回 completed 事件使用的 usage，优先取已合并的 usage，兜底取事件中的 usage。
+func claudeCompletedUsage(st *claudeToInteractionsStreamState, root gjson.Result) gjson.Result {
 	usage := claudeMergedUsage(st)
 	if !usage.Exists() {
 		usage = root.Get("usage")
 	}
-	completed = setInteractionsUsageFromClaude(completed, "interaction.usage", usage)
-	out = append(out, translatorcommon.SSEEventData("interaction.completed", completed))
-	st.Completed = true
-	return out
-}
-
-func appendClaudeInteractionsDone(out [][]byte, st *claudeToInteractionsStreamState) [][]byte {
-	if st.Done {
-		return out
-	}
-	out = append(out, translatorcommon.SSEEventData("done", []byte("[DONE]")))
-	st.Done = true
-	return out
+	return usage
 }
 
 func claudeInteractionsSSEPayload(rawJSON []byte) []byte {

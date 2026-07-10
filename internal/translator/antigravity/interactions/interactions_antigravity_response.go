@@ -13,16 +13,9 @@ import (
 )
 
 type antigravityToInteractionsStreamState struct {
-	Started         bool
-	Finished        bool
-	Completed       bool
-	Done            bool
-	ActiveStepOpen  bool
-	ID              string
-	StepID          string
-	ActiveStepType  string
-	ActiveStepIndex int
-	StepIndex       int
+	Builder  *translatorcommon.InteractionsSSEBuilder
+	Finished bool
+	StepID   string
 }
 
 func ConvertAntigravityResponseToInteractions(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
@@ -34,29 +27,33 @@ func ConvertAntigravityResponseToInteractions(ctx context.Context, modelName str
 		param = &local
 	}
 	if *param == nil {
-		*param = &antigravityToInteractionsStreamState{ID: fmt.Sprintf("interaction_%d", time.Now().UnixNano())}
+		// 初始化 Builder 并注入 antigravity 流式 usage 设置函数；
+		// setInteractionsStreamUsageFromAntigravity 第三个参数接收整个 root，由 Builder 透传。
+		*param = &antigravityToInteractionsStreamState{
+			Builder: &translatorcommon.InteractionsSSEBuilder{
+				SetUsage: func(payload []byte, path string, usage gjson.Result) []byte {
+					return setInteractionsStreamUsageFromAntigravity(payload, path, usage)
+				},
+			},
+		}
 	}
 	st := (*param).(*antigravityToInteractionsStreamState)
 	payloads := antigravityStreamPayloads(rawJSON)
 	out := make([][]byte, 0)
 	for _, payload := range payloads {
 		if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
-			if !st.Completed {
-				out = appendAntigravityInteractionsStepStop(out, st)
-				out = appendAntigravityInteractionsCompleted(out, st, modelName, gjson.Result{})
+			if !st.Builder.Completed {
+				out = st.Builder.AppendStepStop(out)
+				out = st.Builder.AppendCompleted(out, modelName, gjson.Result{})
 			}
-			out = appendAntigravityInteractionsDone(out, st)
+			out = st.Builder.AppendDone(out)
 			continue
 		}
 		root := unwrapAntigravityResponse(gjson.ParseBytes(payload))
 		if !root.Exists() {
 			continue
 		}
-		if !st.Started {
-			out = appendAntigravityInteractionsCreated(out, st, modelName)
-			out = appendAntigravityInteractionsStatusUpdate(out, st)
-			st.Started = true
-		}
+		out = st.Builder.AppendCreated(out, modelName)
 		root.Get("candidates.0.content.parts").ForEach(func(_, part gjson.Result) bool {
 			out = appendAntigravityPartToInteractionsStream(out, st, part)
 			return true
@@ -64,11 +61,11 @@ func ConvertAntigravityResponseToInteractions(ctx context.Context, modelName str
 		hasFinish := root.Get("candidates.0.finishReason").Exists()
 		hasUsage := hasAntigravityStreamUsage(root)
 		if hasFinish && !st.Finished {
-			out = appendAntigravityInteractionsStepStop(out, st)
+			out = st.Builder.AppendStepStop(out)
 			st.Finished = true
 		}
-		if hasUsage && st.Finished && !st.Completed {
-			out = appendAntigravityInteractionsCompleted(out, st, modelName, root)
+		if hasUsage && st.Finished && !st.Builder.Completed {
+			out = st.Builder.AppendCompleted(out, modelName, root)
 		}
 	}
 	return out
@@ -138,124 +135,56 @@ func restoreAntigravityUsageMetadata(root gjson.Result) gjson.Result {
 	return root
 }
 
-func appendAntigravityInteractionsCreated(out [][]byte, st *antigravityToInteractionsStreamState, modelName string) [][]byte {
-	created := []byte(`{"interaction":{"id":"","status":"in_progress","object":"interaction","model":""},"event_type":"interaction.created"}`)
-	created, _ = sjson.SetBytes(created, "interaction.id", st.ID)
-	created, _ = sjson.SetBytes(created, "interaction.model", modelName)
-	return append(out, translatorcommon.SSEEventData("interaction.created", created))
-}
-
-func appendAntigravityInteractionsStatusUpdate(out [][]byte, st *antigravityToInteractionsStreamState) [][]byte {
-	statusUpdate := []byte(`{"interaction_id":"","status":"in_progress","event_type":"interaction.status_update"}`)
-	statusUpdate, _ = sjson.SetBytes(statusUpdate, "interaction_id", st.ID)
-	return append(out, translatorcommon.SSEEventData("interaction.status_update", statusUpdate))
-}
-
-func appendAntigravityInteractionsCompleted(out [][]byte, st *antigravityToInteractionsStreamState, modelName string, root gjson.Result) [][]byte {
-	now := time.Now().UTC().Format(time.RFC3339)
-	completed := []byte(`{"interaction":{"id":"","status":"completed","usage":{},"created":"","updated":"","service_tier":"standard","object":"interaction","model":""},"event_type":"interaction.completed"}`)
-	completed, _ = sjson.SetBytes(completed, "interaction.id", st.ID)
-	completed, _ = sjson.SetBytes(completed, "interaction.created", now)
-	completed, _ = sjson.SetBytes(completed, "interaction.updated", now)
-	completed, _ = sjson.SetBytes(completed, "interaction.model", modelName)
-	if root.Exists() {
-		completed = setInteractionsStreamUsageFromAntigravity(completed, "interaction.usage", root)
-	}
-	out = append(out, translatorcommon.SSEEventData("interaction.completed", completed))
-	st.Completed = true
-	return out
-}
-
-func appendAntigravityInteractionsDone(out [][]byte, st *antigravityToInteractionsStreamState) [][]byte {
-	if st.Done {
+func ensureAntigravityInteractionsStep(out [][]byte, st *antigravityToInteractionsStreamState, stepType string, part gjson.Result) [][]byte {
+	if st.Builder.ActiveStepOpen && st.Builder.ActiveStepType == stepType {
 		return out
 	}
-	out = append(out, translatorcommon.SSEEventData("done", []byte("[DONE]")))
-	st.Done = true
-	return out
-}
-
-func appendAntigravityInteractionsStepStart(out [][]byte, st *antigravityToInteractionsStreamState, stepType string, part gjson.Result) [][]byte {
+	out = st.Builder.AppendStepStop(out)
+	// 生成 StepID 作为 function_call id 缺失时的回退值，与迁移前行为一致。
 	st.StepID = fmt.Sprintf("step_%d", time.Now().UnixNano())
-	st.ActiveStepIndex = st.StepIndex
-	st.StepIndex++
-	st.ActiveStepType = stepType
-	st.ActiveStepOpen = true
-	stepStart := []byte(`{"index":0,"step":{"type":""},"event_type":"step.start"}`)
-	stepStart, _ = sjson.SetBytes(stepStart, "index", st.ActiveStepIndex)
-	stepStart, _ = sjson.SetBytes(stepStart, "step.type", stepType)
+	params := translatorcommon.StepStartParams{Type: stepType}
 	if stepType == "function_call" {
 		id := antigravityFunctionPartID(part)
 		if id == "" {
 			id = st.StepID
 		}
-		stepStart, _ = sjson.SetBytes(stepStart, "step.id", id)
-		stepStart, _ = sjson.SetBytes(stepStart, "step.call_id", id)
-		stepStart, _ = sjson.SetBytes(stepStart, "step.name", part.Get("name").String())
-		stepStart, _ = sjson.SetRawBytes(stepStart, "step.arguments", []byte(`{}`))
+		params.CallID = id
+		params.Name = part.Get("name").String()
 	}
-	return append(out, translatorcommon.SSEEventData("step.start", stepStart))
-}
-
-func appendAntigravityInteractionsStepStop(out [][]byte, st *antigravityToInteractionsStreamState) [][]byte {
-	if !st.ActiveStepOpen {
-		return out
-	}
-	stepStop := []byte(`{"index":0,"event_type":"step.stop"}`)
-	stepStop, _ = sjson.SetBytes(stepStop, "index", st.ActiveStepIndex)
-	out = append(out, translatorcommon.SSEEventData("step.stop", stepStop))
-	st.ActiveStepOpen = false
-	st.ActiveStepType = ""
-	return out
-}
-
-func ensureAntigravityInteractionsStep(out [][]byte, st *antigravityToInteractionsStreamState, stepType string, part gjson.Result) [][]byte {
-	if st.ActiveStepOpen && st.ActiveStepType == stepType {
-		return out
-	}
-	out = appendAntigravityInteractionsStepStop(out, st)
-	return appendAntigravityInteractionsStepStart(out, st, stepType, part)
+	return st.Builder.AppendStepStart(out, params)
 }
 
 func appendAntigravityPartToInteractionsStream(out [][]byte, st *antigravityToInteractionsStreamState, part gjson.Result) [][]byte {
 	if text := part.Get("text"); text.Exists() && text.String() != "" {
 		if part.Get("thought").Bool() {
 			out = ensureAntigravityInteractionsStep(out, st, "thought", gjson.Result{})
-			delta := []byte(`{"index":0,"delta":{"content":{"text":"","type":"text"},"type":"thought_summary"},"event_type":"step.delta"}`)
-			delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-			delta, _ = sjson.SetBytes(delta, "delta.content.text", text.String())
-			out = append(out, translatorcommon.SSEEventData("step.delta", delta))
+			out = st.Builder.AppendThoughtDelta(out, text.String())
 			return appendAntigravityThoughtSignature(out, st, part)
 		}
 		out = ensureAntigravityInteractionsStep(out, st, "model_output", gjson.Result{})
-		delta := []byte(`{"index":0,"delta":{"text":"","type":"text"},"event_type":"step.delta"}`)
-		delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-		delta, _ = sjson.SetBytes(delta, "delta.text", text.String())
-		return append(out, translatorcommon.SSEEventData("step.delta", delta))
+		return st.Builder.AppendTextDelta(out, text.String())
 	}
 	if fc := part.Get("functionCall"); fc.Exists() {
 		out = appendAntigravityThoughtSignature(out, st, part)
 		out = ensureAntigravityInteractionsStep(out, st, "function_call", fc)
-		delta := []byte(`{"index":0,"delta":{"arguments":"","type":"arguments_delta"},"event_type":"step.delta"}`)
-		delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
 		arguments := `{}`
 		if args := fc.Get("args"); args.Exists() {
 			arguments = args.Raw
 		}
-		delta, _ = sjson.SetBytes(delta, "delta.arguments", arguments)
-		out = append(out, translatorcommon.SSEEventData("step.delta", delta))
-		return appendAntigravityInteractionsStepStop(out, st)
+		out = st.Builder.AppendArgumentsDelta(out, arguments)
+		return st.Builder.AppendStepStop(out)
 	}
 	if fr := part.Get("functionResponse"); fr.Exists() {
 		out = ensureAntigravityInteractionsStep(out, st, "function_result", fr)
+		// function_result delta 不在 Builder 的 9 类事件中，保留 provider 自定义实现。
 		delta := []byte(`{"index":0,"delta":{"type":"function_result","name":"","result":{}},"event_type":"step.delta"}`)
-		delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
+		delta, _ = sjson.SetBytes(delta, "index", st.Builder.ActiveStepIndex)
 		delta, _ = sjson.SetBytes(delta, "delta.name", fr.Get("name").String())
 		if response := fr.Get("response"); response.Exists() {
 			delta, _ = sjson.SetRawBytes(delta, "delta.result", []byte(response.Raw))
 		}
 		out = append(out, translatorcommon.SSEEventData("step.delta", delta))
-		return appendAntigravityInteractionsStepStop(out, st)
+		return st.Builder.AppendStepStop(out)
 	}
 	return out
 }
@@ -263,8 +192,9 @@ func appendAntigravityPartToInteractionsStream(out [][]byte, st *antigravityToIn
 func appendAntigravityThoughtSignature(out [][]byte, st *antigravityToInteractionsStreamState, part gjson.Result) [][]byte {
 	if signature := antigravityThoughtSignature(part); signature != "" {
 		out = ensureAntigravityInteractionsStep(out, st, "thought", gjson.Result{})
+		// thought_signature delta 不在 Builder 的 9 类事件中，保留 provider 自定义实现。
 		signatureDelta := []byte(`{"index":0,"delta":{"signature":"","type":"thought_signature"},"event_type":"step.delta"}`)
-		signatureDelta, _ = sjson.SetBytes(signatureDelta, "index", st.ActiveStepIndex)
+		signatureDelta, _ = sjson.SetBytes(signatureDelta, "index", st.Builder.ActiveStepIndex)
 		signatureDelta, _ = sjson.SetBytes(signatureDelta, "delta.signature", signature)
 		return append(out, translatorcommon.SSEEventData("step.delta", signatureDelta))
 	}

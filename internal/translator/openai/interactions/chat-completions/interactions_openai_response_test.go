@@ -3,6 +3,7 @@ package chat_completions
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -160,6 +161,111 @@ func TestConvertInteractionsResponseToOpenAINonStreamToolCall(t *testing.T) {
 	if got := gjson.GetBytes(out, "choices.0.finish_reason").String(); got != "tool_calls" {
 		t.Fatalf("finish_reason = %q, want tool_calls. Output: %s", got, string(out))
 	}
+}
+
+// TestConvertOpenAIResponseToInteractionsStreamMultiToolCall 验证流式多 tool call 场景下
+// CurrentStepID 切换逻辑：两个不同 call_id 的 tool call 应产生两个独立的 step.start/step.stop，
+// 而非合并为一个 function_call step。保护 CurrentStepID 逻辑不被未来误删。
+func TestConvertOpenAIResponseToInteractionsStreamMultiToolCall(t *testing.T) {
+	var param any
+	chunks := [][]byte{
+		// chunk 1: tool_calls[0] with id=call_1, name=get_weather, arguments delta
+		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"location\":"}}]}}]}`),
+		// chunk 2: tool_calls[0] arguments delta 续传
+		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"北京\"}"}}]}}]}`),
+		// chunk 3: tool_calls[1] with id=call_2, name=get_time（不同 call_id 触发 step 切换）
+		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{\"tz\":"}}]}}]}`),
+		// chunk 4: tool_calls[1] arguments delta 续传
+		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"Asia/Shanghai\"}"}}]}}]}`),
+		// chunk 5: finish_reason 关闭最后一个 step
+		[]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`),
+		// chunk 6: [DONE]
+		[]byte(`data: [DONE]`),
+	}
+
+	var allOut [][]byte
+	for _, chunk := range chunks {
+		allOut = append(allOut, ConvertOpenAIResponseToInteractions(context.Background(), "gpt-test", nil, nil, chunk, &param)...)
+	}
+
+	// 验证：两个独立 step.start（不应合并为一个 function_call step）
+	if got := countInteractionsEvents(allOut, "step.start"); got != 2 {
+		t.Fatalf("step.start count = %d, want 2. Events: %s", got, joinEventNames(allOut))
+	}
+	// 验证：两个独立 step.stop
+	if got := countInteractionsEvents(allOut, "step.stop"); got != 2 {
+		t.Fatalf("step.stop count = %d, want 2. Events: %s", got, joinEventNames(allOut))
+	}
+
+	// 收集所有 step.start 事件 payload（按到达顺序）
+	var stepStarts [][]byte
+	for _, event := range allOut {
+		payload := interactionsSSEPayload(event)
+		if interactionsEventName(event, payload) == "step.start" {
+			stepStarts = append(stepStarts, payload)
+		}
+	}
+	if len(stepStarts) != 2 {
+		t.Fatalf("collected step.start payloads = %d, want 2", len(stepStarts))
+	}
+
+	// 第一个 step.start：index=0, call_id=call_1, name=get_weather
+	if got := gjson.GetBytes(stepStarts[0], "index").Int(); got != 0 {
+		t.Fatalf("first step.start index = %d, want 0. Payload: %s", got, string(stepStarts[0]))
+	}
+	if got := gjson.GetBytes(stepStarts[0], "step.call_id").String(); got != "call_1" {
+		t.Fatalf("first step.start call_id = %q, want call_1. Payload: %s", got, string(stepStarts[0]))
+	}
+	if got := gjson.GetBytes(stepStarts[0], "step.name").String(); got != "get_weather" {
+		t.Fatalf("first step.start name = %q, want get_weather. Payload: %s", got, string(stepStarts[0]))
+	}
+
+	// 第二个 step.start：index=1, call_id=call_2, name=get_time
+	if got := gjson.GetBytes(stepStarts[1], "index").Int(); got != 1 {
+		t.Fatalf("second step.start index = %d, want 1. Payload: %s", got, string(stepStarts[1]))
+	}
+	if got := gjson.GetBytes(stepStarts[1], "step.call_id").String(); got != "call_2" {
+		t.Fatalf("second step.start call_id = %q, want call_2. Payload: %s", got, string(stepStarts[1]))
+	}
+	if got := gjson.GetBytes(stepStarts[1], "step.name").String(); got != "get_time" {
+		t.Fatalf("second step.start name = %q, want get_time. Payload: %s", got, string(stepStarts[1]))
+	}
+
+	// 验证：arguments_delta 归属正确的 step（index=0 和 index=1 各有 delta）
+	argDeltaByIndex := map[int64]int{}
+	for _, event := range allOut {
+		payload := interactionsSSEPayload(event)
+		if interactionsEventName(event, payload) == "step.delta" &&
+			gjson.GetBytes(payload, "delta.type").String() == "arguments_delta" {
+			argDeltaByIndex[gjson.GetBytes(payload, "index").Int()]++
+		}
+	}
+	if got := argDeltaByIndex[0]; got != 2 {
+		t.Fatalf("arguments_delta count for index=0 = %d, want 2 (chunk 1 + chunk 2)", got)
+	}
+	if got := argDeltaByIndex[1]; got != 2 {
+		t.Fatalf("arguments_delta count for index=1 = %d, want 2 (chunk 3 + chunk 4)", got)
+	}
+
+	// 验证：最终完成事件
+	if got := countInteractionsEvents(allOut, "interaction.completed"); got != 1 {
+		t.Fatalf("interaction.completed count = %d, want 1", got)
+	}
+	if got := countInteractionsEvents(allOut, "done"); got != 1 {
+		t.Fatalf("done count = %d, want 1", got)
+	}
+}
+
+// joinEventNames 拼接所有事件名，用于失败时的诊断输出。
+func joinEventNames(events [][]byte) string {
+	var names []string
+	for _, event := range events {
+		payload := interactionsSSEPayload(event)
+		if name := interactionsEventName(event, payload); name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, " -> ")
 }
 
 func findInteractionsEventPayload(events [][]byte, eventType string) []byte {

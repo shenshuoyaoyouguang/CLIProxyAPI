@@ -408,6 +408,30 @@ func TestConvertOpenAIResponsesResponseToInteractionsStreamSkipsCompletedTextAft
 	}
 }
 
+// TestConvertOpenAIResponsesResponseToInteractionsStreamModelFromResponse 验证 modelName 为空时
+// interaction.model 从 response.model 取值（回归保护：迁移前 responseModel(modelName, response) 行为）。
+func TestConvertOpenAIResponsesResponseToInteractionsStreamModelFromResponse(t *testing.T) {
+	t.Run("created carries model", func(t *testing.T) {
+		var param any
+		raw := []byte(`{"type":"response.created","response":{"id":"resp_1","model":"gpt-responses-model"}}`)
+		out := ConvertOpenAIResponsesResponseToInteractions(context.Background(), "", nil, nil, raw, &param)
+		payload := findInteractionsEventPayload(out, "interaction.created")
+		if got := gjson.GetBytes(payload, "interaction.model").String(); got != "gpt-responses-model" {
+			t.Fatalf("interaction.model = %q, want gpt-responses-model. Payload: %s", got, string(payload))
+		}
+	})
+
+	t.Run("completed carries model when created absent", func(t *testing.T) {
+		var param any
+		raw := []byte(`{"type":"response.completed","response":{"model":"gpt-responses-model","output":[],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`)
+		out := ConvertOpenAIResponsesResponseToInteractions(context.Background(), "", nil, nil, raw, &param)
+		payload := findInteractionsEventPayload(out, "interaction.completed")
+		if got := gjson.GetBytes(payload, "interaction.model").String(); got != "gpt-responses-model" {
+			t.Fatalf("interaction.model = %q, want gpt-responses-model. Payload: %s", got, string(payload))
+		}
+	})
+}
+
 func findInteractionsStepDeltaPayload(events [][]byte) []byte {
 	return findInteractionsEventPayload(events, "step.delta")
 }

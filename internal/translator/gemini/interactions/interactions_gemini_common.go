@@ -14,17 +14,12 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// StreamState 承载 gemini interactions 流式响应的 Provider 特有状态；
+// 公共 SSE 事件构造逻辑（created/status_update/step/completed/done）由 Builder 统一处理。
 type StreamState struct {
-	Started         bool
-	Finished        bool
-	Completed       bool
-	Done            bool
-	ActiveStepOpen  bool
-	ID              string
-	StepID          string
-	ActiveStepType  string
-	ActiveStepIndex int
-	StepIndex       int
+	Builder  *translatorcommon.InteractionsSSEBuilder
+	Finished bool
+	StepID   string
 }
 
 func ConvertInteractionsRequestToGemini(modelName string, inputRawJSON []byte, stream bool) []byte {
@@ -265,24 +260,25 @@ func geminiPartToInteractionsContent(part gjson.Result) []byte {
 func convertGeminiResponseToInteractionsStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	_ = ctx
 	if *param == nil {
-		*param = &StreamState{ID: fmt.Sprintf("interaction_%d", time.Now().UnixNano())}
+		// 初始化 Builder 并注入 gemini 流式 usage 设置函数；
+		// setInteractionsStreamUsageFromGemini 第三个参数接收整个 root，由 Builder 透传。
+		*param = &StreamState{
+			Builder: &translatorcommon.InteractionsSSEBuilder{
+				SetUsage: setInteractionsStreamUsageFromGemini,
+			},
+		}
 	}
 	st := (*param).(*StreamState)
 	if bytes.Equal(bytes.TrimSpace(rawJSON), []byte("[DONE]")) {
 		var out [][]byte
-		if !st.Completed {
-			out = appendInteractionsStepStop(out, st)
-			out = appendInteractionsCompleted(out, st, modelName, gjson.Result{})
+		if !st.Builder.Completed {
+			out = st.Builder.AppendStepStop(out)
+			out = st.Builder.AppendCompleted(out, modelName, gjson.Result{})
 		}
-		return appendInteractionsDone(out, st)
+		return st.Builder.AppendDone(out)
 	}
 	root := gjson.ParseBytes(rawJSON)
-	var out [][]byte
-	if !st.Started {
-		out = appendInteractionsCreated(out, st, modelName)
-		out = appendInteractionsStatusUpdate(out, st)
-		st.Started = true
-	}
+	out := st.Builder.AppendCreated(nil, modelName)
 	root.Get("candidates.0.content.parts").ForEach(func(_, part gjson.Result) bool {
 		out = appendGeminiPartToInteractionsStream(out, st, part)
 		return true
@@ -290,11 +286,11 @@ func convertGeminiResponseToInteractionsStream(ctx context.Context, modelName st
 	hasFinish := root.Get("candidates.0.finishReason").Exists()
 	hasUsage := hasInteractionsGeminiStreamUsage(root)
 	if hasFinish && !st.Finished {
-		out = appendInteractionsStepStop(out, st)
+		out = st.Builder.AppendStepStop(out)
 		st.Finished = true
 	}
-	if hasUsage && st.Finished && !st.Completed {
-		out = appendInteractionsCompleted(out, st, modelName, root)
+	if hasUsage && st.Finished && !st.Builder.Completed {
+		out = st.Builder.AppendCompleted(out, modelName, root)
 	}
 	return out
 }
@@ -324,43 +320,6 @@ func hasInteractionsGeminiStreamUsage(root gjson.Result) bool {
 		}
 	}
 	return false
-}
-
-func appendInteractionsCreated(out [][]byte, st *StreamState, modelName string) [][]byte {
-	created := []byte(`{"interaction":{"id":"","status":"in_progress","object":"interaction","model":""},"event_type":"interaction.created"}`)
-	created, _ = sjson.SetBytes(created, "interaction.id", st.ID)
-	created, _ = sjson.SetBytes(created, "interaction.model", modelName)
-	return append(out, translatorcommon.SSEEventData("interaction.created", created))
-}
-
-func appendInteractionsStatusUpdate(out [][]byte, st *StreamState) [][]byte {
-	statusUpdate := []byte(`{"interaction_id":"","status":"in_progress","event_type":"interaction.status_update"}`)
-	statusUpdate, _ = sjson.SetBytes(statusUpdate, "interaction_id", st.ID)
-	return append(out, translatorcommon.SSEEventData("interaction.status_update", statusUpdate))
-}
-
-func appendInteractionsCompleted(out [][]byte, st *StreamState, modelName string, root gjson.Result) [][]byte {
-	now := time.Now().UTC().Format(time.RFC3339)
-	completed := []byte(`{"interaction":{"id":"","status":"completed","usage":{},"created":"","updated":"","service_tier":"standard","object":"interaction","model":""},"event_type":"interaction.completed"}`)
-	completed, _ = sjson.SetBytes(completed, "interaction.id", st.ID)
-	completed, _ = sjson.SetBytes(completed, "interaction.created", now)
-	completed, _ = sjson.SetBytes(completed, "interaction.updated", now)
-	completed, _ = sjson.SetBytes(completed, "interaction.model", modelName)
-	if root.Exists() {
-		completed = setInteractionsStreamUsageFromGemini(completed, "interaction.usage", root)
-	}
-	out = append(out, translatorcommon.SSEEventData("interaction.completed", completed))
-	st.Completed = true
-	return out
-}
-
-func appendInteractionsDone(out [][]byte, st *StreamState) [][]byte {
-	if st.Done {
-		return out
-	}
-	out = append(out, translatorcommon.SSEEventData("done", []byte("[DONE]")))
-	st.Done = true
-	return out
 }
 
 func convertGeminiResponseToInteractionsNonStreamDirect(modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte) []byte {
@@ -1163,86 +1122,56 @@ func setInteractionsStreamUsageFromGemini(out []byte, path string, root gjson.Re
 	return out
 }
 
-func appendInteractionsStepStart(out [][]byte, st *StreamState, stepType string, part gjson.Result) [][]byte {
+func ensureInteractionsStep(out [][]byte, st *StreamState, stepType string, part gjson.Result) [][]byte {
+	if st.Builder.ActiveStepOpen && st.Builder.ActiveStepType == stepType {
+		return out
+	}
+	out = st.Builder.AppendStepStop(out)
+	// 生成 StepID 作为 function_call id 缺失时的回退值，与迁移前行为一致。
 	st.StepID = fmt.Sprintf("step_%d", time.Now().UnixNano())
-	st.ActiveStepIndex = st.StepIndex
-	st.StepIndex++
-	st.ActiveStepType = stepType
-	st.ActiveStepOpen = true
-	stepStart := []byte(`{"index":0,"step":{"type":""},"event_type":"step.start"}`)
-	stepStart, _ = sjson.SetBytes(stepStart, "index", st.ActiveStepIndex)
-	stepStart, _ = sjson.SetBytes(stepStart, "step.type", stepType)
+	params := translatorcommon.StepStartParams{Type: stepType}
 	if stepType == "function_call" {
 		id := interactionsFunctionPartID(part)
 		if id == "" {
 			id = st.StepID
 		}
-		stepStart, _ = sjson.SetBytes(stepStart, "step.id", id)
-		stepStart, _ = sjson.SetBytes(stepStart, "step.name", part.Get("name").String())
-		stepStart, _ = sjson.SetRawBytes(stepStart, "step.arguments", []byte(`{}`))
+		params.CallID = id
+		params.Name = part.Get("name").String()
 	}
-	return append(out, translatorcommon.SSEEventData("step.start", stepStart))
-}
-
-func appendInteractionsStepStop(out [][]byte, st *StreamState) [][]byte {
-	if !st.ActiveStepOpen {
-		return out
-	}
-	stepStop := []byte(`{"index":0,"event_type":"step.stop"}`)
-	stepStop, _ = sjson.SetBytes(stepStop, "index", st.ActiveStepIndex)
-	out = append(out, translatorcommon.SSEEventData("step.stop", stepStop))
-	st.ActiveStepOpen = false
-	st.ActiveStepType = ""
-	return out
-}
-
-func ensureInteractionsStep(out [][]byte, st *StreamState, stepType string, part gjson.Result) [][]byte {
-	if st.ActiveStepOpen && st.ActiveStepType == stepType {
-		return out
-	}
-	out = appendInteractionsStepStop(out, st)
-	return appendInteractionsStepStart(out, st, stepType, part)
+	return st.Builder.AppendStepStart(out, params)
 }
 
 func appendGeminiPartToInteractionsStream(out [][]byte, st *StreamState, part gjson.Result) [][]byte {
 	if text := part.Get("text"); text.Exists() && text.String() != "" {
 		if part.Get("thought").Bool() {
 			out = ensureInteractionsStep(out, st, "thought", gjson.Result{})
-			delta := []byte(`{"index":0,"delta":{"content":{"text":"","type":"text"},"type":"thought_summary"},"event_type":"step.delta"}`)
-			delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-			delta, _ = sjson.SetBytes(delta, "delta.content.text", text.String())
-			out = append(out, translatorcommon.SSEEventData("step.delta", delta))
+			out = st.Builder.AppendThoughtDelta(out, text.String())
 			return appendInteractionsThoughtSignature(out, st, part)
 		}
 		out = ensureInteractionsStep(out, st, "model_output", gjson.Result{})
-		delta := []byte(`{"index":0,"delta":{"text":"","type":"text"},"event_type":"step.delta"}`)
-		delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-		delta, _ = sjson.SetBytes(delta, "delta.text", text.String())
-		return append(out, translatorcommon.SSEEventData("step.delta", delta))
+		return st.Builder.AppendTextDelta(out, text.String())
 	}
 	if fc := part.Get("functionCall"); fc.Exists() {
 		out = appendInteractionsThoughtSignature(out, st, part)
 		out = ensureInteractionsStep(out, st, "function_call", fc)
-		delta := []byte(`{"index":0,"delta":{"arguments":"","type":"arguments_delta"},"event_type":"step.delta"}`)
-		delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
 		arguments := `{}`
 		if args := fc.Get("args"); args.Exists() {
 			arguments = args.Raw
 		}
-		delta, _ = sjson.SetBytes(delta, "delta.arguments", arguments)
-		out = append(out, translatorcommon.SSEEventData("step.delta", delta))
-		return appendInteractionsStepStop(out, st)
+		out = st.Builder.AppendArgumentsDelta(out, arguments)
+		return st.Builder.AppendStepStop(out)
 	}
 	if fr := part.Get("functionResponse"); fr.Exists() {
 		out = ensureInteractionsStep(out, st, "function_result", fr)
+		// function_result delta 不在 Builder 的 9 类事件中，保留 provider 自定义实现。
 		delta := []byte(`{"index":0,"delta":{"type":"function_result","name":"","result":{}},"event_type":"step.delta"}`)
-		delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
+		delta, _ = sjson.SetBytes(delta, "index", st.Builder.ActiveStepIndex)
 		delta, _ = sjson.SetBytes(delta, "delta.name", fr.Get("name").String())
 		if response := fr.Get("response"); response.Exists() {
 			delta, _ = sjson.SetRawBytes(delta, "delta.result", []byte(response.Raw))
 		}
 		out = append(out, translatorcommon.SSEEventData("step.delta", delta))
-		return appendInteractionsStepStop(out, st)
+		return st.Builder.AppendStepStop(out)
 	}
 	return out
 }
@@ -1250,8 +1179,9 @@ func appendGeminiPartToInteractionsStream(out [][]byte, st *StreamState, part gj
 func appendInteractionsThoughtSignature(out [][]byte, st *StreamState, part gjson.Result) [][]byte {
 	if signature := interactionsThoughtSignature(part); signature != "" {
 		out = ensureInteractionsStep(out, st, "thought", gjson.Result{})
+		// thought_signature delta 不在 Builder 的 9 类事件中，保留 provider 自定义实现。
 		signatureDelta := []byte(`{"index":0,"delta":{"signature":"","type":"thought_signature"},"event_type":"step.delta"}`)
-		signatureDelta, _ = sjson.SetBytes(signatureDelta, "index", st.ActiveStepIndex)
+		signatureDelta, _ = sjson.SetBytes(signatureDelta, "index", st.Builder.ActiveStepIndex)
 		signatureDelta, _ = sjson.SetBytes(signatureDelta, "delta.signature", signature)
 		return append(out, translatorcommon.SSEEventData("step.delta", signatureDelta))
 	}

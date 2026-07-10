@@ -13,16 +13,7 @@ import (
 )
 
 type codexToInteractionsStreamState struct {
-	Started          bool
-	Completed        bool
-	Done             bool
-	ActiveStepOpen   bool
-	ActiveStepType   string
-	ActiveStepIndex  int
-	StepIndex        int
-	ID               string
-	Model            string
-	CreatedAt        int64
+	Builder          *translatorcommon.InteractionsSSEBuilder
 	HasOutputText    bool
 	FunctionCallName string
 	FunctionCallID   string
@@ -38,18 +29,23 @@ func ConvertCodexResponseToInteractions(ctx context.Context, modelName string, o
 	}
 	if *param == nil {
 		*param = &codexToInteractionsStreamState{
-			ID:    fmt.Sprintf("interaction_%d", time.Now().UnixNano()),
-			Model: modelName,
+			Builder: &translatorcommon.InteractionsSSEBuilder{
+				ID:    fmt.Sprintf("interaction_%d", time.Now().UnixNano()),
+				Model: modelName,
+				SetUsage: func(p []byte, path string, u gjson.Result) []byte {
+					return setCodexInteractionsUsage(p, path, u, true)
+				},
+			},
 		}
 	}
 	st := (*param).(*codexToInteractionsStreamState)
 	payload := codexStreamPayload(rawJSON)
 	if bytes.Equal(payload, []byte("[DONE]")) {
-		out := appendCodexInteractionsStepStop(nil, st)
-		if !st.Completed {
+		out := st.Builder.AppendStepStop(nil)
+		if !st.Builder.Completed {
 			out = appendCodexInteractionsCompleted(out, st, gjson.Result{})
 		}
-		return appendCodexInteractionsDone(out, st)
+		return st.Builder.AppendDone(out)
 	}
 	if len(payload) == 0 {
 		return nil
@@ -70,9 +66,9 @@ func ConvertCodexResponseToInteractions(ctx context.Context, modelName string, o
 		return codexOutputItemDoneToInteractions(st, root.Get("item"))
 	case "response.completed":
 		out := appendCodexInteractionsCreated(nil, st, root.Get("response"))
-		out = appendCodexInteractionsStepStop(out, st)
+		out = st.Builder.AppendStepStop(out)
 		out = appendCodexInteractionsCompleted(out, st, root.Get("response"))
-		return appendCodexInteractionsDone(out, st)
+		return st.Builder.AppendDone(out)
 	default:
 		return nil
 	}
@@ -131,56 +127,27 @@ func codexStreamEventType(rawJSON []byte) string {
 	return gjson.GetBytes(payload, "type").String()
 }
 
+// appendCodexInteractionsCreated 同步响应中的 id/model/created_at 到 Builder，并通过 Builder 发送 created 事件。
 func appendCodexInteractionsCreated(out [][]byte, st *codexToInteractionsStreamState, response gjson.Result) [][]byte {
-	if st.Started {
+	if st.Builder.Created {
 		return out
 	}
 	if id := response.Get("id").String(); id != "" {
-		st.ID = id
+		st.Builder.ID = id
 	}
 	if model := response.Get("model").String(); model != "" {
-		st.Model = model
+		st.Builder.Model = model
 	}
 	if createdAt := response.Get("created_at"); createdAt.Exists() {
-		st.CreatedAt = createdAt.Int()
+		st.Builder.CreatedAt = createdAt.Int()
 	}
-	created := []byte(`{"interaction":{"id":"","status":"in_progress","object":"interaction","model":""},"event_type":"interaction.created"}`)
-	created, _ = sjson.SetBytes(created, "interaction.id", st.ID)
-	created, _ = sjson.SetBytes(created, "interaction.model", st.Model)
-	out = append(out, translatorcommon.SSEEventData("interaction.created", created))
-	statusUpdate := []byte(`{"interaction_id":"","status":"in_progress","event_type":"interaction.status_update"}`)
-	statusUpdate, _ = sjson.SetBytes(statusUpdate, "interaction_id", st.ID)
-	out = append(out, translatorcommon.SSEEventData("interaction.status_update", statusUpdate))
-	st.Started = true
-	return out
+	return st.Builder.AppendCreated(out, st.Builder.Model)
 }
 
+// appendCodexInteractionsCompleted 通过 Builder 发送 completed 事件。
+// created_at 已在 appendCodexInteractionsCreated 中同步到 Builder.CreatedAt，由 Builder 统一处理时间戳。
 func appendCodexInteractionsCompleted(out [][]byte, st *codexToInteractionsStreamState, response gjson.Result) [][]byte {
-	if st.Completed {
-		return out
-	}
-	created := time.Now().UTC()
-	if st.CreatedAt > 0 {
-		created = time.Unix(st.CreatedAt, 0).UTC()
-	}
-	completed := []byte(`{"interaction":{"id":"","status":"completed","usage":{},"created":"","updated":"","service_tier":"standard","object":"interaction","model":""},"event_type":"interaction.completed"}`)
-	completed, _ = sjson.SetBytes(completed, "interaction.id", st.ID)
-	completed, _ = sjson.SetBytes(completed, "interaction.created", created.Format(time.RFC3339))
-	completed, _ = sjson.SetBytes(completed, "interaction.updated", time.Now().UTC().Format(time.RFC3339))
-	completed, _ = sjson.SetBytes(completed, "interaction.model", st.Model)
-	completed = setCodexInteractionsUsage(completed, "interaction.usage", response.Get("usage"), true)
-	out = append(out, translatorcommon.SSEEventData("interaction.completed", completed))
-	st.Completed = true
-	return out
-}
-
-func appendCodexInteractionsDone(out [][]byte, st *codexToInteractionsStreamState) [][]byte {
-	if st.Done {
-		return out
-	}
-	out = append(out, translatorcommon.SSEEventData("done", []byte("[DONE]")))
-	st.Done = true
-	return out
+	return st.Builder.AppendCompleted(out, st.Builder.Model, response.Get("usage"))
 }
 
 func codexOutputItemAddedToInteractions(st *codexToInteractionsStreamState, root gjson.Result) [][]byte {
@@ -202,29 +169,20 @@ func codexOutputItemAddedToInteractions(st *codexToInteractionsStreamState, root
 func codexOutputTextDeltaToInteractions(st *codexToInteractionsStreamState, root gjson.Result) [][]byte {
 	out := appendCodexInteractionsCreated(nil, st, root.Get("response"))
 	out = ensureCodexInteractionsStep(out, st, "model_output", gjson.Result{})
-	delta := []byte(`{"index":0,"delta":{"text":"","type":"text"},"event_type":"step.delta"}`)
-	delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-	delta, _ = sjson.SetBytes(delta, "delta.text", root.Get("delta").String())
 	st.HasOutputText = true
-	return append(out, translatorcommon.SSEEventData("step.delta", delta))
+	return st.Builder.AppendTextDelta(out, root.Get("delta").String())
 }
 
 func codexReasoningDeltaToInteractions(st *codexToInteractionsStreamState, root gjson.Result) [][]byte {
 	out := appendCodexInteractionsCreated(nil, st, root.Get("response"))
 	out = ensureCodexInteractionsStep(out, st, "thought", gjson.Result{})
-	delta := []byte(`{"index":0,"delta":{"content":{"text":"","type":"text"},"type":"thought_summary"},"event_type":"step.delta"}`)
-	delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-	delta, _ = sjson.SetBytes(delta, "delta.content.text", root.Get("delta").String())
-	return append(out, translatorcommon.SSEEventData("step.delta", delta))
+	return st.Builder.AppendThoughtDelta(out, root.Get("delta").String())
 }
 
 func codexFunctionArgumentsDeltaToInteractions(st *codexToInteractionsStreamState, root gjson.Result) [][]byte {
 	out := appendCodexInteractionsCreated(nil, st, root.Get("response"))
 	out = ensureCodexInteractionsStep(out, st, "function_call", root.Get("item"))
-	delta := []byte(`{"index":0,"delta":{"arguments":"","type":"arguments_delta"},"event_type":"step.delta"}`)
-	delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-	delta, _ = sjson.SetBytes(delta, "delta.arguments", root.Get("delta").String())
-	return append(out, translatorcommon.SSEEventData("step.delta", delta))
+	return st.Builder.AppendArgumentsDelta(out, root.Get("delta").String())
 }
 
 func codexOutputItemDoneToInteractions(st *codexToInteractionsStreamState, item gjson.Result) [][]byte {
@@ -232,39 +190,34 @@ func codexOutputItemDoneToInteractions(st *codexToInteractionsStreamState, item 
 	switch item.Get("type").String() {
 	case "message":
 		if st.HasOutputText {
-			return appendCodexInteractionsStepStop(out, st)
+			return st.Builder.AppendStepStop(out)
 		}
 		out = appendCodexMessageItemToInteractionsStream(out, st, item)
-		return appendCodexInteractionsStepStop(out, st)
+		return st.Builder.AppendStepStop(out)
 	case "reasoning":
 		out = appendCodexReasoningItemToInteractionsStream(out, st, item)
-		return appendCodexInteractionsStepStop(out, st)
+		return st.Builder.AppendStepStop(out)
 	case "function_call", "tool_call":
 		out = appendCodexFunctionCallItemToInteractionsStream(out, st, item)
-		return appendCodexInteractionsStepStop(out, st)
+		return st.Builder.AppendStepStop(out)
 	case "image_generation_call":
 		out = appendCodexImageItemToInteractionsStream(out, st, item)
-		return appendCodexInteractionsStepStop(out, st)
+		return st.Builder.AppendStepStop(out)
 	}
 	return out
 }
 
 func ensureCodexInteractionsStep(out [][]byte, st *codexToInteractionsStreamState, stepType string, item gjson.Result) [][]byte {
-	if st.ActiveStepOpen && st.ActiveStepType == stepType {
+	if st.Builder.ActiveStepOpen && st.Builder.ActiveStepType == stepType {
 		return out
 	}
-	out = appendCodexInteractionsStepStop(out, st)
+	out = st.Builder.AppendStepStop(out)
 	return appendCodexInteractionsStepStart(out, st, stepType, item)
 }
 
+// appendCodexInteractionsStepStart 构造 function_call 的 callID/name（含 codex 特有回退与自动生成逻辑），并通过 Builder 发送 step.start 事件。
 func appendCodexInteractionsStepStart(out [][]byte, st *codexToInteractionsStreamState, stepType string, item gjson.Result) [][]byte {
-	st.ActiveStepIndex = st.StepIndex
-	st.StepIndex++
-	st.ActiveStepOpen = true
-	st.ActiveStepType = stepType
-	stepStart := []byte(`{"index":0,"step":{"type":""},"event_type":"step.start"}`)
-	stepStart, _ = sjson.SetBytes(stepStart, "index", st.ActiveStepIndex)
-	stepStart, _ = sjson.SetBytes(stepStart, "step.type", stepType)
+	params := translatorcommon.StepStartParams{Type: stepType}
 	if stepType == "function_call" {
 		name := item.Get("name").String()
 		if name == "" {
@@ -277,24 +230,10 @@ func appendCodexInteractionsStepStart(out [][]byte, st *codexToInteractionsStrea
 		if callID == "" {
 			callID = fmt.Sprintf("step_%d", time.Now().UnixNano())
 		}
-		stepStart, _ = sjson.SetBytes(stepStart, "step.id", callID)
-		stepStart, _ = sjson.SetBytes(stepStart, "step.call_id", callID)
-		stepStart, _ = sjson.SetBytes(stepStart, "step.name", name)
-		stepStart, _ = sjson.SetRawBytes(stepStart, "step.arguments", []byte(`{}`))
+		params.CallID = callID
+		params.Name = name
 	}
-	return append(out, translatorcommon.SSEEventData("step.start", stepStart))
-}
-
-func appendCodexInteractionsStepStop(out [][]byte, st *codexToInteractionsStreamState) [][]byte {
-	if !st.ActiveStepOpen {
-		return out
-	}
-	stepStop := []byte(`{"index":0,"event_type":"step.stop"}`)
-	stepStop, _ = sjson.SetBytes(stepStop, "index", st.ActiveStepIndex)
-	out = append(out, translatorcommon.SSEEventData("step.stop", stepStop))
-	st.ActiveStepOpen = false
-	st.ActiveStepType = ""
-	return out
+	return st.Builder.AppendStepStart(out, params)
 }
 
 func appendCodexMessageItemToInteractions(out []byte, item gjson.Result) []byte {
@@ -352,10 +291,7 @@ func appendCodexMessageItemToInteractionsStream(out [][]byte, st *codexToInterac
 	item.Get("content").ForEach(func(_, content gjson.Result) bool {
 		if text := codexContentText(content); text != "" {
 			out = ensureCodexInteractionsStep(out, st, "model_output", item)
-			delta := []byte(`{"index":0,"delta":{"text":"","type":"text"},"event_type":"step.delta"}`)
-			delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-			delta, _ = sjson.SetBytes(delta, "delta.text", text)
-			out = append(out, translatorcommon.SSEEventData("step.delta", delta))
+			out = st.Builder.AppendTextDelta(out, text)
 		}
 		return true
 	})
@@ -368,18 +304,12 @@ func appendCodexReasoningItemToInteractionsStream(out [][]byte, st *codexToInter
 		return out
 	}
 	out = ensureCodexInteractionsStep(out, st, "thought", item)
-	delta := []byte(`{"index":0,"delta":{"content":{"text":"","type":"text"},"type":"thought_summary"},"event_type":"step.delta"}`)
-	delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-	delta, _ = sjson.SetBytes(delta, "delta.content.text", text)
-	return append(out, translatorcommon.SSEEventData("step.delta", delta))
+	return st.Builder.AppendThoughtDelta(out, text)
 }
 
 func appendCodexFunctionCallItemToInteractionsStream(out [][]byte, st *codexToInteractionsStreamState, item gjson.Result) [][]byte {
 	out = ensureCodexInteractionsStep(out, st, "function_call", item)
-	delta := []byte(`{"index":0,"delta":{"arguments":"","type":"arguments_delta"},"event_type":"step.delta"}`)
-	delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-	delta, _ = sjson.SetBytes(delta, "delta.arguments", item.Get("arguments").String())
-	return append(out, translatorcommon.SSEEventData("step.delta", delta))
+	return st.Builder.AppendArgumentsDelta(out, item.Get("arguments").String())
 }
 
 func appendCodexImageItemToInteractionsStream(out [][]byte, st *codexToInteractionsStreamState, item gjson.Result) [][]byte {
@@ -389,7 +319,7 @@ func appendCodexImageItemToInteractionsStream(out [][]byte, st *codexToInteracti
 	}
 	out = ensureCodexInteractionsStep(out, st, "model_output", item)
 	delta := []byte(`{"index":0,"delta":{"content":{"type":"image","mime_type":"","data":""},"type":"content"},"event_type":"step.delta"}`)
-	delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
+	delta, _ = sjson.SetBytes(delta, "index", st.Builder.ActiveStepIndex)
 	delta, _ = sjson.SetBytes(delta, "delta.content.mime_type", mimeTypeFromCodexOutputFormat(item.Get("output_format").String()))
 	delta, _ = sjson.SetBytes(delta, "delta.content.data", result)
 	return append(out, translatorcommon.SSEEventData("step.delta", delta))
