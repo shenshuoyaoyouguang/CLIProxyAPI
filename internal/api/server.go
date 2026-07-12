@@ -1745,9 +1745,9 @@ func (s *Server) Stop(ctx context.Context) error {
 //   - gin.HandlerFunc: The CORS middleware handler
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Origin", c.Request.Header.Get("Origin"))
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "*")
+		c.Header("Access-Control-Allow-Headers", c.Request.Header.Get("Access-Control-Request-Headers"))
 		c.Header("Access-Control-Expose-Headers", corsExposedResponseHeadersJoined)
 
 		if c.Request.Method == "OPTIONS" {
@@ -1958,7 +1958,9 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if manager == nil {
-			c.Next()
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"error": "authentication service not available",
+			})
 			return
 		}
 

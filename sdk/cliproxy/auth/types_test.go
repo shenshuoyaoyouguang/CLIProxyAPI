@@ -11,22 +11,22 @@ import (
 func TestToolPrefixDisabled(t *testing.T) {
 	var a *Auth
 	if a.ToolPrefixDisabled() {
-		t.Error("nil auth should return false")
+		t.Error("nil auth should return false for ToolPrefixDisabled")
 	}
 
 	a = &Auth{}
 	if a.ToolPrefixDisabled() {
-		t.Error("empty auth should return false")
+		t.Error("empty auth should return false for ToolPrefixDisabled")
 	}
 
 	a = &Auth{Metadata: map[string]any{"tool_prefix_disabled": true}}
 	if !a.ToolPrefixDisabled() {
-		t.Error("should return true when set to true")
+		t.Error("should return true when Metadata has tool_prefix_disabled=true")
 	}
 
 	a = &Auth{Metadata: map[string]any{"tool_prefix_disabled": "true"}}
 	if !a.ToolPrefixDisabled() {
-		t.Error("should return true when set to string 'true'")
+		t.Error("should return true when Metadata has tool_prefix_disabled=\"true\"")
 	}
 
 	a = &Auth{Metadata: map[string]any{"tool-prefix-disabled": true}}

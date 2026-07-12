@@ -259,7 +259,7 @@ func TestConfigSynthesizer_ClaudeKeys(t *testing.T) {
 		t.Errorf("expected api_key sk-ant-api-xxx, got %s", auths[0].Attributes["api_key"])
 	}
 	if _, ok := auths[0].Attributes["models_hash"]; !ok {
-		t.Error("expected models_hash in attributes")
+		t.Errorf("expected models_hash in attributes, got: %v", auths[0].Attributes)
 	}
 	if got := auths[0].Attributes["rebuild_mid_system_message"]; got != "true" {
 		t.Errorf("expected rebuild_mid_system_message=true, got %s", got)
@@ -588,7 +588,7 @@ func TestConfigSynthesizer_OpenAICompat_WithModelsHash(t *testing.T) {
 		t.Fatalf("expected 1 auth, got %d", len(auths))
 	}
 	if _, ok := auths[0].Attributes["models_hash"]; !ok {
-		t.Error("expected models_hash in attributes")
+		t.Errorf("expected models_hash in attributes, got: %v", auths[0].Attributes)
 	}
 	if auths[0].Attributes["api_key"] != "key-with-models" {
 		t.Errorf("expected api_key key-with-models, got %s", auths[0].Attributes["api_key"])
@@ -623,7 +623,7 @@ func TestConfigSynthesizer_OpenAICompat_FallbackWithModels(t *testing.T) {
 		t.Fatalf("expected 1 auth, got %d", len(auths))
 	}
 	if _, ok := auths[0].Attributes["models_hash"]; !ok {
-		t.Error("expected models_hash in fallback path")
+		t.Errorf("expected models_hash in fallback path, got: %v", auths[0].Attributes)
 	}
 	if auths[0].Attributes["header:X-API"] != "header-value" {
 		t.Errorf("expected header:X-API=header-value, got %s", auths[0].Attributes["header:X-API"])
@@ -657,7 +657,7 @@ func TestConfigSynthesizer_VertexCompat_WithModels(t *testing.T) {
 		t.Fatalf("expected 1 auth, got %d", len(auths))
 	}
 	if _, ok := auths[0].Attributes["models_hash"]; !ok {
-		t.Error("expected models_hash in vertex auth with models")
+		t.Errorf("expected models_hash in vertex auth with models, got: %v", auths[0].Attributes)
 	}
 }
 

@@ -122,6 +122,14 @@ func NewObjectTokenStore(cfg ObjectStoreConfig) (*ObjectTokenStore, error) {
 // the object store controls its own workspace.
 func (s *ObjectTokenStore) SetBaseDir(string) {}
 
+// Client returns the underlying MinIO client for direct operations (e.g., in tests).
+func (s *ObjectTokenStore) Client() *minio.Client {
+	if s == nil {
+		return nil
+	}
+	return s.client
+}
+
 // ConfigPath returns the managed configuration file path inside the spool directory.
 func (s *ObjectTokenStore) ConfigPath() string {
 	if s == nil {
@@ -167,12 +175,6 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 	}
 	if path == "" {
 		return "", fmt.Errorf("object store: missing file path attribute for %s", auth.ID)
-	}
-
-	if auth.Disabled {
-		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
-			return "", nil
-		}
 	}
 
 	s.mu.Lock()
@@ -515,12 +517,21 @@ func (s *ObjectTokenStore) prefixedKey(key string) string {
 	return strings.TrimLeft(s.cfg.Prefix+"/"+key, "/")
 }
 
+// Close closes the store (no-op for object store as client doesn't need explicit close).
+func (s *ObjectTokenStore) Close() error {
+	return nil
+}
+
 func (s *ObjectTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error) {
 	if auth == nil {
 		return "", fmt.Errorf("object store: auth is nil")
 	}
 	if auth.Attributes != nil {
 		if path := strings.TrimSpace(auth.Attributes["path"]); path != "" {
+			// Prevent path traversal
+			if strings.Contains(path, "..") {
+				return "", fmt.Errorf("object store: path traversal not allowed")
+			}
 			if filepath.IsAbs(path) {
 				return path, nil
 			}
@@ -534,6 +545,10 @@ func (s *ObjectTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, err
 	if fileName == "" {
 		return "", fmt.Errorf("object store: auth %s missing filename", auth.ID)
 	}
+	// Prevent path traversal
+	if strings.Contains(fileName, "..") {
+		return "", fmt.Errorf("object store: path traversal not allowed")
+	}
 	if !strings.HasSuffix(strings.ToLower(fileName), ".json") {
 		fileName += ".json"
 	}
@@ -545,8 +560,11 @@ func (s *ObjectTokenStore) resolveDeletePath(id string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("object store: id is empty")
 	}
-	// Absolute paths are honored as-is; callers must ensure they point inside the mirror.
 	if filepath.IsAbs(id) {
+		// Prevent path traversal
+		if strings.Contains(id, "..") {
+			return "", fmt.Errorf("object store: path traversal not allowed")
+		}
 		return id, nil
 	}
 	// Treat any non-absolute id (including nested like "team/foo") as relative to the mirror authDir.

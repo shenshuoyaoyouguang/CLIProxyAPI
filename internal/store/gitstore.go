@@ -18,6 +18,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -254,6 +255,38 @@ func (s *GitTokenStore) EnsureRepository() error {
 	return nil
 }
 
+// Bootstrap ensures the repository is set up and syncs config from remote if available.
+func (s *GitTokenStore) Bootstrap(ctx context.Context, exampleConfigPath string) error {
+	if err := s.EnsureRepository(); err != nil {
+		return err
+	}
+	// If there's a config file in the remote, it will be pulled during EnsureRepository
+	// If not, and exampleConfigPath is provided, copy it
+	configPath := s.ConfigPath()
+	if configPath != "" {
+		if _, err := os.Stat(configPath); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				if exampleConfigPath != "" {
+					if err := misc.CopyConfigTemplate(exampleConfigPath, configPath); err != nil {
+						return fmt.Errorf("git token store: copy example config: %w", err)
+					}
+				} else {
+					// Create empty config
+					if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+						return fmt.Errorf("git token store: create config dir: %w", err)
+					}
+					if err := os.WriteFile(configPath, []byte{}, 0o600); err != nil {
+						return fmt.Errorf("git token store: create empty config: %w", err)
+					}
+				}
+			} else {
+				return fmt.Errorf("git token store: stat config: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 // Save persists token storage and metadata to the resolved auth file path.
 func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string, error) {
 	if auth == nil {
@@ -266,12 +299,6 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 	}
 	if path == "" {
 		return "", fmt.Errorf("auth filestore: missing file path attribute for %s", auth.ID)
-	}
-
-	if auth.Disabled {
-		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-			return "", nil
-		}
 	}
 
 	if err = s.EnsureRepository(); err != nil {
@@ -416,6 +443,7 @@ func (s *GitTokenStore) Delete(_ context.Context, id string) error {
 
 // PersistAuthFiles commits and pushes the provided paths to the remote repository.
 // It no-ops when the store is not fully configured or when there are no paths.
+// Paths can be absolute or relative to the auth directory.
 func (s *GitTokenStore) PersistAuthFiles(_ context.Context, message string, paths ...string) error {
 	if len(paths) == 0 {
 		return nil
@@ -424,11 +452,20 @@ func (s *GitTokenStore) PersistAuthFiles(_ context.Context, message string, path
 		return err
 	}
 
+	authDir := s.baseDirSnapshot()
+	if authDir == "" {
+		return fmt.Errorf("auth filestore: directory not configured")
+	}
+
 	filtered := make([]string, 0, len(paths))
 	for _, p := range paths {
 		trimmed := strings.TrimSpace(p)
 		if trimmed == "" {
 			continue
+		}
+		// Resolve relative paths against auth directory
+		if !filepath.IsAbs(trimmed) {
+			trimmed = filepath.Join(authDir, trimmed)
 		}
 		rel, err := s.relativeToRepo(trimmed)
 		if err != nil {
@@ -457,7 +494,17 @@ func (s *GitTokenStore) resolveDeletePath(id string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("auth filestore: directory not configured")
 	}
-	return filepath.Join(dir, id), nil
+	path := filepath.Join(dir, id)
+	// Also try with .json extension if the id lacks one and that file exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if !strings.HasSuffix(path, ".json") {
+			pathWithExt := path + ".json"
+			if _, err := os.Stat(pathWithExt); err == nil {
+				return pathWithExt, nil
+			}
+		}
+	}
+	return path, nil
 }
 
 func (s *GitTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, error) {
@@ -516,7 +563,9 @@ func (s *GitTokenStore) idFor(path, baseDir string) string {
 	if err != nil {
 		return path
 	}
-	return rel
+	// Strip .json so List IDs are extensionless, matching the FileName saved
+	// without extension (e.g. "test-provider" for "test-provider.json").
+	return strings.TrimSuffix(rel, ".json")
 }
 
 func (s *GitTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error) {
@@ -525,10 +574,18 @@ func (s *GitTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 	}
 	if auth.Attributes != nil {
 		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
+			// Prevent path traversal
+			if strings.Contains(p, "..") {
+				return "", fmt.Errorf("auth filestore: path traversal not allowed")
+			}
 			return p, nil
 		}
 	}
 	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
+		// Prevent path traversal
+		if strings.Contains(fileName, "..") {
+			return "", fmt.Errorf("auth filestore: path traversal not allowed")
+		}
 		if filepath.IsAbs(fileName) {
 			return fileName, nil
 		}
@@ -541,7 +598,15 @@ func (s *GitTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 		return "", fmt.Errorf("auth filestore: missing id")
 	}
 	if filepath.IsAbs(auth.ID) {
+		// Prevent path traversal
+		if strings.Contains(auth.ID, "..") {
+			return "", fmt.Errorf("auth filestore: path traversal not allowed")
+		}
 		return auth.ID, nil
+	}
+	// Prevent path traversal
+	if strings.Contains(auth.ID, "..") {
+		return "", fmt.Errorf("auth filestore: path traversal not allowed")
 	}
 	dir := s.baseDirSnapshot()
 	if dir == "" {
@@ -955,6 +1020,11 @@ func (s *GitTokenStore) PersistConfig(_ context.Context) error {
 		return err
 	}
 	return s.commitAndPushLocked("Update config", rel)
+}
+
+// Close closes the store (no-op for git store).
+func (s *GitTokenStore) Close() error {
+	return nil
 }
 
 func ensureEmptyFile(path string) error {

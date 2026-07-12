@@ -1,6 +1,7 @@
 package util
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -73,7 +74,7 @@ func TestSanitizedToolNameMap(t *testing.T) {
 			t.Errorf("expected tool_v2 → tool@v2, got %q", m["tool_v2"])
 		}
 		if _, exists := m["valid_tool"]; exists {
-			t.Error("valid_tool should not be in the map (no sanitization needed)")
+			t.Errorf("valid_tool should not be in the sanitization map, got: %v", fmt.Sprint(m))
 		}
 	})
 

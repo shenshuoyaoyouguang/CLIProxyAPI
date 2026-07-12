@@ -223,7 +223,9 @@ func readTestRESPPubSubMessage(r *bufio.Reader) (string, []byte, error) {
 
 func TestRedisProtocol_ManagementDisabled_RejectsConnection(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
+	prevEnabled := redisqueue.Enabled()
 	redisqueue.SetEnabled(false)
+	t.Cleanup(func() { redisqueue.SetEnabled(prevEnabled) })
 
 	server := newTestServer(t)
 	if server.managementRoutesEnabled.Load() {
@@ -256,8 +258,9 @@ func TestRedisProtocol_ManagementDisabled_RejectsConnection(t *testing.T) {
 
 func TestRedisProtocol_HomeEnabled_DisablesConnection(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-password")
+	prevEnabled := redisqueue.Enabled()
 	redisqueue.SetEnabled(false)
-	t.Cleanup(func() { redisqueue.SetEnabled(false) })
+	t.Cleanup(func() { redisqueue.SetEnabled(prevEnabled) })
 
 	server := newTestServer(t)
 	if !server.managementRoutesEnabled.Load() {
@@ -301,8 +304,9 @@ func TestRedisProtocol_SUBSCRIBE_UsageSendsSupportRefresh(t *testing.T) {
 	const managementPassword = "test-management-password"
 
 	t.Setenv("MANAGEMENT_PASSWORD", managementPassword)
+	prevEnabled := redisqueue.Enabled()
 	redisqueue.SetEnabled(false)
-	t.Cleanup(func() { redisqueue.SetEnabled(false) })
+	t.Cleanup(func() { redisqueue.SetEnabled(prevEnabled) })
 
 	server := newTestServer(t)
 	if !server.managementRoutesEnabled.Load() {
@@ -363,8 +367,9 @@ func TestRedisProtocol_SUBSCRIBE_ErrorsReceivesErrorEvents(t *testing.T) {
 	const managementPassword = "test-management-password"
 
 	t.Setenv("MANAGEMENT_PASSWORD", managementPassword)
+	prevEnabled := redisqueue.Enabled()
 	redisqueue.SetEnabled(false)
-	t.Cleanup(func() { redisqueue.SetEnabled(false) })
+	t.Cleanup(func() { redisqueue.SetEnabled(prevEnabled) })
 
 	server := newTestServer(t)
 	if !server.managementRoutesEnabled.Load() {
@@ -417,8 +422,9 @@ func TestRedisProtocol_AUTH_And_PopContracts(t *testing.T) {
 	const managementPassword = "test-management-password"
 
 	t.Setenv("MANAGEMENT_PASSWORD", managementPassword)
+	prevEnabled := redisqueue.Enabled()
 	redisqueue.SetEnabled(false)
-	t.Cleanup(func() { redisqueue.SetEnabled(false) })
+	t.Cleanup(func() { redisqueue.SetEnabled(prevEnabled) })
 
 	server := newTestServer(t)
 	if !server.managementRoutesEnabled.Load() {

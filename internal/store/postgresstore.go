@@ -199,12 +199,6 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 		return "", fmt.Errorf("postgres store: missing file path attribute for %s", auth.ID)
 	}
 
-	if auth.Disabled {
-		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
-			return "", nil
-		}
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -567,10 +561,18 @@ func (s *PostgresStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 	}
 	if auth.Attributes != nil {
 		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
+			// Prevent path traversal
+			if strings.Contains(p, "..") {
+				return "", fmt.Errorf("postgres store: path traversal not allowed")
+			}
 			return p, nil
 		}
 	}
 	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
+		// Prevent path traversal
+		if strings.Contains(fileName, "..") {
+			return "", fmt.Errorf("postgres store: path traversal not allowed")
+		}
 		if filepath.IsAbs(fileName) {
 			return fileName, nil
 		}
@@ -580,14 +582,30 @@ func (s *PostgresStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 		return "", fmt.Errorf("postgres store: missing id")
 	}
 	if filepath.IsAbs(auth.ID) {
+		// Prevent path traversal
+		if strings.Contains(auth.ID, "..") {
+			return "", fmt.Errorf("postgres store: path traversal not allowed")
+		}
 		return auth.ID, nil
+	}
+	// Prevent path traversal
+	if strings.Contains(auth.ID, "..") {
+		return "", fmt.Errorf("postgres store: path traversal not allowed")
 	}
 	return filepath.Join(s.authDir, filepath.FromSlash(auth.ID)), nil
 }
 
 func (s *PostgresStore) resolveDeletePath(id string) (string, error) {
 	if strings.ContainsRune(id, os.PathSeparator) || filepath.IsAbs(id) {
+		// Prevent path traversal
+		if strings.Contains(id, "..") {
+			return "", fmt.Errorf("postgres store: path traversal not allowed")
+		}
 		return id, nil
+	}
+	// Prevent path traversal
+	if strings.Contains(id, "..") {
+		return "", fmt.Errorf("postgres store: path traversal not allowed")
 	}
 	return filepath.Join(s.authDir, filepath.FromSlash(id)), nil
 }

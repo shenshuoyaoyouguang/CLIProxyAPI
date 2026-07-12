@@ -2,26 +2,113 @@ name: pr-test-build
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
+env:
+  GO_VERSION_FILE: go.mod
+  SKIP_TESTCONTAINERS: "1"
+
 jobs:
-  build:
+  # Fast track: runs on every PR and push to main
+  # No Docker, no integration tests
+  fast-test:
+    name: Fast Test (PR)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Refresh models catalog
         run: |
           git fetch --depth 1 https://github.com/router-for-me/models.git main
           git show FETCH_HEAD:models.json > internal/registry/models/models.json
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
+
       - name: Build
         run: |
           go build -o test-output ./cmd/server
           rm -f test-output
+
+      - name: Unit Tests (short, with race detector)
+        run: |
+          go test -race -short ./...
+
+  # Deep track: runs on main branch and scheduled runs
+  # With Docker, race detector, and integration tests (testcontainers)
+  deep-test:
+    name: Deep Test (Integration + Race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: cliproxy_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U test -d cliproxy_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      minio:
+        image: minio/minio:latest
+        command: server /data --console-address ":9001"
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+          - 9001:9001
+        options: >-
+          --health-cmd="curl -f http://localhost:9000/minio/health/live"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refresh models catalog
+        run: |
+          git fetch --depth 1 https://github.com/router-for-me/models.git main
+          git show FETCH_HEAD:models.json > internal/registry/models/models.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      - name: Build
+        run: |
+          go build -o test-output ./cmd/server
+          rm -f test-output
+
+      - name: Set up test environment
+        run: |
+          echo "TEST_POSTGRES_DSN=postgres://test:test@localhost:5432/cliproxy_test?sslmode=disable" >> $GITHUB_ENV
+          echo "TEST_MINIO_ENDPOINT=localhost:9000" >> $GITHUB_ENV
+          echo "TEST_MINIO_ACCESS_KEY=minioadmin" >> $GITHUB_ENV
+          echo "TEST_MINIO_SECRET_KEY=minioadmin" >> $GITHUB_ENV
+          echo "TEST_MINIO_BUCKET=cliproxy-test" >> $GITHUB_ENV
+          echo "TEST_MINIO_USE_SSL=false" >> $GITHUB_ENV
+          echo "SKIP_TESTCONTAINERS=" >> $GITHUB_ENV
+
+      - name: Integration Tests (with race detector)
+        run: |
+          go test -race -count=1 ./...

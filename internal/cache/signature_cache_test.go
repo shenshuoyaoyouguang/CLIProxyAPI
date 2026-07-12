@@ -239,10 +239,10 @@ func TestCacheSignature_DifferentModelGroups(t *testing.T) {
 	CacheSignature(geminiModel, text, sig2)
 
 	if GetCachedSignature(testModelName, text) != sig1 {
-		t.Error("Claude signature mismatch")
+		t.Errorf("Claude signature mismatch: got %q, want %q", GetCachedSignature(testModelName, text), sig1)
 	}
 	if GetCachedSignature(geminiModel, text) != sig2 {
-		t.Error("Gemini signature mismatch")
+		t.Errorf("Gemini signature mismatch: got %q, want %q", GetCachedSignature(geminiModel, text), sig2)
 	}
 }
 
