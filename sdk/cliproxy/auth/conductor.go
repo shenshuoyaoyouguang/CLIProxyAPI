@@ -3946,10 +3946,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		m.persistCooldownStates(context.Background())
 	}
 
-	// When an auth fails, clear its session-affinity bindings so the next
-	// retry won't hit a cached auth that is now in cooldown.
-	if !result.Success {
-		m.invalidateSessionAffinity(result.AuthID)
+	// When an auth enters cooldown or becomes disabled, clear its session-affinity
+	// bindings so retries route to a different credential. Transient failures
+	// (single upstream timeout) do NOT invalidate — avoids pointless
+	// miss→bind→fail→invalidate loops when only one credential is configured.
+	if !result.Success && authSnapshot != nil {
+		blocked, reason, _ := isAuthBlockedForModel(authSnapshot, result.Model, time.Now())
+		if blocked && (reason == blockReasonCooldown || reason == blockReasonDisabled) {
+			m.invalidateSessionAffinity(result.AuthID)
+		}
 	}
 
 	if clearModelQuota && result.Model != "" {
