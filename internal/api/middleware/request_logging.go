@@ -151,10 +151,14 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	// Capture method
 	method := c.Request.Method
 
-	// Capture headers
+	// Capture headers (with sensitive headers masked)
 	headers := make(map[string][]string)
 	for key, values := range c.Request.Header {
-		headers[key] = values
+		if isSensitiveHeader(key) {
+			headers[key] = []string{"***"}
+		} else {
+			headers[key] = values
+		}
 	}
 
 	// Capture request body
@@ -242,4 +246,16 @@ func shouldLogRequest(path string) bool {
 	}
 
 	return true
+}
+
+// isSensitiveHeader returns true if the header key contains sensitive
+// authentication material that should be masked before logging.
+func isSensitiveHeader(key string) bool {
+	lower := strings.ToLower(key)
+	switch lower {
+	case "authorization", "proxy-authorization", "x-api-key",
+		"cookie", "set-cookie", "x-csrf-token":
+		return true
+	}
+	return false
 }

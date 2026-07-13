@@ -2050,7 +2050,9 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 			fmt.Println("API key obtained and saved")
 		}
 		fmt.Println("You can now use Claude services through this CLI")
-		CompleteOAuthSession(state)
+		if !CompleteOAuthSession(state) {
+			log.Warnf("Anthropic OAuth session %s was already completed or cancelled before token save", state)
+		}
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
@@ -2198,7 +2200,9 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 			fmt.Println("API key obtained and saved")
 		}
 		fmt.Println("You can now use Codex services through this CLI")
-		CompleteOAuthSession(state)
+		if !CompleteOAuthSession(state) {
+			log.Warnf("Codex OAuth session %s was already completed or cancelled before token save", state)
+		}
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
@@ -2360,7 +2364,9 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			return
 		}
 
-		CompleteOAuthSession(state)
+		if !CompleteOAuthSession(state) {
+			log.Warnf("Antigravity OAuth session %s was already completed or cancelled before token save", state)
+		}
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		if projectID != "" {
 			fmt.Printf("Using GCP project: %s\n", util.HideAPIKey(projectID))
@@ -2377,7 +2383,13 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 
 	fmt.Println("Initializing xAI authentication...")
 
-	state := fmt.Sprintf("xai-%d", time.Now().UnixNano())
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		log.Errorf("Failed to generate xAI state: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization state"})
+		return
+	}
+	state = "xai-" + state
 	authSvc := xaiauth.NewXAIAuth(h.cfg)
 
 	deviceFlow, errStartDeviceFlow := authSvc.StartDeviceFlow(ctx)
@@ -2467,7 +2479,9 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 			return
 		}
 
-		CompleteOAuthSession(state)
+		if !CompleteOAuthSession(state) {
+			log.Warnf("xAI OAuth session %s was already completed or cancelled before token save", state)
+		}
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		fmt.Println("You can now use xAI services through this CLI")
 	}()
@@ -2490,7 +2504,13 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 
 	fmt.Println("Initializing Kimi authentication...")
 
-	state := fmt.Sprintf("kmi-%d", time.Now().UnixNano())
+	state, err := misc.GenerateRandomState()
+	if err != nil {
+		log.Errorf("Failed to generate Kimi state: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization state"})
+		return
+	}
+	state = "kmi-" + state
 	// Initialize Kimi auth service
 	kimiAuth := kimi.NewKimiAuth(h.cfg)
 
@@ -2567,7 +2587,9 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		fmt.Println("You can now use Kimi services through this CLI")
-		CompleteOAuthSession(state)
+		if !CompleteOAuthSession(state) {
+			log.Warnf("Kimi OAuth session %s was already completed or cancelled before token save", state)
+		}
 	}()
 
 	response := gin.H{"status": "ok", "url": authURL, "state": state, "flow": "device"}
@@ -2682,7 +2704,9 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 					c.JSON(http.StatusOK, gin.H{"status": "error", "error": "Failed to save authentication tokens"})
 					return
 				}
-				CompleteOAuthSession(state)
+				if !CompleteOAuthSession(state) {
+					log.Warnf("Plugin OAuth session %s was already completed or cancelled before token save", state)
+				}
 				c.JSON(http.StatusOK, gin.H{"status": "ok"})
 				return
 			default:

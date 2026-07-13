@@ -76,6 +76,9 @@ func (s *oauthSessionStore) Register(state, provider string) {
 	if state == "" || provider == "" {
 		return
 	}
+	if errState := ValidateOAuthState(state); errState != nil {
+		return
+	}
 	now := time.Now()
 
 	s.mu.Lock()
@@ -144,10 +147,10 @@ func (s *oauthSessionStore) SetError(state, message string) {
 	s.sessions[state] = session
 }
 
-func (s *oauthSessionStore) Complete(state string) {
+func (s *oauthSessionStore) Complete(state string) bool {
 	state = strings.TrimSpace(state)
 	if state == "" {
-		return
+		return false
 	}
 	now := time.Now()
 
@@ -157,13 +160,14 @@ func (s *oauthSessionStore) Complete(state string) {
 	s.purgeExpiredLocked(now)
 	session, ok := s.sessions[state]
 	if !ok || session.Completed {
-		return
+		return false
 	}
 	session.Status = ""
 	session.Metadata = nil
 	session.Completed = true
 	session.ExpiresAt = now.Add(s.completedTTL)
 	s.sessions[state] = session
+	return true
 }
 
 func (s *oauthSessionStore) CompleteProvider(provider string, source string) int {
@@ -269,7 +273,7 @@ func RegisterPluginOAuthSession(state, provider string, metadata map[string]any)
 
 func SetOAuthSessionError(state, message string) { oauthSessions.SetError(state, message) }
 
-func CompleteOAuthSession(state string) { oauthSessions.Complete(state) }
+func CompleteOAuthSession(state string) bool { return oauthSessions.Complete(state) }
 
 func CompleteOAuthSessionsByProvider(provider string) int {
 	return oauthSessions.CompleteProvider(provider, oauthSessionSourceBuiltin)

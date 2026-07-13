@@ -85,7 +85,7 @@ func xaiReasoningReplayIsolateSessionKey(ctx context.Context, sessionKey string)
 		return ""
 	}
 	sum := sha256.Sum256([]byte(apiKey))
-	return "caller:" + hex.EncodeToString(sum[:8]) + ":" + sessionKey
+	return "caller:" + hex.EncodeToString(sum[:16]) + ":" + sessionKey
 }
 
 func xaiReasoningReplayEnabledForSource(from sdktranslator.Format) bool {

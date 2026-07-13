@@ -58,6 +58,10 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid redirect_url"})
 			return
 		}
+		if !isValidLocalRedirectURL(u) {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "redirect_url must be a local address"})
+			return
+		}
 		q := u.Query()
 		if state == "" {
 			state = strings.TrimSpace(q.Get("state"))
@@ -145,4 +149,19 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// isValidLocalRedirectURL checks that the URL scheme is http and the host is a
+// local address (localhost, 127.0.0.1, or [::1]). This prevents open-redirect attacks
+// should the redirect_url ever be used for an actual HTTP redirect.
+func isValidLocalRedirectURL(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == ""
 }

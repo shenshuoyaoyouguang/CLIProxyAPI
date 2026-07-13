@@ -50,10 +50,10 @@ func TestGetVertexAction(t *testing.T) {
 
 func TestConvertImagenToGeminiResponse(t *testing.T) {
 	tests := []struct {
-		name       string
-		data       []byte
-		model      string
-		checkFn    func(t *testing.T, result []byte)
+		name    string
+		data    []byte
+		model   string
+		checkFn func(t *testing.T, result []byte)
 	}{
 		{
 			name:  "valid predictions with bytesBase64Encoded",

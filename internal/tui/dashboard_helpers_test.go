@@ -175,11 +175,11 @@ func TestMinInt(t *testing.T) {
 
 func TestFormatKV(t *testing.T) {
 	tests := []struct {
-		name     string
-		key      string
-		value    string
-		wantKey  string
-		wantVal  string
+		name    string
+		key     string
+		value   string
+		wantKey string
+		wantVal string
 	}{
 		{"basic key value", "Host", "localhost", "Host:", "localhost"},
 		{"empty value", "Port", "", "Port:", ""},

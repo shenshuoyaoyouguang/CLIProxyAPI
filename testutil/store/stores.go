@@ -26,7 +26,7 @@ debug: true
 func TestAuth(id, provider string, disabled bool) *cliproxyauth.Auth {
 	now := time.Now().UTC()
 	metadata := map[string]any{
-		"access_token": "sk-test-" + randomString(8),
+		"access_token":  "sk-test-" + randomString(8),
 		"refresh_token": "rt-test-" + randomString(8),
 		"type":          provider,
 	}

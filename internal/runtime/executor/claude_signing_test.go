@@ -16,10 +16,10 @@ import (
 
 func TestSignAnthropicMessagesBody(t *testing.T) {
 	tests := []struct {
-		name      string
-		body      string
-		wantSame  bool // true if output should equal input
-		wantCCH   string
+		name     string
+		body     string
+		wantSame bool // true if output should equal input
+		wantCCH  string
 	}{
 		{
 			name:     "no system field returns unchanged",
@@ -132,9 +132,9 @@ func TestResolveClaudeKeyConfig(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name: "match by api_key case insensitive",
-			cfg:  &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "SK-ABC"}}},
-			auth: &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-abc"}},
+			name:    "match by api_key case insensitive",
+			cfg:     &config.Config{ClaudeKey: []config.ClaudeKey{{APIKey: "SK-ABC"}}},
+			auth:    &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-abc"}},
 			wantKey: "SK-ABC",
 		},
 		{

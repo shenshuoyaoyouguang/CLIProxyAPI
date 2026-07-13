@@ -183,11 +183,11 @@ func ConformanceTests(t *testing.T, factory StoreFactory) {
 func testAuth(id, provider string, disabled bool) *cliproxyauth.Auth {
 	now := time.Now().UTC()
 	return &cliproxyauth.Auth{
-		ID:        id,
-		Provider:  provider,
-		FileName:  id + ".json",
-		Disabled:  disabled,
-		Status:    cliproxyauth.StatusActive,
+		ID:       id,
+		Provider: provider,
+		FileName: id + ".json",
+		Disabled: disabled,
+		Status:   cliproxyauth.StatusActive,
 		Metadata: map[string]any{
 			"access_token": "sk-conformance-" + randomString(8),
 			"type":         provider,
