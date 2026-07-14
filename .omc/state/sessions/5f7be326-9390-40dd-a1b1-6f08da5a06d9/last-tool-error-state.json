@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd \\\"D:\\\\xx_4.14\\\\CLIProxyAPI\\\" && go build -o nul ./cmd/server 2>&1 | Select-Object -First 30\",\"description\":\"Check if current changes compile\"}",
-  "error": "Exit code 127\n/usr/bin/bash: line 1: Select-Object: command not found",
-  "timestamp": "2026-07-12T19:38:47.921Z",
-  "retry_count": 1
-}

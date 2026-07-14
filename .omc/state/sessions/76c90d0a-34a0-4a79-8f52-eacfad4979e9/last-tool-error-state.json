@@ -1,7 +1,0 @@
-{
-  "tool_name": "PowerShell",
-  "tool_input_preview": "{\"command\":\"$env:CGO_ENABLED = \\\"1\\\"; go test -race -short -count=1 ./internal/cache/ ./internal/watcher/synthesizer/ ./sdk/cliproxy/auth/ ./internal/util/ 2>&1\",\"timeout\":120000,\"description\":\"Run af...",
-  "error": "Exit code 1\n\u001b[31;1m# runtime/cgo\u001b[0m\r\n\u001b[31;1mcgo: C compiler \"gcc\" not found: exec: \"gcc\": executable file not found in %PATH%\u001b[0m\r\nFAIL\tgithub.com/router-for-me/CLIProxyAPI/v7/internal/cache [build failed]\nFAIL\tgithub.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer [build failed]\nFAIL\tgithub.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth [build failed]\nFAIL\tgithub.com/router-for-me/CLIProxyAPI/v7/internal/util [build failed]\nFAIL",
-  "timestamp": "2026-07-12T18:49:47.782Z",
-  "retry_count": 2
-}
