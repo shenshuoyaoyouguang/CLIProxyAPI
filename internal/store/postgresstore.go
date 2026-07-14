@@ -561,53 +561,36 @@ func (s *PostgresStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 	}
 	if auth.Attributes != nil {
 		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
-			// Prevent path traversal
-			if strings.Contains(p, "..") {
-				return "", fmt.Errorf("postgres store: path traversal not allowed")
+			resolved, err := resolveManagedPath(s.authDir, p)
+			if err != nil {
+				return "", fmt.Errorf("postgres store: resolve auth path: %w", err)
 			}
-			return p, nil
+			return resolved, nil
 		}
 	}
 	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
-		// Prevent path traversal
-		if strings.Contains(fileName, "..") {
-			return "", fmt.Errorf("postgres store: path traversal not allowed")
+		resolved, err := resolveManagedPath(s.authDir, fileName)
+		if err != nil {
+			return "", fmt.Errorf("postgres store: resolve auth path: %w", err)
 		}
-		if filepath.IsAbs(fileName) {
-			return fileName, nil
-		}
-		return filepath.Join(s.authDir, fileName), nil
+		return resolved, nil
 	}
 	if auth.ID == "" {
 		return "", fmt.Errorf("postgres store: missing id")
 	}
-	if filepath.IsAbs(auth.ID) {
-		// Prevent path traversal
-		if strings.Contains(auth.ID, "..") {
-			return "", fmt.Errorf("postgres store: path traversal not allowed")
-		}
-		return auth.ID, nil
+	resolved, err := resolveManagedPath(s.authDir, auth.ID)
+	if err != nil {
+		return "", fmt.Errorf("postgres store: resolve auth path: %w", err)
 	}
-	// Prevent path traversal
-	if strings.Contains(auth.ID, "..") {
-		return "", fmt.Errorf("postgres store: path traversal not allowed")
-	}
-	return filepath.Join(s.authDir, filepath.FromSlash(auth.ID)), nil
+	return resolved, nil
 }
 
 func (s *PostgresStore) resolveDeletePath(id string) (string, error) {
-	if strings.ContainsRune(id, os.PathSeparator) || filepath.IsAbs(id) {
-		// Prevent path traversal
-		if strings.Contains(id, "..") {
-			return "", fmt.Errorf("postgres store: path traversal not allowed")
-		}
-		return id, nil
+	resolved, err := resolveManagedPath(s.authDir, id)
+	if err != nil {
+		return "", fmt.Errorf("postgres store: resolve delete path: %w", err)
 	}
-	// Prevent path traversal
-	if strings.Contains(id, "..") {
-		return "", fmt.Errorf("postgres store: path traversal not allowed")
-	}
-	return filepath.Join(s.authDir, filepath.FromSlash(id)), nil
+	return resolved, nil
 }
 
 func (s *PostgresStore) relativeAuthID(path string) (string, error) {

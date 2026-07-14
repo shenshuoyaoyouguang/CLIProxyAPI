@@ -153,6 +153,23 @@ func TestHealthz(t *testing.T) {
 	})
 }
 
+func TestAuthMiddlewareNilManagerAllowsLegacyRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(AuthMiddleware(nil))
+	router.GET("/legacy", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/legacy", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
 func TestCodexAlphaSearchForwardsRequest(t *testing.T) {
 	server := newTestServer(t)
 	executor := &codexSearchCaptureExecutor{}

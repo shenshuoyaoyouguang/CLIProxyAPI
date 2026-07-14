@@ -30,9 +30,11 @@ auths/*
 
 # Documentation
 docs/*
+!docs/
 AGENTS.md
 CLAUDE.md
 GEMINI.md
+!docs/AGENTS.md
 
 # Tooling metadata
 .vscode/*
@@ -64,6 +66,6 @@ coverage/
 coverage.out
 build.ps1
 build.sh
-.omc/*
+.omc/
 .trae/*
 reasonix.toml

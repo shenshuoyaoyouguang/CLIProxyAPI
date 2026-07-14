@@ -3,7 +3,80 @@ package store
 import (
 	"path/filepath"
 	"testing"
+
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
+
+func TestResolveManagedPath(t *testing.T) {
+	root := t.TempDir()
+	baseDir := filepath.Join(root, "auths")
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "relative file", input: "openai.json"},
+		{name: "relative nested file", input: filepath.Join("team", "openai.json")},
+		{name: "absolute inside base", input: filepath.Join(baseDir, "inside.json")},
+		{name: "parent traversal", input: filepath.Join("..", "outside.json"), wantErr: true},
+		{name: "absolute outside base", input: filepath.Join(root, "outside.json"), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveManagedPath(baseDir, tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("resolveManagedPath(%q) succeeded with %q, want error", tt.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveManagedPath(%q) error = %v", tt.input, err)
+			}
+			if _, err := filepath.Rel(baseDir, got); err != nil {
+				t.Fatalf("resolved path %q is not relative to %q: %v", got, baseDir, err)
+			}
+		})
+	}
+}
+
+func TestStoreBackendsRejectExternalAuthPaths(t *testing.T) {
+	root := t.TempDir()
+	authDir := filepath.Join(root, "auths")
+	outsidePath := filepath.Join(root, "outside.json")
+
+	t.Run("postgres save path", func(t *testing.T) {
+		store := &PostgresStore{authDir: authDir}
+		_, err := store.resolveAuthPath(&cliproxyauth.Auth{ID: "outside", FileName: outsidePath})
+		if err == nil {
+			t.Fatal("PostgresStore.resolveAuthPath external absolute path succeeded, want error")
+		}
+	})
+
+	t.Run("postgres delete path", func(t *testing.T) {
+		store := &PostgresStore{authDir: authDir}
+		if _, err := store.resolveDeletePath(outsidePath); err == nil {
+			t.Fatal("PostgresStore.resolveDeletePath external absolute path succeeded, want error")
+		}
+	})
+
+	t.Run("object save path", func(t *testing.T) {
+		store := &ObjectTokenStore{authDir: authDir}
+		_, err := store.resolveAuthPath(&cliproxyauth.Auth{ID: "outside", FileName: outsidePath})
+		if err == nil {
+			t.Fatal("ObjectTokenStore.resolveAuthPath external absolute path succeeded, want error")
+		}
+	})
+
+	t.Run("object delete path", func(t *testing.T) {
+		store := &ObjectTokenStore{authDir: authDir}
+		if _, err := store.resolveDeletePath(outsidePath); err == nil {
+			t.Fatal("ObjectTokenStore.resolveDeletePath external absolute path succeeded, want error")
+		}
+	})
+}
 
 func TestJsonEqual(t *testing.T) {
 	tests := []struct {

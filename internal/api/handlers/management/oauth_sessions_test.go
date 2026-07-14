@@ -260,6 +260,61 @@ func TestGuardOAuthSessionPendingForSave(t *testing.T) {
 	}
 }
 
+func TestOAuthSessionClaimForSaveBlocksCancelRace(t *testing.T) {
+	store := newOAuthSessionStore(time.Minute)
+	replaceOAuthSessionStoreForTest(t, store)
+	store.Register("saving-state", "codex")
+
+	if err := ClaimOAuthSessionForSave("saving-state", "codex"); err != nil {
+		t.Fatalf("ClaimOAuthSessionForSave() error = %v", err)
+	}
+	if IsOAuthSessionPending("saving-state", "codex") {
+		t.Fatal("claimed session should no longer be pending")
+	}
+	if CancelOAuthSession("saving-state") {
+		t.Fatal("CancelOAuthSession() claimed session = true, want false")
+	}
+	if !CompleteClaimedOAuthSession("saving-state") {
+		t.Fatal("CompleteClaimedOAuthSession() = false, want true")
+	}
+	_, _, _, _, completed, ok := GetOAuthSessionDetails("saving-state")
+	if !ok || !completed {
+		t.Fatalf("claimed session completed/ok = %t/%t, want true/true", completed, ok)
+	}
+}
+
+func TestOAuthSessionClaimForSaveRejectsCancelledSession(t *testing.T) {
+	store := newOAuthSessionStore(time.Minute)
+	replaceOAuthSessionStoreForTest(t, store)
+	store.Register("cancelled-state", "xai")
+
+	if !CancelOAuthSession("cancelled-state") {
+		t.Fatal("CancelOAuthSession() = false, want true")
+	}
+	if err := ClaimOAuthSessionForSave("cancelled-state", "xai"); !errors.Is(err, errOAuthSessionNotPending) {
+		t.Fatalf("ClaimOAuthSessionForSave() error = %v, want %v", err, errOAuthSessionNotPending)
+	}
+}
+
+func TestOAuthSessionSaveErrorReleasesClaimAsError(t *testing.T) {
+	store := newOAuthSessionStore(time.Minute)
+	replaceOAuthSessionStoreForTest(t, store)
+	store.Register("save-error-state", "anthropic")
+
+	if err := ClaimOAuthSessionForSave("save-error-state", "anthropic"); err != nil {
+		t.Fatalf("ClaimOAuthSessionForSave() error = %v", err)
+	}
+	SetClaimedOAuthSessionError("save-error-state", "save failed")
+
+	_, status, ok := GetOAuthSession("save-error-state")
+	if !ok || status != "save failed" {
+		t.Fatalf("GetOAuthSession() status/ok = %q/%t, want save failed/true", status, ok)
+	}
+	if CompleteClaimedOAuthSession("save-error-state") {
+		t.Fatal("CompleteClaimedOAuthSession() errored session = true, want false")
+	}
+}
+
 func TestCancelAuthSessionHandler(t *testing.T) {
 	store := newOAuthSessionStore(time.Minute)
 	replaceOAuthSessionStoreForTest(t, store)

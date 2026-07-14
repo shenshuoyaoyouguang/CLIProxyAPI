@@ -194,6 +194,8 @@ nonstream-keepalive-interval: 0
 # streaming:
 #   keepalive-seconds: 15   # Default: 0 (disabled). <= 0 disables keep-alives.
 #   bootstrap-retries: 1    # Default: 0 (disabled). Retries before first byte is sent.
+#   stream-retry-enabled: false # Default: false. Enable OpenAI-compatible retries before any SSE data arrives.
+#   stream-retry-count: 2       # Only used when stream-retry-enabled is true.
 
 # Signature cache validation for thinking blocks (Antigravity/Claude).
 # When true (default), cached signatures are preferred and validated.

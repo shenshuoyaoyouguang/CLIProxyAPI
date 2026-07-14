@@ -36,6 +36,7 @@ type oauthSession struct {
 	Source    string
 	Metadata  map[string]any
 	Completed bool
+	Saving    bool
 	CreatedAt time.Time
 	ExpiresAt time.Time
 }
@@ -143,6 +144,7 @@ func (s *oauthSessionStore) SetError(state, message string) {
 		return
 	}
 	session.Status = message
+	session.Saving = false
 	session.ExpiresAt = now.Add(s.ttl)
 	s.sessions[state] = session
 }
@@ -165,6 +167,7 @@ func (s *oauthSessionStore) Complete(state string) bool {
 	session.Status = ""
 	session.Metadata = nil
 	session.Completed = true
+	session.Saving = false
 	session.ExpiresAt = now.Add(s.completedTTL)
 	s.sessions[state] = session
 	return true
@@ -188,6 +191,7 @@ func (s *oauthSessionStore) CompleteProvider(provider string, source string) int
 			session.Status = ""
 			session.Metadata = nil
 			session.Completed = true
+			session.Saving = false
 			session.ExpiresAt = now.Add(s.completedTTL)
 			s.sessions[state] = session
 			removed++
@@ -222,7 +226,7 @@ func (s *oauthSessionStore) IsPending(state, provider string) bool {
 	if !ok {
 		return false
 	}
-	if session.Completed || session.Status != "" {
+	if session.Completed || session.Saving || session.Status != "" {
 		return false
 	}
 	if provider == "" {
@@ -245,11 +249,85 @@ func (s *oauthSessionStore) Cancel(state string) bool {
 
 	s.purgeExpiredLocked(now)
 	session, ok := s.sessions[state]
-	if !ok || session.Completed || session.Status != "" {
+	if !ok || session.Completed || session.Saving || session.Status != "" {
 		return false
 	}
 	delete(s.sessions, state)
 	return true
+}
+
+func (s *oauthSessionStore) ClaimForSave(state, provider string) error {
+	state = strings.TrimSpace(state)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if state == "" {
+		return errOAuthSessionNotPending
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.purgeExpiredLocked(now)
+	session, ok := s.sessions[state]
+	if !ok || session.Completed || session.Saving || session.Status != "" {
+		return errOAuthSessionNotPending
+	}
+	if provider != "" && !strings.EqualFold(session.Provider, provider) {
+		return errOAuthSessionNotPending
+	}
+	session.Saving = true
+	session.ExpiresAt = now.Add(s.ttl)
+	s.sessions[state] = session
+	return nil
+}
+
+func (s *oauthSessionStore) CompleteClaimed(state string) bool {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return false
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.purgeExpiredLocked(now)
+	session, ok := s.sessions[state]
+	if !ok || session.Completed || !session.Saving || session.Status != "" {
+		return false
+	}
+	session.Status = ""
+	session.Metadata = nil
+	session.Completed = true
+	session.Saving = false
+	session.ExpiresAt = now.Add(s.completedTTL)
+	s.sessions[state] = session
+	return true
+}
+
+func (s *oauthSessionStore) SetClaimedError(state, message string) {
+	state = strings.TrimSpace(state)
+	message = strings.TrimSpace(message)
+	if state == "" {
+		return
+	}
+	if message == "" {
+		message = "Authentication failed"
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.purgeExpiredLocked(now)
+	session, ok := s.sessions[state]
+	if !ok || session.Completed || !session.Saving {
+		return
+	}
+	session.Status = message
+	session.Saving = false
+	session.ExpiresAt = now.Add(s.ttl)
+	s.sessions[state] = session
 }
 
 func cloneOAuthSessionMetadata(in map[string]any) map[string]any {
@@ -274,6 +352,18 @@ func RegisterPluginOAuthSession(state, provider string, metadata map[string]any)
 func SetOAuthSessionError(state, message string) { oauthSessions.SetError(state, message) }
 
 func CompleteOAuthSession(state string) bool { return oauthSessions.Complete(state) }
+
+func ClaimOAuthSessionForSave(state, provider string) error {
+	return oauthSessions.ClaimForSave(state, provider)
+}
+
+func CompleteClaimedOAuthSession(state string) bool {
+	return oauthSessions.CompleteClaimed(state)
+}
+
+func SetClaimedOAuthSessionError(state, message string) {
+	oauthSessions.SetClaimedError(state, message)
+}
 
 func CompleteOAuthSessionsByProvider(provider string) int {
 	return oauthSessions.CompleteProvider(provider, oauthSessionSourceBuiltin)

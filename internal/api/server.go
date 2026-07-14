@@ -1958,9 +1958,7 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if manager == nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "authentication service not available",
-			})
+			c.Next()
 			return
 		}
 

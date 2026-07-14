@@ -10,6 +10,19 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
+type fixedSelector struct {
+	authID string
+}
+
+func (s fixedSelector) Pick(_ context.Context, _, _ string, _ cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	for _, auth := range auths {
+		if auth.ID == s.authID {
+			return auth, nil
+		}
+	}
+	return nil, nil
+}
+
 // --- Fix 1: Cache key canonicalization (model suffix handling) ---
 
 func TestSessionAffinitySelector_ModelSuffixSharesBinding(t *testing.T) {
@@ -91,6 +104,32 @@ func TestSessionAffinitySelector_ModelSuffixCacheHitLogged(t *testing.T) {
 	baseAccess, _ := selector.Pick(context.Background(), "provider", "model-x", opts2, auths)
 	if baseAccess.ID != firstSuffix.ID {
 		t.Errorf("base model should hit cache from suffixed binding: got %q, want %q", baseAccess.ID, firstSuffix.ID)
+	}
+}
+
+func TestSessionAffinitySelector_MessageHashFallbackUsesCanonicalModelKey(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: fixedSelector{authID: "auth-b"},
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	auths := []*Auth{{ID: "auth-a"}, {ID: "auth-b"}}
+	multiTurn := []byte(`{"messages":[{"role":"user","content":"Hello"},{"role":"assistant","content":"Hi"},{"role":"user","content":"Continue"}]}`)
+	primaryID, fallbackID := extractSessionIDs(nil, multiTurn, nil)
+	if primaryID == "" || fallbackID == "" || primaryID == fallbackID {
+		t.Fatalf("unexpected message-hash ids primary=%q fallback=%q", primaryID, fallbackID)
+	}
+
+	selector.cache.Set("mixed::"+fallbackID+"::"+canonicalModelKey("deepseek-chat"), "auth-a")
+	got, err := selector.Pick(context.Background(), "mixed", "deepseek-chat:thinking", cliproxyexecutor.Options{OriginalRequest: multiTurn}, auths)
+	if err != nil {
+		t.Fatalf("fallback Pick() error = %v", err)
+	}
+	if got.ID != "auth-a" {
+		t.Fatalf("message-hash fallback picked %q, want auth-a from canonical model binding", got.ID)
 	}
 }
 

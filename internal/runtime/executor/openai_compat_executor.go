@@ -483,10 +483,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 		// Configurable retry loop for stream errors before any SSE data arrived.
 		retryCfg := helps.DefaultStreamRetryConfig()
-		if e.cfg.Streaming.StreamRetryCount > 0 {
+		if e.cfg == nil || !e.cfg.Streaming.StreamRetryEnabled {
+			retryCfg.MaxAttempts = 1
+		} else if e.cfg.Streaming.StreamRetryCount > 0 {
 			retryCfg.MaxAttempts = e.cfg.Streaming.StreamRetryCount
 		}
-		if e.cfg.Streaming.StreamRetryDegradeAfter != nil {
+		if e.cfg != nil && e.cfg.Streaming.StreamRetryDegradeAfter != nil {
 			retryCfg.DegradeAfterAttempts = *e.cfg.Streaming.StreamRetryDegradeAfter
 		}
 
@@ -592,6 +594,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				case <-ctx.Done():
 				}
 			}
+			return
 		} else {
 			// In case the upstream close the stream without a terminal [DONE] marker.
 			// Feed a synthetic done marker through the translator so pending

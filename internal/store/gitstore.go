@@ -463,10 +463,11 @@ func (s *GitTokenStore) PersistAuthFiles(_ context.Context, message string, path
 		if trimmed == "" {
 			continue
 		}
-		// Resolve relative paths against auth directory
-		if !filepath.IsAbs(trimmed) {
-			trimmed = filepath.Join(authDir, trimmed)
+		resolved, errResolve := resolveManagedPath(authDir, trimmed)
+		if errResolve != nil {
+			return fmt.Errorf("auth filestore: resolve auth path: %w", errResolve)
 		}
+		trimmed = resolved
 		rel, err := s.relativeToRepo(trimmed)
 		if err != nil {
 			return err
@@ -487,18 +488,24 @@ func (s *GitTokenStore) PersistAuthFiles(_ context.Context, message string, path
 }
 
 func (s *GitTokenStore) resolveDeletePath(id string) (string, error) {
-	if strings.ContainsRune(id, os.PathSeparator) || filepath.IsAbs(id) {
-		return id, nil
-	}
 	dir := s.baseDirSnapshot()
 	if dir == "" {
 		return "", fmt.Errorf("auth filestore: directory not configured")
 	}
-	path := filepath.Join(dir, id)
+	if strings.ContainsRune(id, os.PathSeparator) || filepath.IsAbs(id) {
+		return resolveManagedPath(dir, id)
+	}
+	path, err := resolveManagedPath(dir, id)
+	if err != nil {
+		return "", fmt.Errorf("auth filestore: resolve delete path: %w", err)
+	}
 	// Also try with .json extension if the id lacks one and that file exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if !strings.HasSuffix(path, ".json") {
-			pathWithExt := path + ".json"
+			pathWithExt, errExt := resolveManagedPath(dir, id+".json")
+			if errExt != nil {
+				return "", fmt.Errorf("auth filestore: resolve delete path: %w", errExt)
+			}
 			if _, err := os.Stat(pathWithExt); err == nil {
 				return pathWithExt, nil
 			}
@@ -574,45 +581,40 @@ func (s *GitTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 	}
 	if auth.Attributes != nil {
 		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
-			// Prevent path traversal
-			if strings.Contains(p, "..") {
-				return "", fmt.Errorf("auth filestore: path traversal not allowed")
+			dir := s.baseDirSnapshot()
+			if dir == "" {
+				return "", fmt.Errorf("auth filestore: directory not configured")
 			}
-			return p, nil
+			resolved, err := resolveManagedPath(dir, p)
+			if err != nil {
+				return "", fmt.Errorf("auth filestore: resolve auth path: %w", err)
+			}
+			return resolved, nil
 		}
 	}
 	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
-		// Prevent path traversal
-		if strings.Contains(fileName, "..") {
-			return "", fmt.Errorf("auth filestore: path traversal not allowed")
+		dir := s.baseDirSnapshot()
+		if dir == "" {
+			return "", fmt.Errorf("auth filestore: directory not configured")
 		}
-		if filepath.IsAbs(fileName) {
-			return fileName, nil
+		resolved, err := resolveManagedPath(dir, fileName)
+		if err != nil {
+			return "", fmt.Errorf("auth filestore: resolve auth path: %w", err)
 		}
-		if dir := s.baseDirSnapshot(); dir != "" {
-			return filepath.Join(dir, fileName), nil
-		}
-		return fileName, nil
+		return resolved, nil
 	}
 	if auth.ID == "" {
 		return "", fmt.Errorf("auth filestore: missing id")
-	}
-	if filepath.IsAbs(auth.ID) {
-		// Prevent path traversal
-		if strings.Contains(auth.ID, "..") {
-			return "", fmt.Errorf("auth filestore: path traversal not allowed")
-		}
-		return auth.ID, nil
-	}
-	// Prevent path traversal
-	if strings.Contains(auth.ID, "..") {
-		return "", fmt.Errorf("auth filestore: path traversal not allowed")
 	}
 	dir := s.baseDirSnapshot()
 	if dir == "" {
 		return "", fmt.Errorf("auth filestore: directory not configured")
 	}
-	return filepath.Join(dir, auth.ID), nil
+	resolved, err := resolveManagedPath(dir, auth.ID)
+	if err != nil {
+		return "", fmt.Errorf("auth filestore: resolve auth path: %w", err)
+	}
+	return resolved, nil
 }
 
 func (s *GitTokenStore) labelFor(metadata map[string]any) string {

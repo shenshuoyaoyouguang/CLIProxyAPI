@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "0 19 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -49,7 +52,7 @@ jobs:
     name: Deep Test (Integration + Race)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     services:
       postgres:
         image: postgres:16-alpine

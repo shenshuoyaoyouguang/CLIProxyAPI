@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -152,12 +153,18 @@ func ConformanceTests(t *testing.T, factory StoreFactory) {
 		store1, cleanup1 := factory.NewStore(t)
 		defer cleanup1()
 
-		// Write config and persist
+		wantConfig := []byte("server:\n  port: 18080\n")
+		configPath1 := store1.ConfigPath()
+		if configPath1 == "" {
+			t.Skip("store does not support config persistence")
+		}
+		if err := os.WriteFile(configPath1, wantConfig, 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
 		if err := store1.PersistConfig(context.Background()); err != nil {
 			t.Fatalf("PersistConfig: %v", err)
 		}
 
-		// Create a new store from the same factory — should read the persisted config
 		store2, cleanup2 := factory.NewStore(t)
 		defer cleanup2()
 
@@ -165,8 +172,13 @@ func ConformanceTests(t *testing.T, factory StoreFactory) {
 		if configPath == "" {
 			t.Skip("store does not support config persistence")
 		}
-		// Config should exist (at least as empty)
-		t.Logf("Config path: %s", configPath)
+		gotConfig, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("read config: %v", err)
+		}
+		if normalizeLineEndings(string(gotConfig)) != normalizeLineEndings(string(wantConfig)) {
+			t.Fatalf("config roundtrip mismatch\ngot:\n%s\nwant:\n%s", string(gotConfig), string(wantConfig))
+		}
 	})
 
 	t.Run("Close", func(t *testing.T) {

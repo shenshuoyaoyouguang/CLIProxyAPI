@@ -68,10 +68,16 @@ type StreamingConfig struct {
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
 
+	// StreamRetryEnabled enables OpenAI-compatible executor retries for streams
+	// that fail before any SSE data is received. Default is false because
+	// compatible upstreams may not honor idempotency keys.
+	StreamRetryEnabled bool `yaml:"stream-retry-enabled,omitempty" json:"stream-retry-enabled,omitempty"`
+
 	// StreamRetryCount controls the maximum number of retry attempts for a stream that
 	// disconnects before any SSE data is received. Each retry applies exponential backoff
 	// with jitter and degrades reasoning_effort if applicable.
-	// <= 0 uses the default of 2. Set to 1 to disable retries (only the initial attempt).
+	// Only applies when StreamRetryEnabled is true. <= 0 uses the default of 2.
+	// Set to 1 to disable retries (only the initial attempt).
 	StreamRetryCount int `yaml:"stream-retry-count,omitempty" json:"stream-retry-count,omitempty"`
 
 	// StreamRetryDegradeAfter is the number of retry attempts to keep the

@@ -137,6 +137,12 @@ func canonicalModelKey(model string) string {
 	if modelName == "" {
 		return model
 	}
+	if idx := strings.Index(modelName, ":thinking"); idx > 0 {
+		suffix := modelName[idx:]
+		if suffix == ":thinking" || strings.HasPrefix(suffix, ":thinking:") {
+			return strings.TrimSpace(modelName[:idx])
+		}
+	}
 	return modelName
 }
 
@@ -448,7 +454,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 
 	if fallbackID != "" && fallbackID != primaryID {
-		fallbackKey := provider + "::" + fallbackID + "::" + model
+		fallbackKey := provider + "::" + fallbackID + "::" + canonicalModelKey(model)
 		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {

@@ -103,6 +103,30 @@ func TestGitTokenStore_Save_NothingToPersist(t *testing.T) {
 	}
 }
 
+func TestGitTokenStore_SaveRejectsExternalAbsolutePathBeforeWrite(t *testing.T) {
+	root := t.TempDir()
+	remoteDir := setupGitRemoteRepository(t, root, "main",
+		testBranchSpec{name: "main", contents: "initial\n"},
+	)
+
+	store := NewGitTokenStore(remoteDir, "", "", "main")
+	store.SetBaseDir(filepath.Join(root, "workspace", "auths"))
+
+	outsidePath := filepath.Join(root, "outside.json")
+	auth := &cliproxyauth.Auth{
+		ID:       "outside",
+		FileName: outsidePath,
+		Metadata: map[string]any{"access_token": "sk-outside"},
+	}
+
+	if _, err := store.Save(context.Background(), auth); err == nil {
+		t.Fatal("Save with external absolute path succeeded, want error")
+	}
+	if _, err := os.Stat(outsidePath); !os.IsNotExist(err) {
+		t.Fatalf("external path was written before validation, stat err=%v", err)
+	}
+}
+
 func TestGitTokenStore_List(t *testing.T) {
 	root := t.TempDir()
 	remoteDir := setupGitRemoteRepository(t, root, "main",
@@ -196,6 +220,28 @@ func TestGitTokenStore_Delete(t *testing.T) {
 		if e.ID == "delete-me.json" {
 			t.Fatal("deleted entry still appears in List")
 		}
+	}
+}
+
+func TestGitTokenStore_DeleteRejectsExternalAbsolutePathBeforeRemove(t *testing.T) {
+	root := t.TempDir()
+	remoteDir := setupGitRemoteRepository(t, root, "main",
+		testBranchSpec{name: "main", contents: "initial\n"},
+	)
+
+	store := NewGitTokenStore(remoteDir, "", "", "main")
+	store.SetBaseDir(filepath.Join(root, "workspace", "auths"))
+
+	outsidePath := filepath.Join(root, "outside.json")
+	if err := os.WriteFile(outsidePath, []byte(`{"access_token":"keep"}`), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	if err := store.Delete(context.Background(), outsidePath); err == nil {
+		t.Fatal("Delete with external absolute path succeeded, want error")
+	}
+	if _, err := os.Stat(outsidePath); err != nil {
+		t.Fatalf("external path was removed before validation: %v", err)
 	}
 }
 

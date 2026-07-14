@@ -24,6 +24,82 @@ type sseEvent struct {
 	Payload string
 }
 
+func TestOpenAICompatExecutor_StreamRetryDefaultDisabled(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatalf("response writer does not implement http.Hijacker")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	payload := []byte(`{"model":"test-model","max_tokens":1024,"messages":[{"role":"user","content":"Say ok"}],"stream":true}`)
+	executor, auth, req, opts := newOpenAICompatTestExecutor(t, server, payload, true, sdktranslator.FormatClaude, sdktranslator.FormatClaude)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := executor.ExecuteStream(ctx, auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	_, streamErr := collectStreamChunksAllowError(t, result)
+	if streamErr == nil {
+		t.Fatal("stream error = nil, want disconnect error")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 when OpenAI-compatible stream retry is disabled by default", attempts)
+	}
+}
+
+func TestOpenAICompatExecutor_StreamRetryExplicitlyEnabled(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatalf("response writer does not implement http.Hijacker")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	payload := []byte(`{"model":"test-model","max_tokens":1024,"messages":[{"role":"user","content":"Say ok"}],"stream":true}`)
+	executor, auth, req, opts := newOpenAICompatTestExecutor(t, server, payload, true, sdktranslator.FormatClaude, sdktranslator.FormatClaude)
+	executor.cfg.Streaming.StreamRetryEnabled = true
+	executor.cfg.Streaming.StreamRetryCount = 2
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := executor.ExecuteStream(ctx, auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	_, streamErr := collectStreamChunksAllowError(t, result)
+	if streamErr == nil {
+		t.Fatal("stream error = nil, want disconnect error")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 when OpenAI-compatible stream retry is explicitly enabled", attempts)
+	}
+}
+
 // parseSSEEvents parses SSE bytes into a list of events. Each SSE frame is
 // separated by a blank line ("\n\n"). Within a frame, "event:" sets the type
 // and "data:" sets the payload. Frames without an event type are skipped.
@@ -67,6 +143,20 @@ func collectStreamChunks(t *testing.T, result *cliproxyexecutor.StreamResult) []
 		buf.Write(chunk.Payload)
 	}
 	return buf.Bytes()
+}
+
+func collectStreamChunksAllowError(t *testing.T, result *cliproxyexecutor.StreamResult) ([]byte, error) {
+	t.Helper()
+	var buf bytes.Buffer
+	var streamErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+			continue
+		}
+		buf.Write(chunk.Payload)
+	}
+	return buf.Bytes(), streamErr
 }
 
 // newOpenAICompatTestExecutor builds an executor backed by a mock upstream
@@ -171,6 +261,38 @@ func TestOpenAICompatExecutor_StreamNormalizer_Passthrough(t *testing.T) {
 	// message_stop must be the final event (no leaked post-terminal events).
 	if last := events[len(events)-1]; last.Type != "message_stop" {
 		t.Fatalf("expected message_stop as last event, got %s; seen=%v", last.Type, seenTypes)
+	}
+}
+
+func TestOpenAICompatExecutor_StreamScannerErrorDoesNotFlushNormalCompletion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: %s\n\n", `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1000,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`)
+		fmt.Fprintf(w, "data: %s\n\n", `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1000,"model":"test-model","choices":[{"index":0,"delta":{"content":"partial"}}]}`)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 52_428_801))
+	}))
+	defer server.Close()
+
+	payload := []byte(`{"model":"test-model","max_tokens":1024,"messages":[{"role":"user","content":"Say ok"}],"stream":true}`)
+	executor, auth, req, opts := newOpenAICompatTestExecutor(t, server, payload, true, sdktranslator.FormatClaude, sdktranslator.FormatClaude)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := executor.ExecuteStream(ctx, auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	raw, streamErr := collectStreamChunksAllowError(t, result)
+	if streamErr == nil {
+		t.Fatal("stream error = nil, want scanner error")
+	}
+	events := parseSSEEvents(raw)
+	for _, ev := range events {
+		if ev.Type == "message_stop" {
+			t.Fatalf("scanner error stream flushed normal message_stop event; events=%v raw=%q", events, string(raw))
+		}
 	}
 }
 
