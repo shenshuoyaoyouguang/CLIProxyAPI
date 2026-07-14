@@ -15,6 +15,9 @@ func TestNormalizeDeepSeekOpenAIUsageJSONAddsPromptCachedTokens(t *testing.T) {
 	if got := gjson.GetBytes(out, "usage.prompt_tokens_details.cached_tokens").Int(); got != 32 {
 		t.Fatalf("usage.prompt_tokens_details.cached_tokens = %d, want 32", got)
 	}
+	if got := gjson.GetBytes(out, "usage.input_tokens_details.cached_tokens").Int(); got != 32 {
+		t.Fatalf("usage.input_tokens_details.cached_tokens = %d, want 32", got)
+	}
 	if got := gjson.GetBytes(out, "usage.prompt_cache_hit_tokens").Int(); got != 32 {
 		t.Fatalf("usage.prompt_cache_hit_tokens = %d, want 32", got)
 	}
@@ -30,6 +33,9 @@ func TestNormalizeDeepSeekOpenAIUsageSSEAddsPromptCachedTokens(t *testing.T) {
 	}
 	if got := gjson.GetBytes(JSONPayload(out), "usage.prompt_tokens_details.cached_tokens").Int(); got != 32 {
 		t.Fatalf("usage.prompt_tokens_details.cached_tokens = %d, want 32", got)
+	}
+	if got := gjson.GetBytes(JSONPayload(out), "usage.input_tokens_details.cached_tokens").Int(); got != 32 {
+		t.Fatalf("usage.input_tokens_details.cached_tokens = %d, want 32", got)
 	}
 }
 

@@ -5,8 +5,11 @@ package cliproxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -17,10 +20,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc/clone"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
@@ -1883,6 +1888,161 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	return shutdownErr
 }
 
+func (s *Service) openAICompatibilityConfigByName(name string) *config.OpenAICompatibility {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	for i := range s.cfg.OpenAICompatibility {
+		compat := &s.cfg.OpenAICompatibility[i]
+		if compat.Disabled {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(compat.Name), name) {
+			return compat
+		}
+	}
+	return nil
+}
+
+type openAICompatibilityModelsResponse struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+func (s *Service) appendDiscoveredOpenAICompatibilityModels(ctx context.Context, auth *coreauth.Auth, compat *config.OpenAICompatibility, models []*ModelInfo) []*ModelInfo {
+	if compat == nil || !compat.DiscoverModels {
+		return models
+	}
+	ids := s.discoverOpenAICompatibilityModelIDs(ctx, auth, compat)
+	if len(ids) == 0 {
+		return models
+	}
+
+	seen := make(map[string]struct{}, len(models)+len(compat.Models)+len(ids))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if id := strings.ToLower(strings.TrimSpace(model.ID)); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for i := range compat.Models {
+		for _, id := range []string{compat.Models[i].Name, compat.Models[i].Alias} {
+			if key := strings.ToLower(strings.TrimSpace(id)); key != "" {
+				seen[key] = struct{}{}
+			}
+		}
+	}
+
+	out := append([]*ModelInfo(nil), models...)
+	now := time.Now().Unix()
+	ownedBy := strings.TrimSpace(compat.Name)
+	if ownedBy == "" {
+		ownedBy = "openai-compatibility"
+	}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		key := strings.ToLower(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, &ModelInfo{
+			ID:          id,
+			Object:      "model",
+			Created:     now,
+			OwnedBy:     ownedBy,
+			Type:        "openai-compatibility",
+			DisplayName: id,
+		})
+	}
+	return out
+}
+
+func (s *Service) discoverOpenAICompatibilityModelIDs(ctx context.Context, auth *coreauth.Auth, compat *config.OpenAICompatibility) []string {
+	if compat == nil || !compat.DiscoverModels {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baseURL := strings.TrimSpace(compat.BaseURL)
+	apiKey := ""
+	if auth != nil && auth.Attributes != nil {
+		if attrBase := strings.TrimSpace(auth.Attributes["base_url"]); attrBase != "" {
+			baseURL = attrBase
+		}
+		apiKey = strings.TrimSpace(auth.Attributes["api_key"])
+	}
+	if baseURL == "" {
+		return nil
+	}
+	requestURL := strings.TrimRight(baseURL, "/") + "/models"
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if errReq != nil {
+		log.WithError(errReq).Debug("openai compat model discovery: failed to build request")
+		return nil
+	}
+	req.Header.Set("Accept", "application/json")
+	for key, value := range compat.Headers {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			req.Header.Set(key, value)
+		}
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := helps.NewProxyAwareHTTPClient(ctx, s.cfg, auth, 0)
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		log.WithError(errDo).Debug("openai compat model discovery: request failed")
+		return nil
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.WithError(errClose).Debug("openai compat model discovery: failed to close response body")
+		}
+	}()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		log.WithField("status", resp.StatusCode).Debug("openai compat model discovery: ignored non-2xx response")
+		return nil
+	}
+
+	var payload openAICompatibilityModelsResponse
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	if errDecode := decoder.Decode(&payload); errDecode != nil {
+		log.WithError(errDecode).Debug("openai compat model discovery: failed to decode response")
+		return nil
+	}
+	out := make([]string, 0, len(payload.Data))
+	seen := make(map[string]struct{}, len(payload.Data))
+	for _, item := range payload.Data {
+		id := strings.TrimSpace(item.ID)
+		key := strings.ToLower(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 func (s *Service) ensureAuthDir() error {
 	info, err := os.Stat(s.cfg.AuthDir)
 	if err != nil {
@@ -2076,6 +2236,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 					providerKey = "openai-compatibility"
 				}
 				ms := cached.models
+				if compat := s.openAICompatibilityConfigByName(compatName); compat != nil {
+					ms = s.appendDiscoveredOpenAICompatibilityModels(ctx, a, compat, ms)
+				}
 				if len(ms) > 0 {
 					ms = s.appendPluginModels(providerKey, ms)
 					s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
@@ -2097,6 +2260,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 				if strings.EqualFold(compat.Name, compatName) {
 					isCompatAuth = true
 					ms := buildOpenAICompatibilityConfigModels(compat)
+					ms = s.appendDiscoveredOpenAICompatibilityModels(ctx, a, compat, ms)
 					// Register and return
 					if len(ms) > 0 {
 						if providerKey == "" {
@@ -2525,12 +2689,32 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		info.Thinking = thinking
 		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
 		info.SupportedOutputModalities = normalizeCompatConfigModalities(model.OutputModalities)
+		info.SupportsTools = model.Tools
+		info.SupportsParallelToolCalls = model.ParallelToolCalls
+		info.SupportsJSONSchema = model.JSONSchema
+		info.SupportsStreaming = model.Streaming
+		info.SupportsResponsesAPI = model.ResponsesAPI
+		info.ReasoningTypes = normalizeCompatConfigStringList(model.ReasoningTypes)
+		if model.ContextLength > 0 {
+			info.ContextLength = model.ContextLength
+			info.InputTokenLimit = model.ContextLength
+		}
+		if model.MaxOutput > 0 {
+			info.MaxCompletionTokens = model.MaxOutput
+			info.OutputTokenLimit = model.MaxOutput
+		}
+		info.UnsupportedParameters = normalizeCompatConfigStringList(model.UnsupportedParameters)
+		info.LockedParameters = cloneCompatConfigLockedParameters(model.LockedParameters)
 		models = append(models, info)
 	}
 	return models
 }
 
 func normalizeCompatConfigModalities(raw []string) []string {
+	return normalizeCompatConfigStringList(raw)
+}
+
+func normalizeCompatConfigStringList(raw []string) []string {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -2546,6 +2730,24 @@ func normalizeCompatConfigModalities(raw []string) []string {
 		}
 		seen[modality] = struct{}{}
 		out = append(out, modality)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneCompatConfigLockedParameters(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for key, value := range src {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = clone.AnyValue(value)
 	}
 	if len(out) == 0 {
 		return nil

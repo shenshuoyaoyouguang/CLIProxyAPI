@@ -217,6 +217,39 @@ func readOpenAICompatStreamPayload(t *testing.T, streamResult *cliproxyexecutor.
 	return string(payload)
 }
 
+func TestOpenAICompatModelSupportsReasoningTypeHonorsExplicitReasoningTypes(t *testing.T) {
+	model := &internalconfig.OpenAICompatibilityModel{
+		ReasoningTypes: []string{"budget"},
+	}
+
+	if !openAICompatModelSupportsReasoningType(model, "budget") {
+		t.Fatal("budget reasoning type should be supported")
+	}
+	if openAICompatModelSupportsReasoningType(model, "level") {
+		t.Fatal("level reasoning type should not be supported when reasoning-types only declares budget")
+	}
+}
+
+func TestOpenAICompatCapabilityRequestFromDetectsPayloadBudgetBeforeEffortMetadata(t *testing.T) {
+	req := cliproxyexecutor.Request{
+		Model:   "reasoning-capability-alias",
+		Payload: []byte(`{"generationConfig":{"thinkingConfig":{"thinkingBudget":8192}}}`),
+	}
+	got := openAICompatCapabilityRequestFrom("reasoning-capability-alias", req, cliproxyexecutor.Options{
+		SourceFormat: "gemini",
+		Metadata: map[string]any{
+			cliproxyexecutor.ReasoningEffortMetadataKey: "medium",
+		},
+	})
+
+	if !got.needsReasoningBudget {
+		t.Fatal("payload budget should require budget reasoning")
+	}
+	if got.needsReasoningLevel {
+		t.Fatal("metadata effort derived from a payload budget should not require level reasoning")
+	}
+}
+
 func TestManagerExecuteCount_OpenAICompatAliasPoolStopsOnInvalidRequest(t *testing.T) {
 	alias := "claude-opus-4.66"
 	invalidErr := &Error{HTTPStatus: http.StatusUnprocessableEntity, Message: "unprocessable entity"}
@@ -450,6 +483,124 @@ func TestManagerExecute_OpenAICompatAliasPoolFallsBackWithinSameAuth(t *testing.
 		if got[i] != want[i] {
 			t.Fatalf("execute call %d model = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestManagerExecute_OpenAICompatAliasPoolFiltersVisionRequirement(t *testing.T) {
+	alias := "multi-capability-alias"
+	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "text-only-upstream", Alias: alias, InputModalities: []string{"text"}},
+		{Name: "vision-upstream", Alias: alias, InputModalities: []string{"text", "image"}},
+	}, executor)
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}`)
+
+	resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{
+		Model:   alias,
+		Payload: payload,
+	}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if string(resp.Payload) != "vision-upstream" {
+		t.Fatalf("payload = %q, want vision-upstream", string(resp.Payload))
+	}
+	got := executor.ExecuteModels()
+	if len(got) != 1 || got[0] != "vision-upstream" {
+		t.Fatalf("execute calls = %v, want only vision-upstream", got)
+	}
+}
+
+func TestManagerExecute_OpenAICompatAliasPoolFiltersToolRequirement(t *testing.T) {
+	alias := "tool-capability-alias"
+	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "plain-upstream", Alias: alias},
+		{Name: "tools-upstream", Alias: alias, Tools: true},
+	}, executor)
+	payload := []byte(`{"messages":[{"role":"user","content":"call a tool"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
+
+	resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{
+		Model:   alias,
+		Payload: payload,
+	}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if string(resp.Payload) != "tools-upstream" {
+		t.Fatalf("payload = %q, want tools-upstream", string(resp.Payload))
+	}
+	got := executor.ExecuteModels()
+	if len(got) != 1 || got[0] != "tools-upstream" {
+		t.Fatalf("execute calls = %v, want only tools-upstream", got)
+	}
+}
+
+func TestManagerExecute_OpenAICompatAliasPoolFiltersReasoningBudgetRequirement(t *testing.T) {
+	alias := "reasoning-capability-alias"
+	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{
+			Name:     "level-upstream",
+			Alias:    alias,
+			Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
+		},
+		{
+			Name:           "budget-upstream",
+			Alias:          alias,
+			Thinking:       &registry.ThinkingSupport{Min: 1, Max: 32768, ZeroAllowed: true},
+			ReasoningTypes: []string{"budget"},
+		},
+	}, executor)
+
+	resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{
+		Model: alias + "(8192)",
+	}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if string(resp.Payload) != "budget-upstream(8192)" {
+		t.Fatalf("payload = %q, want budget-upstream(8192)", string(resp.Payload))
+	}
+	got := executor.ExecuteModels()
+	if len(got) != 1 || got[0] != "budget-upstream(8192)" {
+		t.Fatalf("execute calls = %v, want only budget-upstream(8192)", got)
+	}
+}
+
+func TestManagerExecute_OpenAICompatAliasPoolFiltersReasoningBudgetRequirementWithEffortMetadata(t *testing.T) {
+	alias := "reasoning-metadata-capability-alias"
+	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{
+			Name:     "level-upstream",
+			Alias:    alias,
+			Thinking: &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}},
+		},
+		{
+			Name:           "budget-upstream",
+			Alias:          alias,
+			Thinking:       &registry.ThinkingSupport{Min: 1, Max: 32768, ZeroAllowed: true},
+			ReasoningTypes: []string{"budget"},
+		},
+	}, executor)
+
+	resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{
+		Model: alias + "(8192)",
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.ReasoningEffortMetadataKey: "xhigh",
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if string(resp.Payload) != "budget-upstream(8192)" {
+		t.Fatalf("payload = %q, want budget-upstream(8192)", string(resp.Payload))
+	}
+	got := executor.ExecuteModels()
+	if len(got) != 1 || got[0] != "budget-upstream(8192)" {
+		t.Fatalf("execute calls = %v, want only budget-upstream(8192)", got)
 	}
 }
 

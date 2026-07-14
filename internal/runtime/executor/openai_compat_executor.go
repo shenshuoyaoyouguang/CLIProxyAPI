@@ -141,16 +141,11 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if updated, errDel := sjson.DeleteBytes(translated, "extra_body"); errDel == nil {
 		translated = updated
 	}
-	// Provider-specific request normalization for models that require
-	// reasoning_content passback in multi-turn tool-calling conversations.
-	if modelkind.IsDeepSeekModel(baseModel) {
-		translated = normalizeDeepSeekToolMessageReasoning(translated)
+	normalizeReq := openAICompatProviderNormalizeRequest{
+		Model:       baseModel,
+		CompatModel: e.resolveCompatModel(auth, baseModel),
 	}
-	// MiMo also locks temperature/top_p in deep-thinking mode.
-	if modelkind.IsMIMOModel(baseModel) {
-		translated = normalizeMimoToolMessageReasoning(translated)
-		translated = mimoLockThinkingParams(translated)
-	}
+	translated = applyOpenAICompatProviderNormalizeRules(translated, normalizeReq)
 	if opts.Alt == "responses/compact" {
 		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
 			translated = updated
@@ -191,9 +186,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
-	if modelkind.IsDeepSeekModel(baseModel) {
-		body = helps.NormalizeDeepSeekOpenAIUsage(body)
-	}
+	body = applyOpenAICompatProviderNormalizeResponseRules(body, normalizeReq)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.EnsurePublished(ctx)
@@ -309,17 +302,11 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if updated, errDel := sjson.DeleteBytes(translated, "extra_body"); errDel == nil {
 		translated = updated
 	}
-
-	// Provider-specific request normalization for models that require
-	// reasoning_content passback in multi-turn tool-calling conversations.
-	if modelkind.IsDeepSeekModel(baseModel) {
-		translated = normalizeDeepSeekToolMessageReasoning(translated)
+	normalizeReq := openAICompatProviderNormalizeRequest{
+		Model:       baseModel,
+		CompatModel: e.resolveCompatModel(auth, baseModel),
 	}
-	// MiMo also locks temperature/top_p in deep-thinking mode.
-	if modelkind.IsMIMOModel(baseModel) {
-		translated = normalizeMimoToolMessageReasoning(translated)
-		translated = mimoLockThinkingParams(translated)
-	}
+	translated = applyOpenAICompatProviderNormalizeRules(translated, normalizeReq)
 
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
@@ -450,9 +437,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				line := scanner.Bytes()
 				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 				trimmedLine := bytes.TrimSpace(line)
-				if modelkind.IsDeepSeekModel(baseModel) {
-					trimmedLine = helps.NormalizeDeepSeekOpenAIUsage(trimmedLine)
-				}
+				trimmedLine = applyOpenAICompatProviderNormalizeResponseRules(trimmedLine, normalizeReq)
 				streamUsage.Observe(helps.ParseOpenAIStreamUsage(trimmedLine))
 				if len(trimmedLine) == 0 {
 					continue
@@ -745,16 +730,11 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 		return cliproxyexecutor.Response{}, err
 	}
 
-	// Provider-specific request normalization for models that require
-	// reasoning_content passback in multi-turn tool-calling conversations.
-	if modelkind.IsDeepSeekModel(baseModel) {
-		translated = normalizeDeepSeekToolMessageReasoning(translated)
+	normalizeReq := openAICompatProviderNormalizeRequest{
+		Model:       baseModel,
+		CompatModel: e.resolveCompatModel(auth, baseModel),
 	}
-	// MiMo also locks temperature/top_p in deep-thinking mode.
-	if modelkind.IsMIMOModel(baseModel) {
-		translated = normalizeMimoToolMessageReasoning(translated)
-		translated = mimoLockThinkingParams(translated)
-	}
+	translated = applyOpenAICompatProviderNormalizeRules(translated, normalizeReq)
 
 	enc, err := helps.TokenizerForModel(modelForCounting)
 	if err != nil {
@@ -934,6 +914,28 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 			if candidate != "" && strings.EqualFold(strings.TrimSpace(candidate), compat.Name) {
 				return compat
 			}
+		}
+	}
+	return nil
+}
+
+func (e *OpenAICompatExecutor) resolveCompatModel(auth *cliproxyauth.Auth, model string) *config.OpenAICompatibilityModel {
+	compat := e.resolveCompatConfig(auth)
+	if compat == nil || len(compat.Models) == 0 {
+		return nil
+	}
+	key := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(model))
+	}
+	if key == "" {
+		return nil
+	}
+	for i := range compat.Models {
+		name := strings.ToLower(strings.TrimSpace(compat.Models[i].Name))
+		alias := strings.ToLower(strings.TrimSpace(compat.Models[i].Alias))
+		if key == name || key == alias {
+			return &compat.Models[i]
 		}
 	}
 	return nil

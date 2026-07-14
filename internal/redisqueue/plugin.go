@@ -96,6 +96,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Tokens:          tokens,
 		Failed:          failed,
 		Fail:            fail,
+		ErrorClass:      classifyUsageError(fail, failed),
 		ResponseHeaders: record.ResponseHeaders,
 	}
 
@@ -145,6 +146,7 @@ type requestDetail struct {
 	Tokens          tokenStats  `json:"tokens"`
 	Failed          bool        `json:"failed"`
 	Fail            failDetail  `json:"fail"`
+	ErrorClass      string      `json:"error_class,omitempty"`
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
 }
 
@@ -178,6 +180,38 @@ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) fail
 		fail.StatusCode = 500
 	}
 	return fail
+}
+
+func classifyUsageError(fail failDetail, failed bool) string {
+	if !failed {
+		return ""
+	}
+	body := strings.ToLower(strings.TrimSpace(fail.Body))
+	switch status := fail.StatusCode; {
+	case status == http.StatusBadRequest:
+		if strings.Contains(body, "model") &&
+			(strings.Contains(body, "unsupported") || strings.Contains(body, "not support") || strings.Contains(body, "does not support")) {
+			return "model_unsupported"
+		}
+		return "invalid_request"
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return "auth"
+	case status == http.StatusNotFound:
+		if strings.Contains(body, "model") {
+			return "model_unsupported"
+		}
+		return "not_found"
+	case status == http.StatusTooManyRequests:
+		return "rate_limit"
+	case status >= http.StatusInternalServerError:
+		return "upstream_5xx"
+	case status >= http.StatusBadRequest:
+		return "upstream_4xx"
+	case body != "":
+		return "transport_error"
+	default:
+		return "unknown"
+	}
 }
 
 func resolveSuccess(ctx context.Context) bool {

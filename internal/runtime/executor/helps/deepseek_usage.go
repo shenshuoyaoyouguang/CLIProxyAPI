@@ -54,12 +54,11 @@ func normalizeDeepSeekOpenAIUsageJSON(body []byte) ([]byte, bool) {
 		return body, false
 	}
 
-	cachePath := "usage.prompt_tokens_details.cached_tokens"
-	if usageNode.Get("input_tokens").Exists() || usageNode.Get("output_tokens").Exists() {
-		cachePath = "usage.input_tokens_details.cached_tokens"
+	updated, err := sjson.SetBytes(body, "usage.prompt_tokens_details.cached_tokens", hitTokens.Int())
+	if err != nil {
+		return body, false
 	}
-
-	updated, err := sjson.SetBytes(body, cachePath, hitTokens.Int())
+	updated, err = sjson.SetBytes(updated, "usage.input_tokens_details.cached_tokens", hitTokens.Int())
 	if err != nil {
 		return body, false
 	}

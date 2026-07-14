@@ -635,6 +635,10 @@ type OpenAICompatibility struct {
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
 	BaseURL string `yaml:"base-url" json:"base-url"`
 
+	// DiscoverModels enables optional /models discovery. Discovered models are candidates only;
+	// capabilities must still come from explicit config or built-in profiles.
+	DiscoverModels bool `yaml:"discover-models,omitempty" json:"discover-models,omitempty"`
+
 	// APIKeyEntries defines API keys with optional per-key proxy configuration.
 	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
 
@@ -685,6 +689,36 @@ type OpenAICompatibilityModel struct {
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+
+	// Tools declares whether this model supports tool/function calling.
+	Tools bool `yaml:"tools,omitempty" json:"tools,omitempty"`
+
+	// ParallelToolCalls declares whether this model supports parallel tool calls.
+	ParallelToolCalls bool `yaml:"parallel-tool-calls,omitempty" json:"parallel-tool-calls,omitempty"`
+
+	// JSONSchema declares whether this model supports JSON schema response formats.
+	JSONSchema bool `yaml:"json-schema,omitempty" json:"json-schema,omitempty"`
+
+	// Streaming declares whether this model supports streaming responses.
+	Streaming bool `yaml:"streaming,omitempty" json:"streaming,omitempty"`
+
+	// ResponsesAPI declares whether this model supports OpenAI Responses API style requests.
+	ResponsesAPI bool `yaml:"responses-api,omitempty" json:"responses-api,omitempty"`
+
+	// ReasoningTypes declares supported reasoning control types (e.g. level, budget).
+	ReasoningTypes []string `yaml:"reasoning-types,omitempty" json:"reasoning-types,omitempty"`
+
+	// ContextLength declares the model context window size.
+	ContextLength int `yaml:"context-length,omitempty" json:"context-length,omitempty"`
+
+	// MaxOutput declares the maximum output token limit.
+	MaxOutput int `yaml:"max-output,omitempty" json:"max-output,omitempty"`
+
+	// UnsupportedParameters lists request parameters this model/provider rejects.
+	UnsupportedParameters []string `yaml:"unsupported-parameters,omitempty" json:"unsupported-parameters,omitempty"`
+
+	// LockedParameters lists request parameters that must be forced to fixed values.
+	LockedParameters map[string]any `yaml:"locked-parameters,omitempty" json:"locked-parameters,omitempty"`
 }
 
 func (m OpenAICompatibilityModel) GetName() string        { return m.Name }

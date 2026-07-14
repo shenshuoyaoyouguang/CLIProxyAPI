@@ -487,6 +487,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
+	if modelStates := authModelStatesSummary(auth); len(modelStates) > 0 {
+		entry["model_states"] = modelStates
+	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
 	}
@@ -568,6 +571,54 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		entry["websockets"] = websockets
 	}
 	return entry
+}
+
+func authModelStatesSummary(auth *coreauth.Auth) []gin.H {
+	if auth == nil || len(auth.ModelStates) == 0 {
+		return nil
+	}
+	models := make([]string, 0, len(auth.ModelStates))
+	for model, state := range auth.ModelStates {
+		if strings.TrimSpace(model) == "" || state == nil {
+			continue
+		}
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	sort.Strings(models)
+	out := make([]gin.H, 0, len(models))
+	for _, model := range models {
+		state := auth.ModelStates[model]
+		entry := gin.H{
+			"model":       model,
+			"status":      state.Status,
+			"unavailable": state.Unavailable,
+		}
+		if msg := strings.TrimSpace(state.StatusMessage); msg != "" {
+			entry["status_message"] = msg
+		}
+		if !state.NextRetryAfter.IsZero() {
+			entry["next_retry_after"] = state.NextRetryAfter.UTC()
+		}
+		if !state.UpdatedAt.IsZero() {
+			entry["updated_at"] = state.UpdatedAt.UTC()
+		}
+		if state.LastError != nil {
+			if code := strings.TrimSpace(state.LastError.Code); code != "" {
+				entry["last_error_code"] = code
+			}
+			if msg := strings.TrimSpace(state.LastError.Message); msg != "" {
+				entry["last_error_message"] = msg
+			}
+			if state.LastError.HTTPStatus > 0 {
+				entry["last_error_http_status"] = state.LastError.HTTPStatus
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {

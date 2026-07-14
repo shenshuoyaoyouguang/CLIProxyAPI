@@ -307,8 +307,56 @@ func (m authTabModel) renderDetail(f map[string]any) string {
 		sb.WriteString("\n")
 	}
 
+	for _, line := range renderAuthModelStateLines(f["model_states"]) {
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+
 	sb.WriteString("    └─────────────────────────────────────────────\n")
 	return sb.String()
+}
+
+func renderAuthModelStateLines(raw any) []string {
+	states, ok := raw.([]any)
+	if !ok || len(states) == 0 {
+		return nil
+	}
+	lines := []string{"    │ Model States:"}
+	for _, item := range states {
+		state, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		model := strings.TrimSpace(fmt.Sprintf("%v", state["model"]))
+		if model == "" || model == "<nil>" {
+			continue
+		}
+		status := strings.TrimSpace(fmt.Sprintf("%v", state["status"]))
+		message := strings.TrimSpace(fmt.Sprintf("%v", state["status_message"]))
+		nextRetry := strings.TrimSpace(fmt.Sprintf("%v", state["next_retry_after"]))
+		cooling := false
+		if unavailable, okUnavailable := state["unavailable"].(bool); okUnavailable && unavailable {
+			cooling = true
+		}
+		if nextRetry != "" && nextRetry != "<nil>" {
+			cooling = true
+		}
+		parts := []string{model}
+		if status != "" && status != "<nil>" {
+			parts = append(parts, status)
+		}
+		if cooling {
+			parts = append(parts, "cooldown")
+		}
+		if message != "" && message != "<nil>" {
+			parts = append(parts, message)
+		}
+		lines = append(lines, "    │   - "+strings.Join(parts, " • "))
+	}
+	if len(lines) == 1 {
+		return nil
+	}
+	return lines
 }
 
 // getAnyString converts any value to its string representation.

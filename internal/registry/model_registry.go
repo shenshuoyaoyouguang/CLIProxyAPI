@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	misc "github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc/clone"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -59,6 +60,22 @@ type ModelInfo struct {
 	SupportedInputModalities []string `json:"supportedInputModalities,omitempty"`
 	// SupportedOutputModalities lists supported output modalities (e.g., TEXT, IMAGE)
 	SupportedOutputModalities []string `json:"supportedOutputModalities,omitempty"`
+	// SupportsTools indicates whether the model supports tool/function calling.
+	SupportsTools bool `json:"supports_tools,omitempty"`
+	// SupportsParallelToolCalls indicates whether the model supports parallel tool calls.
+	SupportsParallelToolCalls bool `json:"supports_parallel_tool_calls,omitempty"`
+	// SupportsJSONSchema indicates whether the model supports JSON schema response formats.
+	SupportsJSONSchema bool `json:"supports_json_schema,omitempty"`
+	// SupportsStreaming indicates whether the model supports streaming responses.
+	SupportsStreaming bool `json:"supports_streaming,omitempty"`
+	// SupportsResponsesAPI indicates whether the model supports OpenAI Responses API requests.
+	SupportsResponsesAPI bool `json:"supports_responses_api,omitempty"`
+	// ReasoningTypes lists supported reasoning control types (e.g., level, budget).
+	ReasoningTypes []string `json:"reasoning_types,omitempty"`
+	// UnsupportedParameters lists request parameters this model/provider rejects.
+	UnsupportedParameters []string `json:"unsupported_parameters,omitempty"`
+	// LockedParameters lists request parameters that must be forced to fixed values.
+	LockedParameters map[string]any `json:"locked_parameters,omitempty"`
 	// SupportsWebSearch indicates this Antigravity model is listed by
 	// fetchAvailableModels.webSearchModelIds and can execute native googleSearch.
 	SupportsWebSearch bool `json:"supports_web_search,omitempty"`
@@ -579,6 +596,15 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 	if len(model.SupportedOutputModalities) > 0 {
 		copyModel.SupportedOutputModalities = append([]string(nil), model.SupportedOutputModalities...)
 	}
+	if len(model.ReasoningTypes) > 0 {
+		copyModel.ReasoningTypes = append([]string(nil), model.ReasoningTypes...)
+	}
+	if len(model.UnsupportedParameters) > 0 {
+		copyModel.UnsupportedParameters = append([]string(nil), model.UnsupportedParameters...)
+	}
+	if len(model.LockedParameters) > 0 {
+		copyModel.LockedParameters = clone.AnyMap(model.LockedParameters)
+	}
 	if model.Thinking != nil {
 		copyThinking := *model.Thinking
 		if len(model.Thinking.Levels) > 0 {
@@ -893,32 +919,11 @@ func cloneModelMaps(models []map[string]any) []map[string]any {
 		}
 		copyModel := make(map[string]any, len(model))
 		for key, value := range model {
-			copyModel[key] = cloneModelMapValue(value)
+			copyModel[key] = clone.AnyValue(value)
 		}
 		cloned = append(cloned, copyModel)
 	}
 	return cloned
-}
-
-func cloneModelMapValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		copyMap := make(map[string]any, len(typed))
-		for key, entry := range typed {
-			copyMap[key] = cloneModelMapValue(entry)
-		}
-		return copyMap
-	case []any:
-		copySlice := make([]any, len(typed))
-		for i, entry := range typed {
-			copySlice[i] = cloneModelMapValue(entry)
-		}
-		return copySlice
-	case []string:
-		return append([]string(nil), typed...)
-	default:
-		return value
-	}
 }
 
 // GetAvailableModelsByProvider returns models available for the given provider identifier.

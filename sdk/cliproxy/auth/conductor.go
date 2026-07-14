@@ -31,6 +31,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -1114,6 +1115,417 @@ func (m *Manager) resolveOpenAICompatUpstreamModelPool(auth *Auth, requestedMode
 	return resolveModelAliasPoolFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
 }
 
+func (m *Manager) openAICompatConfigModelsForAuth(auth *Auth) []internalconfig.OpenAICompatibilityModel {
+	if m == nil || !isOpenAICompatAPIKeyAuth(auth) {
+		return nil
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		cfg = &internalconfig.Config{}
+	}
+	providerKey := ""
+	compatName := ""
+	if auth != nil && auth.Attributes != nil {
+		providerKey = strings.TrimSpace(auth.Attributes["provider_key"])
+		compatName = strings.TrimSpace(auth.Attributes["compat_name"])
+	}
+	entry := resolveOpenAICompatConfig(cfg, providerKey, compatName, auth.Provider)
+	if entry == nil || len(entry.Models) == 0 {
+		return nil
+	}
+	return entry.Models
+}
+
+type openAICompatCapabilityRequest struct {
+	needsVision            bool
+	needsTools             bool
+	needsParallelToolCalls bool
+	needsJSONSchema        bool
+	needsStreaming         bool
+	needsResponsesAPI      bool
+	needsReasoningBudget   bool
+	needsReasoningLevel    bool
+}
+
+func (r openAICompatCapabilityRequest) empty() bool {
+	return !r.needsVision &&
+		!r.needsTools &&
+		!r.needsParallelToolCalls &&
+		!r.needsJSONSchema &&
+		!r.needsStreaming &&
+		!r.needsResponsesAPI &&
+		!r.needsReasoningBudget &&
+		!r.needsReasoningLevel
+}
+
+func openAICompatCapabilityRequestFrom(routeModel string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) openAICompatCapabilityRequest {
+	root := gjson.ParseBytes(req.Payload)
+	out := openAICompatCapabilityRequest{
+		needsVision:            openAICompatPayloadNeedsVision(root),
+		needsTools:             openAICompatPayloadNeedsTools(root),
+		needsParallelToolCalls: openAICompatPayloadNeedsParallelToolCalls(root),
+		needsJSONSchema:        openAICompatPayloadNeedsJSONSchema(root),
+		needsStreaming:         opts.Stream,
+		needsResponsesAPI:      openAICompatRequestNeedsResponsesAPI(opts),
+	}
+	if out.needsParallelToolCalls {
+		out.needsTools = true
+	}
+	reasoningRequirementKnown := false
+	suffix := thinking.ParseSuffix(routeModel)
+	if suffix.HasSuffix {
+		if _, ok := thinking.ParseNumericSuffix(suffix.RawSuffix); ok {
+			out.needsReasoningBudget = true
+			reasoningRequirementKnown = true
+		} else if _, ok := thinking.ParseLevelSuffix(suffix.RawSuffix); ok {
+			out.needsReasoningLevel = true
+			reasoningRequirementKnown = true
+		}
+	}
+	if !reasoningRequirementKnown {
+		needsBudget, needsLevel := openAICompatPayloadReasoningRequirements(root, opts.SourceFormat)
+		if needsBudget || needsLevel {
+			out.needsReasoningBudget = needsBudget
+			out.needsReasoningLevel = needsLevel
+			reasoningRequirementKnown = true
+		}
+	}
+	if !reasoningRequirementKnown && reasoningEffortFromOptions(opts) != "" {
+		out.needsReasoningLevel = true
+	}
+	return out
+}
+
+func openAICompatPayloadReasoningRequirements(root gjson.Result, sourceFormat sdktranslator.Format) (bool, bool) {
+	if !root.Exists() {
+		return false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(sourceFormat.String())) {
+	case "claude":
+		if thinkingType := strings.ToLower(strings.TrimSpace(root.Get("thinking.type").String())); thinkingType == "adaptive" || thinkingType == "auto" {
+			if openAICompatGJSONAnyExists(root, "output_config.effort") {
+				return false, true
+			}
+		}
+		if openAICompatGJSONAnyExists(root, "thinking.budget_tokens") {
+			return true, false
+		}
+	case "gemini", "antigravity":
+		if openAICompatGJSONAnyExists(root,
+			"generationConfig.thinkingConfig.thinkingLevel",
+			"generationConfig.thinkingConfig.thinking_level",
+			"request.generationConfig.thinkingConfig.thinkingLevel",
+			"request.generationConfig.thinkingConfig.thinking_level",
+		) {
+			return false, true
+		}
+		if openAICompatGJSONAnyExists(root,
+			"generationConfig.thinkingConfig.thinkingBudget",
+			"generationConfig.thinkingConfig.thinking_budget",
+			"request.generationConfig.thinkingConfig.thinkingBudget",
+			"request.generationConfig.thinkingConfig.thinking_budget",
+		) {
+			return true, false
+		}
+	case "interactions":
+		if openAICompatGJSONAnyExists(root,
+			"generation_config.thinking_level",
+			"generation_config.thinkingLevel",
+			"generation_config.thinking_config.thinking_level",
+			"generation_config.thinking_config.thinkingLevel",
+			"generation_config.thinkingConfig.thinking_level",
+			"generation_config.thinkingConfig.thinkingLevel",
+		) {
+			return false, true
+		}
+		if openAICompatGJSONAnyExists(root,
+			"generation_config.thinking_budget",
+			"generation_config.thinkingBudget",
+			"generation_config.thinking_config.thinking_budget",
+			"generation_config.thinking_config.thinkingBudget",
+			"generation_config.thinkingConfig.thinking_budget",
+			"generation_config.thinkingConfig.thinkingBudget",
+		) {
+			return true, false
+		}
+	case "openai":
+		if openAICompatGJSONAnyExists(root, "reasoning_effort", "reasoning.effort") {
+			return false, true
+		}
+	case "openai-response", "codex", "xai":
+		if openAICompatGJSONAnyExists(root, "reasoning.effort") {
+			return false, true
+		}
+	default:
+		if openAICompatGJSONAnyExists(root,
+			"reasoning_effort",
+			"reasoning.effort",
+			"output_config.effort",
+			"generationConfig.thinkingConfig.thinkingLevel",
+			"generationConfig.thinkingConfig.thinking_level",
+			"request.generationConfig.thinkingConfig.thinkingLevel",
+			"request.generationConfig.thinkingConfig.thinking_level",
+			"generation_config.thinking_level",
+			"generation_config.thinkingLevel",
+			"generation_config.thinking_config.thinking_level",
+			"generation_config.thinking_config.thinkingLevel",
+			"generation_config.thinkingConfig.thinking_level",
+			"generation_config.thinkingConfig.thinkingLevel",
+		) {
+			return false, true
+		}
+		if openAICompatGJSONAnyExists(root,
+			"thinking.budget_tokens",
+			"generationConfig.thinkingConfig.thinkingBudget",
+			"generationConfig.thinkingConfig.thinking_budget",
+			"request.generationConfig.thinkingConfig.thinkingBudget",
+			"request.generationConfig.thinkingConfig.thinking_budget",
+			"generation_config.thinking_budget",
+			"generation_config.thinkingBudget",
+			"generation_config.thinking_config.thinking_budget",
+			"generation_config.thinking_config.thinkingBudget",
+			"generation_config.thinkingConfig.thinking_budget",
+			"generation_config.thinkingConfig.thinkingBudget",
+		) {
+			return true, false
+		}
+	}
+	return false, false
+}
+
+func openAICompatGJSONAnyExists(root gjson.Result, paths ...string) bool {
+	for _, path := range paths {
+		if root.Get(path).Exists() {
+			return true
+		}
+	}
+	return false
+}
+
+func openAICompatPayloadNeedsVision(root gjson.Result) bool {
+	if !root.Exists() {
+		return false
+	}
+	return openAICompatJSONHasVisionMarker(root)
+}
+
+func openAICompatJSONHasVisionMarker(value gjson.Result) bool {
+	if value.IsObject() {
+		found := false
+		value.ForEach(func(key, child gjson.Result) bool {
+			if openAICompatIsVisionMarker(key.String()) || openAICompatJSONHasVisionMarker(child) {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	if value.IsArray() {
+		found := false
+		value.ForEach(func(_, child gjson.Result) bool {
+			if openAICompatJSONHasVisionMarker(child) {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	return value.Type == gjson.String && openAICompatIsVisionMarker(value.String())
+}
+
+func openAICompatIsVisionMarker(value string) bool {
+	return strings.EqualFold(value, "image_url") ||
+		strings.EqualFold(value, "input_image")
+}
+
+func openAICompatPayloadNeedsTools(root gjson.Result) bool {
+	tools := root.Get("tools")
+	return tools.IsArray() && len(tools.Array()) > 0
+}
+
+func openAICompatPayloadNeedsParallelToolCalls(root gjson.Result) bool {
+	parallel := root.Get("parallel_tool_calls")
+	return parallel.Exists() && parallel.Bool()
+}
+
+func openAICompatPayloadNeedsJSONSchema(root gjson.Result) bool {
+	responseFormat := root.Get("response_format")
+	if responseFormat.Get("type").String() == "json_schema" || responseFormat.Get("json_schema").Exists() {
+		return true
+	}
+	textFormat := root.Get("text.format")
+	return textFormat.Get("type").String() == "json_schema" || textFormat.Get("schema").Exists()
+}
+
+func openAICompatRequestNeedsResponsesAPI(opts cliproxyexecutor.Options) bool {
+	if opts.Alt == "responses/compact" {
+		return true
+	}
+	if strings.EqualFold(opts.SourceFormat.String(), "openai-response") {
+		return true
+	}
+	path := ""
+	if len(opts.Metadata) > 0 {
+		if raw, ok := opts.Metadata[cliproxyexecutor.RequestPathMetadataKey]; ok && raw != nil {
+			switch value := raw.(type) {
+			case string:
+				path = strings.TrimSpace(value)
+			case []byte:
+				path = strings.TrimSpace(string(value))
+			}
+		}
+	}
+	return strings.Contains(strings.ToLower(path), "/responses")
+}
+
+func (m *Manager) filterOpenAICompatModelsByRequestCapabilities(auth *Auth, routeModel string, candidates []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) []string {
+	if len(candidates) == 0 || !isOpenAICompatAPIKeyAuth(auth) {
+		return candidates
+	}
+	requirements := openAICompatCapabilityRequestFrom(routeModel, req, opts)
+	if requirements.empty() {
+		return candidates
+	}
+	configModels := m.openAICompatConfigModelsForAuth(auth)
+	if len(configModels) == 0 {
+		return candidates
+	}
+	filtered := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		model, ok := openAICompatConfigModelForCandidate(configModels, candidate)
+		if !ok {
+			continue
+		}
+		if openAICompatModelSupportsRequest(model, requirements) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) == 0 {
+		if openAICompatCandidatesDeclareRequiredCapabilities(configModels, candidates, requirements) {
+			return nil
+		}
+		return candidates
+	}
+	return filtered
+}
+
+func openAICompatCandidatesDeclareRequiredCapabilities(models []internalconfig.OpenAICompatibilityModel, candidates []string, requirements openAICompatCapabilityRequest) bool {
+	for _, candidate := range candidates {
+		model, ok := openAICompatConfigModelForCandidate(models, candidate)
+		if !ok || model == nil {
+			continue
+		}
+		if requirements.needsVision && len(model.InputModalities) > 0 {
+			return true
+		}
+		if requirements.needsTools && model.Tools {
+			return true
+		}
+		if requirements.needsParallelToolCalls && model.ParallelToolCalls {
+			return true
+		}
+		if requirements.needsJSONSchema && model.JSONSchema {
+			return true
+		}
+		if requirements.needsStreaming && model.Streaming {
+			return true
+		}
+		if requirements.needsResponsesAPI && model.ResponsesAPI {
+			return true
+		}
+		if (requirements.needsReasoningBudget || requirements.needsReasoningLevel) &&
+			(model.Thinking != nil || len(model.ReasoningTypes) > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func openAICompatConfigModelForCandidate(models []internalconfig.OpenAICompatibilityModel, candidate string) (*internalconfig.OpenAICompatibilityModel, bool) {
+	key := strings.ToLower(strings.TrimSpace(canonicalModelKey(candidate)))
+	if key == "" {
+		return nil, false
+	}
+	for i := range models {
+		name := strings.ToLower(strings.TrimSpace(models[i].Name))
+		alias := strings.ToLower(strings.TrimSpace(models[i].Alias))
+		if key == name || key == alias {
+			return &models[i], true
+		}
+	}
+	return nil, false
+}
+
+func openAICompatModelSupportsRequest(model *internalconfig.OpenAICompatibilityModel, requirements openAICompatCapabilityRequest) bool {
+	if model == nil {
+		return false
+	}
+	if requirements.needsVision && !openAICompatStringListContains(model.InputModalities, "image") {
+		return false
+	}
+	if requirements.needsTools && !model.Tools {
+		return false
+	}
+	if requirements.needsParallelToolCalls && !model.ParallelToolCalls {
+		return false
+	}
+	if requirements.needsJSONSchema && !model.JSONSchema {
+		return false
+	}
+	if requirements.needsStreaming && !model.Streaming {
+		return false
+	}
+	if requirements.needsResponsesAPI && !model.ResponsesAPI {
+		return false
+	}
+	if requirements.needsReasoningBudget && !openAICompatModelSupportsReasoningType(model, "budget") {
+		return false
+	}
+	if requirements.needsReasoningLevel && !openAICompatModelSupportsReasoningType(model, "level") {
+		return false
+	}
+	return true
+}
+
+func openAICompatModelSupportsReasoningType(model *internalconfig.OpenAICompatibilityModel, reasoningType string) bool {
+	if model == nil {
+		return false
+	}
+	reasoningType = strings.ToLower(strings.TrimSpace(reasoningType))
+	if reasoningType == "" {
+		return false
+	}
+	if len(model.ReasoningTypes) > 0 {
+		return openAICompatStringListContains(model.ReasoningTypes, reasoningType)
+	}
+	if model.Thinking == nil {
+		return reasoningType == "level"
+	}
+	if reasoningType == "level" {
+		return len(model.Thinking.Levels) > 0
+	}
+	if reasoningType == "budget" {
+		return len(model.Thinking.Levels) == 0 &&
+			(model.Thinking.Min > 0 || model.Thinking.Max > 0 || model.Thinking.ZeroAllowed || model.Thinking.DynamicAllowed)
+	}
+	return false
+}
+
+func openAICompatStringListContains(values []string, target string) bool {
+	target = strings.ToLower(strings.TrimSpace(target))
+	if target == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), target) {
+			return true
+		}
+	}
+	return false
+}
+
 func preserveRequestedModelSuffix(requestedModel, resolved string) string {
 	return preserveResolvedModelSuffix(resolved, thinking.ParseSuffix(requestedModel))
 }
@@ -1208,8 +1620,9 @@ func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string) ([]stri
 	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled
 }
 
-func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string) ([]string, bool, OAuthModelAliasResult) {
+func (m *Manager) preparedExecutionModelsWithAlias(auth *Auth, routeModel string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) ([]string, bool, OAuthModelAliasResult) {
 	candidates, pooled, aliasResult := m.executionModelCandidatesWithAlias(auth, routeModel)
+	candidates = m.filterOpenAICompatModelsByRequestCapabilities(auth, routeModel, candidates, req, opts)
 	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled, aliasResult
 }
 
@@ -2647,7 +3060,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel, req, opts)
 		if len(models) == 0 {
 			continue
 		}
@@ -2777,7 +3190,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		}
 		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
 
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel, req, opts)
 		if len(models) == 0 {
 			continue
 		}
@@ -2905,7 +3318,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
 			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
 		}
-		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel)
+		models, pooled, aliasResult := m.preparedExecutionModelsWithAlias(auth, routeModel, req, opts)
 		if len(models) == 0 {
 			continue
 		}

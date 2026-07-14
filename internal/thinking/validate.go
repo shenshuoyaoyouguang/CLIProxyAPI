@@ -68,19 +68,19 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	if modelInfo != nil {
 		modelType := strings.ToLower(strings.TrimSpace(modelInfo.Type))
 		if modelType != "" {
-			if (fromFormat != "" && !isSameProviderFamily(fromFormat, modelType)) ||
-				(toFormat != "" && !isSameProviderFamily(toFormat, modelType)) {
+			if (fromFormat != "" && !isSameThinkingValidationFamily(fromFormat, modelType)) ||
+				(toFormat != "" && !isSameThinkingValidationFamily(toFormat, modelType)) {
 				modelFamilyMismatch = true
 			}
 		}
 	}
-	allowClampUnsupported := toHasLevelSupport && (!isSameProviderFamily(fromFormat, toFormat) || modelFamilyMismatch)
+	allowClampUnsupported := toHasLevelSupport && (!isSameThinkingValidationFamily(fromFormat, toFormat) || modelFamilyMismatch)
 
 	// strictBudget determines whether to enforce strict budget range validation.
 	// This applies when: (1) config comes from request body (not suffix), (2) source format is known,
-	// and (3) source and target are in the same provider family. Cross-family or suffix-based configs
-	// are clamped instead of rejected to improve interoperability.
-	strictBudget := !fromSuffix && fromFormat != "" && isSameProviderFamily(fromFormat, toFormat) && !modelFamilyMismatch
+	// and (3) source and target are in the same thinking validation family. Cross-family or suffix-based
+	// configs are clamped instead of rejected to improve interoperability.
+	strictBudget := !fromSuffix && fromFormat != "" && isSameThinkingValidationFamily(fromFormat, toFormat) && !modelFamilyMismatch
 	budgetDerivedFromLevel := false
 
 	capability := detectModelCapability(modelInfo)
@@ -368,7 +368,7 @@ func isBudgetCapableProvider(provider string) bool {
 	}
 }
 
-func isGeminiFamily(provider string) bool {
+func isGeminiThinkingValidationFamily(provider string) bool {
 	switch provider {
 	case "gemini", "antigravity":
 		return true
@@ -377,13 +377,14 @@ func isGeminiFamily(provider string) bool {
 	}
 }
 
-func isOpenAIFamily(provider string) bool {
+func isOpenAIThinkingValidationFamily(provider string) bool {
 	switch provider {
-	// Note: xai is intentionally NOT in this list. xai uses OpenAI-compatible
-	// request format but is treated as a separate family for thinking validation
-	// so that cross-family level clamping applies (e.g., openai->xai with level
-	// "xhigh" clamps to "high" instead of erroring). See TestThinkingE2ENewProviderTargets
-	// cases X2/X3/X6/X7. deepseek and mimo follow the same pattern.
+	// Note: xai is intentionally NOT in this validation family. xAI uses
+	// OpenAI-compatible wire formats, but its thinking levels have distinct
+	// semantics and support sets. Keeping it separate makes openai->xai behave
+	// as a cross-family conversion, so unsupported levels can clamp to the
+	// nearest supported xAI level instead of failing strict same-family
+	// validation. See TestThinkingValidationFamily_XAIIsNotOpenAICompatible.
 	case "openai", "openai-response", "codex", "deepseek", "mimo":
 		return true
 	default:
@@ -391,12 +392,12 @@ func isOpenAIFamily(provider string) bool {
 	}
 }
 
-func isSameProviderFamily(from, to string) bool {
+func isSameThinkingValidationFamily(from, to string) bool {
 	if from == to {
 		return true
 	}
-	return (isGeminiFamily(from) && isGeminiFamily(to)) ||
-		(isOpenAIFamily(from) && isOpenAIFamily(to))
+	return (isGeminiThinkingValidationFamily(from) && isGeminiThinkingValidationFamily(to)) ||
+		(isOpenAIThinkingValidationFamily(from) && isOpenAIThinkingValidationFamily(to))
 }
 
 func abs(x int) int {

@@ -335,6 +335,7 @@ nonstream-keepalive-interval: 0
 #     disabled: false # optional: set to true to disable this provider without removing it
 #     prefix: "test" # optional: require calls like "test/kimi-k2" to target this provider's credentials
 #     base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
+#     discover-models: false # optional: fetch /models as candidate names only; explicit capability profiles still win
 #     disable-cooling: false # optional: per-provider override for auth/model cooldown scheduling
 #     headers:
 #       X-Custom-Header: "custom-value"
@@ -350,6 +351,18 @@ nonstream-keepalive-interval: 0
 #         image: false                   # optional: set true to allow this model on /v1/images/generations and /v1/images/edits (not chat/responses image input)
 #         input-modalities: [text, image] # optional: declare /v1/chat/completions and /v1/responses multimodal input for Codex clients
 #         output-modalities: [text]       # optional: declare output modalities when known
+#         tools: true                     # optional: supports tool/function calling
+#         parallel-tool-calls: true       # optional: supports parallel tool calls
+#         json-schema: true               # optional: supports JSON schema response formats
+#         streaming: true                 # optional: supports streaming responses
+#         responses-api: true             # optional: supports OpenAI Responses API style requests
+#         reasoning-types: [level, budget] # optional: supported reasoning controls
+#         context-length: 128000          # optional: maximum context window
+#         max-output: 16384               # optional: maximum output tokens
+#         unsupported-parameters: [seed]  # optional: parameters this upstream rejects
+#         locked-parameters:              # optional: parameters that should be forced by provider normalization
+#           temperature: 1.0
+#           top_p: 0.95
 #         thinking:                      # optional: omit to default to levels ["low","medium","high"]
 #           levels: ["low", "medium", "high"]
 #       # You may repeat the same alias to build an internal model pool.

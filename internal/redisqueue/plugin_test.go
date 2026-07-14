@@ -148,8 +148,33 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 		requireStringField(t, payload, "auth_type", "apikey")
 		requireMissingField(t, payload, "user_api_key")
 		requireStringField(t, payload, "request_id", "gin-request-id")
+		requireStringField(t, payload, "error_class", "upstream_5xx")
 		requireBoolField(t, payload, "failed", true)
 		requireFailField(t, payload, http.StatusInternalServerError, "upstream failed")
+	})
+}
+
+func TestUsageQueuePluginPayloadClassifiesUnsupportedModel400(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithRequestID(context.Background(), "req-unsupported")
+		ctx = internallogging.WithResponseStatusHolder(ctx)
+		internallogging.SetResponseStatus(ctx, http.StatusBadRequest)
+
+		plugin := &usageQueuePlugin{}
+		plugin.HandleUsage(ctx, coreusage.Record{
+			Provider: "openai-compatibility",
+			Model:    "alias-model",
+			Alias:    "client-alias",
+			Fail: coreusage.Failure{
+				StatusCode: http.StatusBadRequest,
+				Body:       "model does not support tool calls",
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireStringField(t, payload, "error_class", "model_unsupported")
+		requireBoolField(t, payload, "failed", true)
+		requireFailField(t, payload, http.StatusBadRequest, "model does not support tool calls")
 	})
 }
 
