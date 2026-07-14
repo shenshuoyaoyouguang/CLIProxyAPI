@@ -213,15 +213,6 @@ func (b *ClaudeSSEBuilder) AppendMessageStop(out []byte) []byte {
 	return AppendSSEEventBytes(out, SSEEventMessageStop, b.cfg.MessageStopPayload, b.cfg.TrailingNewlines)
 }
 
-// Reset clears stream state while preserving configuration.
-func (b *ClaudeSSEBuilder) Reset() {
-	b.nextBlockIndex = 0
-	b.openBlocks = make(map[int]bool)
-	b.messageStarted = false
-	b.messageDeltaSent = false
-	b.messageStopSent = false
-}
-
 func setClaudeUsage(payload []byte, path string, usage ClaudeUsage) []byte {
 	payload, _ = sjson.SetBytes(payload, path+".input_tokens", usage.InputTokens)
 	payload, _ = sjson.SetBytes(payload, path+".output_tokens", usage.OutputTokens)

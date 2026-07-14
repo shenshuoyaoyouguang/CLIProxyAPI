@@ -89,6 +89,54 @@ func TestClaudeSSEBuilder_MessageDeltaUsageExtras(t *testing.T) {
 	}
 }
 
+func TestClaudeSSEBuilder_ContentBlockStopSuppressedForUnopenedOrClosedBlock(t *testing.T) {
+	b := NewClaudeSSEBuilder(ClaudeSSEBuilderConfig{})
+
+	// A block that was never opened must not emit a stop frame. This is the
+	// invariant every migrated provider relies on via `if len(frame) > 0`.
+	if frame := b.AppendContentBlockStop(nil, 0); len(frame) != 0 {
+		t.Fatalf("stop for unopened block should be suppressed, got %q", frame)
+	}
+
+	// Open, close once, then attempt to close again: only the first stop emits.
+	b.AppendContentBlockStartAt(nil, 0, []byte(`{"type":"text","text":""}`))
+	if frame := b.AppendContentBlockStop(nil, 0); len(frame) == 0 {
+		t.Fatal("first stop for an open block must emit a frame")
+	}
+	if frame := b.AppendContentBlockStop(nil, 0); len(frame) != 0 {
+		t.Fatalf("double stop should be suppressed, got %q", frame)
+	}
+}
+
+func TestClaudeSSEBuilder_MessageStartAndStopAreEmittedOnce(t *testing.T) {
+	b := NewClaudeSSEBuilder(ClaudeSSEBuilderConfig{})
+
+	if frame := b.AppendMessageStart(nil, ClaudeMessageStartParams{ID: "msg_1", Model: "m"}); len(frame) == 0 {
+		t.Fatal("first message_start must emit")
+	}
+	if frame := b.AppendMessageStart(nil, ClaudeMessageStartParams{ID: "msg_2", Model: "m"}); len(frame) != 0 {
+		t.Fatalf("second message_start should be suppressed, got %q", frame)
+	}
+	if frame := b.AppendMessageStop(nil); len(frame) == 0 {
+		t.Fatal("first message_stop must emit")
+	}
+	if frame := b.AppendMessageStop(nil); len(frame) != 0 {
+		t.Fatalf("second message_stop should be suppressed, got %q", frame)
+	}
+}
+
+func TestClaudeSSEBuilder_ContentBlockStartAdvancesProviderOwnedIndex(t *testing.T) {
+	b := NewClaudeSSEBuilder(ClaudeSSEBuilderConfig{})
+
+	// Provider-owned index 5 must be tracked so a later auto-assigned block
+	// does not collide with it.
+	b.AppendContentBlockStartAt(nil, 5, []byte(`{"type":"text","text":""}`))
+	_, idx := b.AppendContentBlockStart(nil, []byte(`{"type":"text","text":""}`))
+	if idx != 6 {
+		t.Fatalf("auto index after provider-owned 5 = %d, want 6", idx)
+	}
+}
+
 func ssePayloadForTest(t *testing.T, frame []byte, event string) []byte {
 	t.Helper()
 	for _, ev := range parseSSEEvents(frame) {
