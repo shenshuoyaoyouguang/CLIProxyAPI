@@ -79,10 +79,24 @@ type Params struct {
 	// Reverse map: sanitized Gemini function name → original Claude tool name.
 	// Populated lazily on the first response chunk from the original request JSON.
 	ToolNameMap map[string]string
+	Builder     *translatorcommon.ClaudeSSEBuilder
 }
 
 // toolUseIDCounter provides a process-wide unique counter for tool use identifiers.
 var toolUseIDCounter uint64
+
+func newAntigravityClaudeSSEBuilder() *translatorcommon.ClaudeSSEBuilder {
+	return translatorcommon.NewClaudeSSEBuilder(translatorcommon.ClaudeSSEBuilderConfig{
+		MessageStartTemplate: []byte(`{"type": "message_start", "message": {"id": "msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY", "type": "message", "role": "assistant", "content": [], "model": "claude-3-5-sonnet-20241022", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}`),
+	})
+}
+
+func ensureAntigravityClaudeBuilder(params *Params) *translatorcommon.ClaudeSSEBuilder {
+	if params.Builder == nil {
+		params.Builder = newAntigravityClaudeSSEBuilder()
+	}
+	return params.Builder
+}
 
 // ConvertAntigravityResponseToClaude performs sophisticated streaming response format conversion.
 // This function implements a complex state machine that translates backend client responses
@@ -107,18 +121,20 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 			ResponseType:     0,
 			ResponseIndex:    0,
 			ToolNameMap:      util.SanitizedToolNameMap(originalRequestRawJSON),
+			Builder:          newAntigravityClaudeSSEBuilder(),
 		}
 	}
 	modelName := gjson.GetBytes(requestRawJSON, "model").String()
 
 	params := (*param).(*Params)
+	ensureAntigravityClaudeBuilder(params)
 
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
 		output := make([]byte, 0, 256)
 		// Only send final events if we have actually output content
 		if params.HasContent {
 			appendFinalEvents(params, &output, true)
-			output = translatorcommon.AppendSSEEventString(output, "message_stop", `{"type":"message_stop"}`, translatorcommon.SSEStandardTrailingNewlines)
+			output = params.Builder.AppendMessageStop(output)
 			return [][]byte{output}
 		}
 		return [][]byte{}
@@ -126,7 +142,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 
 	output := make([]byte, 0, 1024)
 	appendEvent := func(event, payload string) {
-		output = translatorcommon.AppendSSEEventString(output, event, payload, translatorcommon.SSEStandardTrailingNewlines)
+		output = appendAntigravityClaudeEvent(output, params, event, payload)
 	}
 	webSearchStreamMode := shouldTranslateWebSearchGrounding(originalRequestRawJSON, requestRawJSON)
 	appendThinkingSignature := func(signature string) {
@@ -138,8 +154,7 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 			params.CurrentThinkingText.Reset()
 		}
 		sigValue := formatClaudeSignatureValue(modelName, signature)
-		data, _ := sjson.SetBytes([]byte(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex)), "delta.signature", sigValue)
-		appendEvent("content_block_delta", string(data))
+		output = params.Builder.AppendSignatureDelta(output, params.ResponseIndex, sigValue)
 		params.HasContent = true
 	}
 
@@ -148,24 +163,26 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 	if !params.HasFirstResponse {
 		// Create the initial message structure with default values according to Claude Code API specification
 		// This follows the Claude Code API specification for streaming message initialization
-		messageStartTemplate := []byte(`{"type": "message_start", "message": {"id": "msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY", "type": "message", "role": "assistant", "content": [], "model": "claude-3-5-sonnet-20241022", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}`)
+		messageID := "msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY"
+		model := "claude-3-5-sonnet-20241022"
+		usage := translatorcommon.ClaudeUsage{}
 
 		// Use cpaUsageMetadata within the message_start event for Claude.
 		if promptTokenCount := gjson.GetBytes(rawJSON, "response.cpaUsageMetadata.promptTokenCount"); promptTokenCount.Exists() {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.usage.input_tokens", promptTokenCount.Int())
+			usage.InputTokens = promptTokenCount.Int()
 		}
 		if candidatesTokenCount := gjson.GetBytes(rawJSON, "response.cpaUsageMetadata.candidatesTokenCount"); candidatesTokenCount.Exists() && !webSearchStreamMode {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.usage.output_tokens", candidatesTokenCount.Int())
+			usage.OutputTokens = candidatesTokenCount.Int()
 		}
 
 		// Override default values with actual response metadata if available from the Antigravity response
 		if modelVersionResult := gjson.GetBytes(rawJSON, "response.modelVersion"); modelVersionResult.Exists() {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.model", modelVersionResult.String())
+			model = modelVersionResult.String()
 		}
 		if responseIDResult := gjson.GetBytes(rawJSON, "response.responseId"); responseIDResult.Exists() {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.id", responseIDResult.String())
+			messageID = responseIDResult.String()
 		}
-		appendEvent("message_start", string(messageStartTemplate))
+		output = params.Builder.AppendMessageStart(output, translatorcommon.ClaudeMessageStartParams{ID: messageID, Model: model, Usage: usage})
 
 		params.HasFirstResponse = true
 	}
@@ -349,6 +366,22 @@ func appendWebSearchBufferedText(partsResult gjson.Result, buffer *strings.Build
 	}
 }
 
+func appendAntigravityClaudeEvent(output []byte, params *Params, event, payload string) []byte {
+	root := gjson.Parse(payload)
+	switch event {
+	case translatorcommon.SSEEventContentBlockStart:
+		return ensureAntigravityClaudeBuilder(params).AppendContentBlockStartAt(output, int(root.Get("index").Int()), []byte(root.Get("content_block").Raw))
+	case translatorcommon.SSEEventContentBlockDelta:
+		return ensureAntigravityClaudeBuilder(params).AppendRawContentBlockDeltaAt(output, int(root.Get("index").Int()), []byte(root.Get("delta").Raw))
+	case translatorcommon.SSEEventContentBlockStop:
+		return ensureAntigravityClaudeBuilder(params).AppendContentBlockStop(output, int(root.Get("index").Int()))
+	case translatorcommon.SSEEventMessageStop:
+		return ensureAntigravityClaudeBuilder(params).AppendMessageStop(output)
+	default:
+		return translatorcommon.AppendSSEEventString(output, event, payload, translatorcommon.SSEStandardTrailingNewlines)
+	}
+}
+
 func appendBufferedWebSearchTextBlock(params *Params, appendEvent func(string, string)) {
 	text := params.WebSearchTextBuffer.String()
 	params.WebSearchTextBuffer.Reset()
@@ -377,7 +410,7 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 	}
 
 	if params.ResponseType != 0 {
-		*output = translatorcommon.AppendSSEEventString(*output, "content_block_stop", fmt.Sprintf(`{"type":"content_block_stop","index":%d}`, params.ResponseIndex), translatorcommon.SSEStandardTrailingNewlines)
+		*output = ensureAntigravityClaudeBuilder(params).AppendContentBlockStop(*output, params.ResponseIndex)
 		params.ResponseType = 0
 	}
 
@@ -390,36 +423,21 @@ func appendFinalEvents(params *Params, output *[]byte, force bool) {
 		}
 	}
 
-	delta := []byte(fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":"%s","stop_sequence":null},"usage":{"input_tokens":%d,"output_tokens":%d}}`, stopReason, params.PromptTokenCount, usageOutputTokens))
-	if params.WebSearchRequests > 0 {
-		delta, _ = sjson.SetBytes(delta, "usage.server_tool_use.web_search_requests", params.WebSearchRequests)
-	}
-	// Add cache_read_input_tokens if cached tokens are present (indicates prompt caching is working)
-	if params.CachedTokenCount > 0 {
-		var err error
-		delta, err = sjson.SetBytes(delta, "usage.cache_read_input_tokens", params.CachedTokenCount)
-		if err != nil {
-			log.Warnf("antigravity claude response: failed to set cache_read_input_tokens: %v", err)
-		}
-	}
-	*output = translatorcommon.AppendSSEEventString(*output, "message_delta", string(delta), translatorcommon.SSEStandardTrailingNewlines)
+	*output = ensureAntigravityClaudeBuilder(params).AppendMessageDelta(*output, translatorcommon.ClaudeMessageDeltaParams{
+		StopReason: stopReason,
+		Usage: translatorcommon.ClaudeUsage{
+			InputTokens:       params.PromptTokenCount,
+			OutputTokens:      usageOutputTokens,
+			CacheReadTokens:   params.CachedTokenCount,
+			WebSearchRequests: params.WebSearchRequests,
+		},
+	})
 
 	params.HasSentFinalEvents = true
 }
 
 func resolveStopReason(params *Params) string {
-	if params.HasToolUse {
-		return "tool_use"
-	}
-
-	switch params.FinishReason {
-	case "MAX_TOKENS":
-		return "max_tokens"
-	case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN":
-		return "end_turn"
-	}
-
-	return "end_turn"
+	return translatorcommon.MapAntigravityFinishReasonToClaude(params.FinishReason, params.HasToolUse)
 }
 
 // ConvertAntigravityResponseToClaudeNonStream converts a non-streaming Antigravity response to a non-streaming Claude response.
@@ -565,21 +583,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	flushThinking()
 	flushText()
 
-	stopReason := "end_turn"
-	if hasToolCall {
-		stopReason = "tool_use"
-	} else {
-		if finish := root.Get("response.candidates.0.finishReason"); finish.Exists() {
-			switch finish.String() {
-			case "MAX_TOKENS":
-				stopReason = "max_tokens"
-			case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN":
-				stopReason = "end_turn"
-			default:
-				stopReason = "end_turn"
-			}
-		}
-	}
+	stopReason := translatorcommon.MapAntigravityFinishReasonToClaude(root.Get("response.candidates.0.finishReason").String(), hasToolCall)
 	responseJSON, _ = sjson.SetBytes(responseJSON, "stop_reason", stopReason)
 
 	if promptTokens == 0 && outputTokens == 0 {

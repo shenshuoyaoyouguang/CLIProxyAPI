@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -29,24 +28,18 @@ func appendCodexWebSearchServerToolUse(output []byte, params *ConvertCodexRespon
 
 	if !alreadyStarted {
 		output = append(output, finalizeCodexThinkingBlock(params)...)
-		template := []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"","name":"web_search","input":{}}}`)
-		template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
-		template, _ = sjson.SetBytes(template, "content_block.id", toolUseID)
-		output = translatorcommon.AppendSSEEventBytes(output, "content_block_start", template, 2)
+		contentBlock := []byte(`{"type":"server_tool_use","id":"","name":"web_search","input":{}}`)
+		contentBlock, _ = sjson.SetBytes(contentBlock, "id", toolUseID)
+		output = ensureCodexClaudeBuilder(params).AppendContentBlockStartAt(output, params.BlockIndex, contentBlock)
 	}
 
 	if query != "" {
 		partialJSON, _ := json.Marshal(map[string]string{"query": query})
-		delta := []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}`)
-		delta, _ = sjson.SetBytes(delta, "index", params.BlockIndex)
-		delta, _ = sjson.SetBytes(delta, "delta.partial_json", string(partialJSON))
-		output = translatorcommon.AppendSSEEventBytes(output, "content_block_delta", delta, 2)
+		output = ensureCodexClaudeBuilder(params).AppendInputJSONDelta(output, params.BlockIndex, string(partialJSON))
 	}
 
 	if !alreadyStarted {
-		stop := []byte(`{"type":"content_block_stop","index":0}`)
-		stop, _ = sjson.SetBytes(stop, "index", params.BlockIndex)
-		output = translatorcommon.AppendSSEEventBytes(output, "content_block_stop", stop, 2)
+		output = ensureCodexClaudeBuilder(params).AppendContentBlockStop(output, params.BlockIndex)
 		params.WebSearchToolUseIDs[toolUseID] = struct{}{}
 		params.BlockIndex++
 	}
@@ -69,17 +62,14 @@ func appendCodexWebSearchToolResult(output []byte, params *ConvertCodexResponseT
 		return output
 	}
 
-	template := []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"web_search_tool_result","tool_use_id":"","content":[]}}`)
-	template, _ = sjson.SetBytes(template, "index", params.BlockIndex)
-	template, _ = sjson.SetBytes(template, "content_block.tool_use_id", toolUseID)
+	contentBlock := []byte(`{"type":"web_search_tool_result","tool_use_id":"","content":[]}`)
+	contentBlock, _ = sjson.SetBytes(contentBlock, "tool_use_id", toolUseID)
 	if content := codexWebSearchResultContent(root, item); len(content) > 0 {
-		template, _ = sjson.SetRawBytes(template, "content_block.content", content)
+		contentBlock, _ = sjson.SetRawBytes(contentBlock, "content", content)
 	}
-	output = translatorcommon.AppendSSEEventBytes(output, "content_block_start", template, 2)
+	output = ensureCodexClaudeBuilder(params).AppendContentBlockStartAt(output, params.BlockIndex, contentBlock)
 
-	stop := []byte(`{"type":"content_block_stop","index":0}`)
-	stop, _ = sjson.SetBytes(stop, "index", params.BlockIndex)
-	output = translatorcommon.AppendSSEEventBytes(output, "content_block_stop", stop, 2)
+	output = ensureCodexClaudeBuilder(params).AppendContentBlockStop(output, params.BlockIndex)
 	params.WebSearchToolResultIDs[toolUseID] = struct{}{}
 	params.BlockIndex++
 	if toolUseID == params.LastWebSearchToolUseID {
