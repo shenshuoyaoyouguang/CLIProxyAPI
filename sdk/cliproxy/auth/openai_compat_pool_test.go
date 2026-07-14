@@ -536,6 +536,30 @@ func TestManagerExecute_OpenAICompatAliasPoolFiltersToolRequirement(t *testing.T
 	}
 }
 
+func TestManagerExecute_OpenAICompatAliasPoolFallsBackWhenCapabilitiesPartiallyDeclared(t *testing.T) {
+	alias := "partial-capability-alias"
+	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
+	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
+		{Name: "tools-only-upstream", Alias: alias, Tools: true},
+	}, executor)
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
+
+	resp, err := m.Execute(context.Background(), []string{openAICompatPoolProviderKey}, cliproxyexecutor.Request{
+		Model:   alias,
+		Payload: payload,
+	}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if string(resp.Payload) != "tools-only-upstream" {
+		t.Fatalf("payload = %q, want tools-only-upstream", string(resp.Payload))
+	}
+	got := executor.ExecuteModels()
+	if len(got) != 1 || got[0] != "tools-only-upstream" {
+		t.Fatalf("execute calls = %v, want fallback to tools-only-upstream", got)
+	}
+}
+
 func TestManagerExecute_OpenAICompatAliasPoolFiltersReasoningBudgetRequirement(t *testing.T) {
 	alias := "reasoning-capability-alias"
 	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}

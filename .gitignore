@@ -50,6 +50,7 @@ GEMINI.md
 .opencode/*
 .idea/*
 .beads/*
+.omo/
 .bmad/*
 _bmad/*
 _bmad-output/*

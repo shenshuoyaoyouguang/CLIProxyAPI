@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	internalregistry "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -206,6 +207,72 @@ func TestRegisterModelsForAuth_OpenAICompatibilityDiscoveryIgnoresBadResponses(t
 				t.Fatalf("registered model count = %d, want 1", len(models))
 			}
 		})
+	}
+}
+
+func TestRegisterModelsForAuth_OpenAICompatibilityDiscoveryTimesOut(t *testing.T) {
+	originalTimeout := openAICompatibilityModelDiscoveryTimeout
+	openAICompatibilityModelDiscoveryTimeout = 50 * time.Millisecond
+	t.Cleanup(func() {
+		openAICompatibilityModelDiscoveryTimeout = originalTimeout
+	})
+
+	var requests atomic.Int64
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = w
+		requests.Add(1)
+		<-release
+	}))
+	t.Cleanup(func() {
+		close(release)
+		server.Close()
+	})
+
+	service := &Service{
+		cfg: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{{
+				Name:           "compat",
+				BaseURL:        server.URL + "/v1",
+				DiscoverModels: true,
+				Models: []config.OpenAICompatibilityModel{{
+					Name:  "configured-upstream",
+					Alias: "configured-alias",
+				}},
+			}},
+		},
+	}
+	auth := &coreauth.Auth{
+		ID:       "auth-openai-compat-discovery-timeout",
+		Provider: "openai-compatibility",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind":    "api_key",
+			"api_key":      "sk-test",
+			"base_url":     server.URL + "/v1",
+			"compat_name":  "compat",
+			"provider_key": "compat",
+		},
+	}
+
+	registry := internalregistry.GetGlobalRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	start := time.Now()
+	service.registerModelsForAuth(context.Background(), auth)
+	elapsed := time.Since(start)
+
+	if got := requests.Load(); got == 0 {
+		t.Fatal("expected discovery request to be attempted")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("discovery registration took %s, want bounded by timeout", elapsed)
+	}
+	if model := findRegisteredModel(registry.GetModelsForClient(auth.ID), "configured-alias"); model == nil {
+		t.Fatal("expected configured model to remain registered after discovery timeout")
 	}
 }
 

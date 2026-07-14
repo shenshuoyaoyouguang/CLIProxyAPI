@@ -1133,7 +1133,9 @@ func (m *Manager) openAICompatConfigModelsForAuth(auth *Auth) []internalconfig.O
 	if entry == nil || len(entry.Models) == 0 {
 		return nil
 	}
-	return entry.Models
+	out := make([]internalconfig.OpenAICompatibilityModel, len(entry.Models))
+	copy(out, entry.Models)
+	return out
 }
 
 type openAICompatCapabilityRequest struct {
@@ -1403,44 +1405,9 @@ func (m *Manager) filterOpenAICompatModelsByRequestCapabilities(auth *Auth, rout
 		}
 	}
 	if len(filtered) == 0 {
-		if openAICompatCandidatesDeclareRequiredCapabilities(configModels, candidates, requirements) {
-			return nil
-		}
 		return candidates
 	}
 	return filtered
-}
-
-func openAICompatCandidatesDeclareRequiredCapabilities(models []internalconfig.OpenAICompatibilityModel, candidates []string, requirements openAICompatCapabilityRequest) bool {
-	for _, candidate := range candidates {
-		model, ok := openAICompatConfigModelForCandidate(models, candidate)
-		if !ok || model == nil {
-			continue
-		}
-		if requirements.needsVision && len(model.InputModalities) > 0 {
-			return true
-		}
-		if requirements.needsTools && model.Tools {
-			return true
-		}
-		if requirements.needsParallelToolCalls && model.ParallelToolCalls {
-			return true
-		}
-		if requirements.needsJSONSchema && model.JSONSchema {
-			return true
-		}
-		if requirements.needsStreaming && model.Streaming {
-			return true
-		}
-		if requirements.needsResponsesAPI && model.ResponsesAPI {
-			return true
-		}
-		if (requirements.needsReasoningBudget || requirements.needsReasoningLevel) &&
-			(model.Thinking != nil || len(model.ReasoningTypes) > 0) {
-			return true
-		}
-	}
-	return false
 }
 
 func openAICompatConfigModelForCandidate(models []internalconfig.OpenAICompatibilityModel, candidate string) (*internalconfig.OpenAICompatibilityModel, bool) {

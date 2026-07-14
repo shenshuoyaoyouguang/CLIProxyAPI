@@ -935,7 +935,8 @@ func (e *OpenAICompatExecutor) resolveCompatModel(auth *cliproxyauth.Auth, model
 		name := strings.ToLower(strings.TrimSpace(compat.Models[i].Name))
 		alias := strings.ToLower(strings.TrimSpace(compat.Models[i].Alias))
 		if key == name || key == alias {
-			return &compat.Models[i]
+			model := compat.Models[i]
+			return &model
 		}
 	}
 	return nil

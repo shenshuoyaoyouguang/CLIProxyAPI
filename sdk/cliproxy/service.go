@@ -122,6 +122,8 @@ const (
 	modelRegistrationMaxWorkersOpenAICompatibility = 20
 )
 
+var openAICompatibilityModelDiscoveryTimeout = 10 * time.Second
+
 const (
 	modelRegistrationPhaseConfigAPIKey = iota
 	modelRegistrationPhaseOther
@@ -2004,7 +2006,7 @@ func (s *Service) discoverOpenAICompatibilityModelIDs(ctx context.Context, auth 
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := helps.NewProxyAwareHTTPClient(ctx, s.cfg, auth, 0)
+	client := helps.NewProxyAwareHTTPClient(ctx, s.cfg, auth, openAICompatibilityModelDiscoveryTimeout)
 	resp, errDo := client.Do(req)
 	if errDo != nil {
 		log.WithError(errDo).Debug("openai compat model discovery: request failed")
