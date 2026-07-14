@@ -7,6 +7,19 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func translateCodexStreamEvents(t *testing.T, events ...string) [][]byte {
+	t.Helper()
+
+	ctx := context.Background()
+	var param any
+	var chunks [][]byte
+	for _, event := range events {
+		out := ConvertCodexResponseToOpenAI(ctx, "gpt-5.4", nil, nil, []byte(event), &param)
+		chunks = append(chunks, out...)
+	}
+	return chunks
+}
+
 func TestConvertCodexResponseToOpenAI_StreamSetsModelFromResponseCreated(t *testing.T) {
 	ctx := context.Background()
 	var param any
@@ -88,6 +101,155 @@ func TestConvertCodexResponseToOpenAI_ToolCallArgumentsDeltaOmitsNullContentFiel
 	}
 	if !gjson.GetBytes(out[0], "choices.0.delta.tool_calls.0.function.arguments").Exists() {
 		t.Fatalf("expected tool call arguments delta to exist, got %s", string(out[0]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_CustomToolCallStreamsInputDeltas(t *testing.T) {
+	chunks := translateCodexStreamEvents(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":""}}`,
+		`data: {"type":"response.custom_tool_call_input.delta","output_index":0,"item_id":"ctc_1","delta":"*** Begin "}`,
+		`data: {"type":"response.custom_tool_call_input.delta","output_index":0,"item_id":"ctc_1","delta":"Patch"}`,
+		`data: {"type":"response.custom_tool_call_input.done","output_index":0,"item_id":"ctc_1","input":"*** Begin Patch"}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","created_at":1700000000,"model":"gpt-5.4","status":"completed"}}`,
+	)
+	if len(chunks) != 4 {
+		t.Fatalf("expected announcement, two argument deltas, and completed chunk, got %d chunks: %q", len(chunks), chunks)
+	}
+
+	announcement := chunks[0]
+	if got := gjson.GetBytes(announcement, "choices.0.delta.tool_calls.0.id").String(); got != "call_1" {
+		t.Fatalf("expected tool call id call_1, got %q; chunk=%s", got, string(announcement))
+	}
+	if got := gjson.GetBytes(announcement, "choices.0.delta.tool_calls.0.function.name").String(); got != "apply_patch" {
+		t.Fatalf("expected tool name apply_patch, got %q; chunk=%s", got, string(announcement))
+	}
+	if got := gjson.GetBytes(announcement, "choices.0.delta.tool_calls.0.function.arguments").String(); got != "" {
+		t.Fatalf("expected empty announced arguments, got %q; chunk=%s", got, string(announcement))
+	}
+
+	args := gjson.GetBytes(chunks[1], "choices.0.delta.tool_calls.0.function.arguments").String() +
+		gjson.GetBytes(chunks[2], "choices.0.delta.tool_calls.0.function.arguments").String()
+	if args != "*** Begin Patch" {
+		t.Fatalf("expected reconstructed input %q, got %q", "*** Begin Patch", args)
+	}
+	if got := gjson.GetBytes(chunks[3], "choices.0.finish_reason").String(); got != "tool_calls" {
+		t.Fatalf("expected finish_reason tool_calls, got %q; chunk=%s", got, string(chunks[3]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_CustomToolCallInputDoneEmitsFullInputWithoutDeltas(t *testing.T) {
+	chunks := translateCodexStreamEvents(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":""}}`,
+		`data: {"type":"response.custom_tool_call_input.done","output_index":0,"item_id":"ctc_1","input":"*** Begin Patch"}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}}`,
+	)
+	if len(chunks) != 2 {
+		t.Fatalf("expected announcement and one full input chunk, got %d chunks: %q", len(chunks), chunks)
+	}
+	if got := gjson.GetBytes(chunks[1], "choices.0.delta.tool_calls.0.function.arguments").String(); got != "*** Begin Patch" {
+		t.Fatalf("expected full input %q, got %q; chunk=%s", "*** Begin Patch", got, string(chunks[1]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_CustomToolCallOutputItemDoneBackfillsArgumentsOnlyAfterAnnouncement(t *testing.T) {
+	chunks := translateCodexStreamEvents(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":""}}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}}`,
+	)
+	if len(chunks) != 2 {
+		t.Fatalf("expected announcement and output_item.done argument backfill, got %d chunks: %q", len(chunks), chunks)
+	}
+
+	backfill := chunks[1]
+	if got := gjson.GetBytes(backfill, "choices.0.delta.tool_calls.0.function.arguments").String(); got != "*** Begin Patch" {
+		t.Fatalf("expected backfilled input %q, got %q; chunk=%s", "*** Begin Patch", got, string(backfill))
+	}
+	if gjson.GetBytes(backfill, "choices.0.delta.tool_calls.0.id").Exists() {
+		t.Fatalf("expected arguments-only backfill without id; chunk=%s", string(backfill))
+	}
+	if gjson.GetBytes(backfill, "choices.0.delta.tool_calls.0.function.name").Exists() {
+		t.Fatalf("expected arguments-only backfill without name; chunk=%s", string(backfill))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_CustomToolCallOutputItemDoneEmitsCompleteCallWithoutAdded(t *testing.T) {
+	chunks := translateCodexStreamEvents(t,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}}`,
+	)
+	if len(chunks) != 1 {
+		t.Fatalf("expected one complete fallback chunk, got %d chunks: %q", len(chunks), chunks)
+	}
+
+	chunk := chunks[0]
+	if got := gjson.GetBytes(chunk, "choices.0.delta.tool_calls.0.id").String(); got != "call_1" {
+		t.Fatalf("expected tool call id call_1, got %q; chunk=%s", got, string(chunk))
+	}
+	if got := gjson.GetBytes(chunk, "choices.0.delta.tool_calls.0.function.name").String(); got != "apply_patch" {
+		t.Fatalf("expected tool name apply_patch, got %q; chunk=%s", got, string(chunk))
+	}
+	if got := gjson.GetBytes(chunk, "choices.0.delta.tool_calls.0.function.arguments").String(); got != "*** Begin Patch" {
+		t.Fatalf("expected full input %q, got %q; chunk=%s", "*** Begin Patch", got, string(chunk))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_CustomToolCallAddedIgnoresUnexpectedInputBeforeDeltas(t *testing.T) {
+	chunks := translateCodexStreamEvents(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":"stale input"}}`,
+		`data: {"type":"response.custom_tool_call_input.delta","output_index":0,"item_id":"ctc_1","delta":"fresh input"}`,
+		`data: {"type":"response.custom_tool_call_input.done","output_index":0,"item_id":"ctc_1","input":"fresh input"}`,
+	)
+	if len(chunks) != 2 {
+		t.Fatalf("expected announcement and one input delta, got %d chunks: %q", len(chunks), chunks)
+	}
+	if got := gjson.GetBytes(chunks[0], "choices.0.delta.tool_calls.0.function.arguments").String(); got != "" {
+		t.Fatalf("expected added chunk to announce empty arguments, got %q; chunk=%s", got, string(chunks[0]))
+	}
+	if got := gjson.GetBytes(chunks[1], "choices.0.delta.tool_calls.0.function.arguments").String(); got != "fresh input" {
+		t.Fatalf("expected fresh delta input, got %q; chunk=%s", got, string(chunks[1]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_FunctionCallArgumentsDoneDoesNotDuplicateDelta(t *testing.T) {
+	chunks := translateCodexStreamEvents(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":""}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_1","delta":"{\"q\":\"x\"}"}`,
+		`data: {"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_1","arguments":"{\"q\":\"x\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"x\"}"}}`,
+	)
+	if len(chunks) != 2 {
+		t.Fatalf("expected announcement and one arguments delta, got %d chunks: %q", len(chunks), chunks)
+	}
+	if got := gjson.GetBytes(chunks[1], "choices.0.delta.tool_calls.0.function.arguments").String(); got != `{"q":"x"}` {
+		t.Fatalf("expected function arguments delta, got %q; chunk=%s", got, string(chunks[1]))
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_MultipleSequentialCustomToolCallsResetArgumentState(t *testing.T) {
+	chunks := translateCodexStreamEvents(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":""}}`,
+		`data: {"type":"response.custom_tool_call_input.done","output_index":0,"item_id":"ctc_1","input":"first input"}`,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"custom_tool_call","id":"ctc_2","call_id":"call_2","name":"apply_patch","input":""}}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"custom_tool_call","id":"ctc_2","call_id":"call_2","name":"apply_patch","input":"second input"}}`,
+	)
+	if len(chunks) != 4 {
+		t.Fatalf("expected two announcements and two input chunks, got %d chunks: %q", len(chunks), chunks)
+	}
+
+	if got := gjson.GetBytes(chunks[0], "choices.0.delta.tool_calls.0.index").Int(); got != 0 {
+		t.Fatalf("expected first tool index 0, got %d; chunk=%s", got, string(chunks[0]))
+	}
+	if got := gjson.GetBytes(chunks[1], "choices.0.delta.tool_calls.0.index").Int(); got != 0 {
+		t.Fatalf("expected first input index 0, got %d; chunk=%s", got, string(chunks[1]))
+	}
+	if got := gjson.GetBytes(chunks[2], "choices.0.delta.tool_calls.0.index").Int(); got != 1 {
+		t.Fatalf("expected second tool index 1, got %d; chunk=%s", got, string(chunks[2]))
+	}
+	if got := gjson.GetBytes(chunks[3], "choices.0.delta.tool_calls.0.index").Int(); got != 1 {
+		t.Fatalf("expected second input index 1, got %d; chunk=%s", got, string(chunks[3]))
+	}
+	if got := gjson.GetBytes(chunks[3], "choices.0.delta.tool_calls.0.function.arguments").String(); got != "second input" {
+		t.Fatalf("expected second input backfill, got %q; chunk=%s", got, string(chunks[3]))
 	}
 }
 
