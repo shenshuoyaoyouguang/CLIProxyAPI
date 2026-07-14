@@ -1520,23 +1520,13 @@ attemptLoop:
 				clearAntigravityCreditsFailureState(auth)
 			}
 			replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
-			out := make(chan cliproxyexecutor.StreamChunk)
-			go func(resp *http.Response) {
-				defer close(out)
-				defer func() {
-					if replayAccumulator != nil {
-						replayAccumulator.Flush(ctx)
-					}
-					if errClose := resp.Body.Close(); errClose != nil {
-						log.Errorf("antigravity executor: close response line error: %v", errClose)
-					}
-				}()
-				scanner := bufio.NewScanner(resp.Body)
-				scanner.Buffer(nil, streamScannerBuffer)
-				var param any
-				for scanner.Scan() {
-					line := scanner.Bytes()
-					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+			var param any
+			return helps.PumpSSEStream(ctx, httpResp, helps.SSEPumpSpec{
+				Cfg:        e.cfg,
+				Reporter:   reporter,
+				BufferSize: streamScannerBuffer,
+				Provider:   "antigravity executor",
+				ProcessLine: func(line []byte) [][]byte {
 					if replayAccumulator != nil {
 						replayAccumulator.ObserveSSELine(line)
 					}
@@ -1547,7 +1537,7 @@ attemptLoop:
 
 					payload := helps.JSONPayload(line)
 					if payload == nil {
-						continue
+						return nil
 					}
 
 					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
@@ -1555,35 +1545,20 @@ attemptLoop:
 					}
 
 					payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload)
-					chunks := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(payload), &param)
-					for i := range chunks {
-						select {
-						case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-						case <-ctx.Done():
-							return
-						}
+					return sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(payload), &param)
+				},
+				Finalize: func() [][]byte {
+					return sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("[DONE]"), &param)
+				},
+				OnExit: func() {
+					if replayAccumulator != nil {
+						replayAccumulator.Flush(ctx)
 					}
-				}
-				tail := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("[DONE]"), &param)
-				for i := range tail {
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Payload: tail[i]}:
-					case <-ctx.Done():
-						return
-					}
-				}
-				if errScan := scanner.Err(); errScan != nil {
-					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-					reporter.PublishFailure(ctx, errScan)
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-					case <-ctx.Done():
-					}
-				} else {
+				},
+				OnScanSuccess: func() {
 					reporter.EnsurePublished(ctx)
-				}
-			}(httpResp)
-			return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+				},
+			}), nil
 		}
 
 		switch {

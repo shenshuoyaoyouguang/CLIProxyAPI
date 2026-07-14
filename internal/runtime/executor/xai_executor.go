@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1713,58 +1712,11 @@ func xaiNormalizeReasoningSummaryItems(items []gjson.Result) ([]byte, bool) {
 }
 
 func xaiCollectOutputItemDone(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback *[][]byte) {
-	itemResult := gjson.GetBytes(eventData, "item")
-	if !itemResult.Exists() || itemResult.Type != gjson.JSON {
-		return
-	}
-	outputIndexResult := gjson.GetBytes(eventData, "output_index")
-	if outputIndexResult.Exists() {
-		outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
-		return
-	}
-	*outputItemsFallback = append(*outputItemsFallback, []byte(itemResult.Raw))
+	helps.CollectResponsesOutputItemDone(eventData, outputItemsByIndex, outputItemsFallback)
 }
 
 func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
-	outputResult := gjson.GetBytes(eventData, "response.output")
-	shouldPatchOutput := (!outputResult.Exists() || !outputResult.IsArray() || len(outputResult.Array()) == 0) && (len(outputItemsByIndex) > 0 || len(outputItemsFallback) > 0)
-	if !shouldPatchOutput {
-		return eventData
-	}
-
-	indexes := make([]int64, 0, len(outputItemsByIndex))
-	for idx := range outputItemsByIndex {
-		indexes = append(indexes, idx)
-	}
-	sort.Slice(indexes, func(i, j int) bool {
-		return indexes[i] < indexes[j]
-	})
-
-	outputArray := []byte("[]")
-	var buf bytes.Buffer
-	buf.WriteByte('[')
-	wrote := false
-	for _, idx := range indexes {
-		if wrote {
-			buf.WriteByte(',')
-		}
-		buf.Write(outputItemsByIndex[idx])
-		wrote = true
-	}
-	for _, item := range outputItemsFallback {
-		if wrote {
-			buf.WriteByte(',')
-		}
-		buf.Write(item)
-		wrote = true
-	}
-	buf.WriteByte(']')
-	if wrote {
-		outputArray = buf.Bytes()
-	}
-
-	patched, _ := sjson.SetRawBytes(eventData, "response.output", outputArray)
-	return patched
+	return helps.PatchResponsesCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 }
 
 // xaiFreeUsageExhaustedCooldown is the free-tier rolling window advertised by

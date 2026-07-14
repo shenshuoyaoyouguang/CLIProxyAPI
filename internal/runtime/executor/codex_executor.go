@@ -48,63 +48,11 @@ var dataTag = []byte("data:")
 // response.completed.response.output empty. Keep the stream path aligned with the
 // already-patched non-stream path by reconstructing response.output from those items.
 func collectCodexOutputItemDone(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback *[][]byte) {
-	itemResult := gjson.GetBytes(eventData, "item")
-	if !itemResult.Exists() || itemResult.Type != gjson.JSON {
-		return
-	}
-	outputIndexResult := gjson.GetBytes(eventData, "output_index")
-	if outputIndexResult.Exists() {
-		outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
-		return
-	}
-	*outputItemsFallback = append(*outputItemsFallback, []byte(itemResult.Raw))
+	helps.CollectResponsesOutputItemDone(eventData, outputItemsByIndex, outputItemsFallback)
 }
 
 func patchCodexCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
-	outputResult := gjson.GetBytes(eventData, "response.output")
-	shouldPatchOutput := (!outputResult.Exists() || !outputResult.IsArray() || len(outputResult.Array()) == 0) && (len(outputItemsByIndex) > 0 || len(outputItemsFallback) > 0)
-	if !shouldPatchOutput {
-		return eventData
-	}
-
-	indexes := make([]int64, 0, len(outputItemsByIndex))
-	for idx := range outputItemsByIndex {
-		indexes = append(indexes, idx)
-	}
-	sort.Slice(indexes, func(i, j int) bool {
-		return indexes[i] < indexes[j]
-	})
-
-	items := make([][]byte, 0, len(outputItemsByIndex)+len(outputItemsFallback))
-	for _, idx := range indexes {
-		items = append(items, outputItemsByIndex[idx])
-	}
-	items = append(items, outputItemsFallback...)
-
-	outputArray := []byte("[]")
-	if len(items) > 0 {
-		var buf bytes.Buffer
-		totalLen := 2
-		for _, item := range items {
-			totalLen += len(item)
-		}
-		if len(items) > 1 {
-			totalLen += len(items) - 1
-		}
-		buf.Grow(totalLen)
-		buf.WriteByte('[')
-		for i, item := range items {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			buf.Write(item)
-		}
-		buf.WriteByte(']')
-		outputArray = buf.Bytes()
-	}
-
-	completedDataPatched, _ := sjson.SetRawBytes(eventData, "response.output", outputArray)
-	return completedDataPatched
+	return helps.PatchResponsesCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 }
 
 func codexTerminalStreamContextLengthErr(eventData []byte) (statusErr, bool) {
