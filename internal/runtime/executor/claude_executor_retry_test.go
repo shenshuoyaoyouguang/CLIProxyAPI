@@ -48,7 +48,14 @@ func TestClaudeExecutor_StreamRetry_PassthroughMode_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{})
+	executor := NewClaudeExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled: true,
+				StreamRetryCount:   3,
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
@@ -112,7 +119,15 @@ func TestClaudeExecutor_StreamRetry_TranslationMode_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{})
+	// Use OpenAI format to trigger translation mode
+	executor := NewClaudeExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled: true,
+				StreamRetryCount:   3,
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
@@ -120,7 +135,6 @@ func TestClaudeExecutor_StreamRetry_TranslationMode_Success(t *testing.T) {
 
 	payload := []byte(`{"model":"claude-3","messages":[{"role":"user","content":"hello"}],"max_tokens":100}`)
 
-	// Use OpenAI format to trigger translation mode
 	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "claude-3",
 		Payload: payload,
@@ -172,7 +186,14 @@ func TestClaudeExecutor_StreamRetry_NoRetryWhenSSEDataReceived(t *testing.T) {
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{})
+	executor := NewClaudeExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled: true,
+				StreamRetryCount:   3,
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
@@ -214,7 +235,14 @@ func TestClaudeExecutor_StreamRetry_NoRetryForNonRetryableError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{})
+	executor := NewClaudeExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled: true,
+				StreamRetryCount:   3,
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
@@ -269,7 +297,14 @@ func TestClaudeExecutor_StreamRetry_ContextCancelledDuringRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{})
+	executor := NewClaudeExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled: true,
+				StreamRetryCount:   3,
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
@@ -330,7 +365,14 @@ func TestClaudeExecutor_StreamRetry_RetryRequestFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{})
+	executor := NewClaudeExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled: true,
+				StreamRetryCount:   3,
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
@@ -401,8 +443,15 @@ func TestClaudeExecutor_StreamRetry_ReasoningEffortDegraded(t *testing.T) {
 
 	// Opt into legacy aggressive-degrade behavior for this test.
 	degradeAfter := 0
-	cfg := &config.Config{}
-	cfg.SDKConfig.Streaming.StreamRetryDegradeAfter = &degradeAfter
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled:      true,
+				StreamRetryCount:        2,
+				StreamRetryDegradeAfter: &degradeAfter,
+			},
+		},
+	}
 	executor := NewClaudeExecutor(cfg)
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
@@ -474,8 +523,16 @@ func TestClaudeExecutor_StreamRetry_DefaultKeepsFirstRetryOriginal(t *testing.T)
 	}))
 	defer server.Close()
 
-	// No override → default DegradeAfterAttempts=1 applies.
-	executor := NewClaudeExecutor(&config.Config{})
+	// No StreamRetryDegradeAfter override → default DegradeAfterAttempts=1 applies.
+	// First retry must preserve reasoning_effort; only later retries degrade.
+	executor := NewClaudeExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled: true,
+				StreamRetryCount:   3,
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
@@ -534,7 +591,14 @@ func TestClaudeExecutor_StreamRetry_MaxAttempts(t *testing.T) {
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{})
+	executor := NewClaudeExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled: true,
+				StreamRetryCount:   2,
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
@@ -593,7 +657,14 @@ func TestClaudeExecutor_StreamRetry_SuccessfulRetryWithSSEData(t *testing.T) {
 	}))
 	defer server.Close()
 
-	executor := NewClaudeExecutor(&config.Config{})
+	executor := NewClaudeExecutor(&config.Config{
+		SDKConfig: config.SDKConfig{
+			Streaming: config.StreamingConfig{
+				StreamRetryEnabled: true,
+				StreamRetryCount:   3,
+			},
+		},
+	})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{
 		"api_key":  "key-123",
 		"base_url": server.URL,
