@@ -1432,19 +1432,19 @@ func openAICompatModelSupportsRequest(model *internalconfig.OpenAICompatibilityM
 	if requirements.needsVision && !openAICompatStringListContains(model.InputModalities, "image") {
 		return false
 	}
-	if requirements.needsTools && !model.Tools {
+	if requirements.needsTools && !internalconfig.BoolValue(model.Tools) {
 		return false
 	}
-	if requirements.needsParallelToolCalls && !model.ParallelToolCalls {
+	if requirements.needsParallelToolCalls && !internalconfig.BoolValue(model.ParallelToolCalls) {
 		return false
 	}
-	if requirements.needsJSONSchema && !model.JSONSchema {
+	if requirements.needsJSONSchema && !internalconfig.BoolValue(model.JSONSchema) {
 		return false
 	}
-	if requirements.needsStreaming && !model.Streaming {
+	if requirements.needsStreaming && !internalconfig.BoolValue(model.Streaming) {
 		return false
 	}
-	if requirements.needsResponsesAPI && !model.ResponsesAPI {
+	if requirements.needsResponsesAPI && !internalconfig.BoolValue(model.ResponsesAPI) {
 		return false
 	}
 	if requirements.needsReasoningBudget && !openAICompatModelSupportsReasoningType(model, "budget") {

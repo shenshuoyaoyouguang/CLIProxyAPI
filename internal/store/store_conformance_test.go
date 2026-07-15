@@ -61,7 +61,7 @@ func ConformanceTests(t *testing.T, factory StoreFactory) {
 		}
 		found := false
 		for _, a := range list {
-			if a.ID == "conformance-test" {
+			if a.ID == "conformance-test.json" {
 				found = true
 				if a.Provider != "openai" {
 					t.Errorf("provider = %v, want openai", a.Provider)
@@ -92,7 +92,7 @@ func ConformanceTests(t *testing.T, factory StoreFactory) {
 			t.Fatalf("List: %v", err)
 		}
 		for _, a := range list {
-			if a.ID == "delete-test" {
+			if a.ID == "delete-test.json" {
 				t.Error("deleted auth still in list")
 			}
 		}
@@ -118,7 +118,7 @@ func ConformanceTests(t *testing.T, factory StoreFactory) {
 			t.Fatalf("List: %v", err)
 		}
 		for _, a := range list {
-			if a.ID == "update-test" {
+			if a.ID == "update-test.json" {
 				if a.Metadata["access_token"] != "sk-updated" {
 					t.Errorf("access_token = %v, want sk-updated", a.Metadata["access_token"])
 				}
@@ -143,7 +143,7 @@ func ConformanceTests(t *testing.T, factory StoreFactory) {
 			t.Fatalf("List: %v", err)
 		}
 		for _, a := range list {
-			if a.ID == "disabled-test" && !a.Disabled {
+			if a.ID == "disabled-test.json" && !a.Disabled {
 				t.Error("disabled auth should have Disabled=true")
 			}
 		}

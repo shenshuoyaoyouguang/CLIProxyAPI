@@ -99,7 +99,7 @@ func TestRegisterModelsForAuth_OpenAICompatibilityDiscoveryAppendsOnlyUnknownMod
 				Models: []config.OpenAICompatibilityModel{{
 					Name:  "configured-upstream",
 					Alias: "configured-alias",
-					Tools: true,
+					Tools: config.Bool(true),
 				}},
 			}},
 		},

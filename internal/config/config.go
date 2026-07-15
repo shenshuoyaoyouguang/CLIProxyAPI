@@ -691,19 +691,26 @@ type OpenAICompatibilityModel struct {
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 
 	// Tools declares whether this model supports tool/function calling.
-	Tools bool `yaml:"tools,omitempty" json:"tools,omitempty"`
+	// A nil pointer means "unset": the capability is filled from the static
+	// model catalog. An explicit false disables it even when the catalog
+	// advertises support.
+	Tools *bool `yaml:"tools,omitempty" json:"tools,omitempty"`
 
 	// ParallelToolCalls declares whether this model supports parallel tool calls.
-	ParallelToolCalls bool `yaml:"parallel-tool-calls,omitempty" json:"parallel-tool-calls,omitempty"`
+	// nil means unset (fall back to the catalog); an explicit false disables it.
+	ParallelToolCalls *bool `yaml:"parallel-tool-calls,omitempty" json:"parallel-tool-calls,omitempty"`
 
 	// JSONSchema declares whether this model supports JSON schema response formats.
-	JSONSchema bool `yaml:"json-schema,omitempty" json:"json-schema,omitempty"`
+	// nil means unset (fall back to the catalog); an explicit false disables it.
+	JSONSchema *bool `yaml:"json-schema,omitempty" json:"json-schema,omitempty"`
 
 	// Streaming declares whether this model supports streaming responses.
-	Streaming bool `yaml:"streaming,omitempty" json:"streaming,omitempty"`
+	// nil means unset (fall back to the catalog); an explicit false disables it.
+	Streaming *bool `yaml:"streaming,omitempty" json:"streaming,omitempty"`
 
 	// ResponsesAPI declares whether this model supports OpenAI Responses API style requests.
-	ResponsesAPI bool `yaml:"responses-api,omitempty" json:"responses-api,omitempty"`
+	// nil means unset (fall back to the catalog); an explicit false disables it.
+	ResponsesAPI *bool `yaml:"responses-api,omitempty" json:"responses-api,omitempty"`
 
 	// ReasoningTypes declares supported reasoning control types (e.g. level, budget).
 	ReasoningTypes []string `yaml:"reasoning-types,omitempty" json:"reasoning-types,omitempty"`
@@ -725,6 +732,18 @@ func (m OpenAICompatibilityModel) GetName() string        { return m.Name }
 func (m OpenAICompatibilityModel) GetAlias() string       { return m.Alias }
 func (m OpenAICompatibilityModel) GetDisplayName() string { return m.DisplayName }
 func (m OpenAICompatibilityModel) GetForceMapping() bool  { return m.ForceMapping }
+
+// BoolValue returns the dereferenced value of an optional bool capability
+// field, treating a nil pointer as false.
+func BoolValue(v *bool) bool {
+	return v != nil && *v
+}
+
+// Bool returns a pointer to b. It is the constructor counterpart to
+// BoolValue for populating optional bool capability fields.
+func Bool(b bool) *bool {
+	return &b
+}
 
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,

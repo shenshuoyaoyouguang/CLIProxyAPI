@@ -17,17 +17,18 @@ const (
 
 // staticModelsJSON mirrors the top-level structure of models.json.
 type staticModelsJSON struct {
-	Claude      []*ModelInfo `json:"claude"`
-	Gemini      []*ModelInfo `json:"gemini"`
-	Vertex      []*ModelInfo `json:"vertex"`
-	AIStudio    []*ModelInfo `json:"aistudio"`
-	CodexFree   []*ModelInfo `json:"codex-free"`
-	CodexTeam   []*ModelInfo `json:"codex-team"`
-	CodexPlus   []*ModelInfo `json:"codex-plus"`
-	CodexPro    []*ModelInfo `json:"codex-pro"`
-	Kimi        []*ModelInfo `json:"kimi"`
-	Antigravity []*ModelInfo `json:"antigravity"`
-	XAI         []*ModelInfo `json:"xai"`
+	Claude       []*ModelInfo `json:"claude"`
+	Gemini       []*ModelInfo `json:"gemini"`
+	Vertex       []*ModelInfo `json:"vertex"`
+	AIStudio     []*ModelInfo `json:"aistudio"`
+	CodexFree    []*ModelInfo `json:"codex-free"`
+	CodexTeam    []*ModelInfo `json:"codex-team"`
+	CodexPlus    []*ModelInfo `json:"codex-plus"`
+	CodexPro     []*ModelInfo `json:"codex-pro"`
+	Kimi         []*ModelInfo `json:"kimi"`
+	Antigravity  []*ModelInfo `json:"antigravity"`
+	XAI          []*ModelInfo `json:"xai"`
+	OpenaiCompat []*ModelInfo `json:"openai-compatibility,omitempty"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -318,6 +319,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Kimi,
 		data.Antigravity,
 		data.XAI,
+		data.OpenaiCompat,
 	}
 	for _, models := range allModels {
 		for _, m := range models {

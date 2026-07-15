@@ -570,9 +570,10 @@ func (s *GitTokenStore) idFor(path, baseDir string) string {
 	if err != nil {
 		return path
 	}
-	// Strip .json so List IDs are extensionless, matching the FileName saved
-	// without extension (e.g. "test-provider" for "test-provider.json").
-	return strings.TrimSuffix(rel, ".json")
+	// Keep the relative path (including any .json extension) so IDs match the
+	// FileTokenStore convention (e.g. "test-provider.json"). The management API
+	// looks up auths by FileName/ID, so both backends must agree on the shape.
+	return rel
 }
 
 func (s *GitTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error) {

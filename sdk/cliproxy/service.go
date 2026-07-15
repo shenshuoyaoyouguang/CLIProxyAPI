@@ -2684,18 +2684,16 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		if info == nil {
 			continue
 		}
-		thinking := model.Thinking
-		if thinking == nil && !model.Image {
-			thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
-		}
-		info.Thinking = thinking
+
+		// Apply user config directly (explicit user values always win).
 		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
 		info.SupportedOutputModalities = normalizeCompatConfigModalities(model.OutputModalities)
-		info.SupportsTools = model.Tools
-		info.SupportsParallelToolCalls = model.ParallelToolCalls
-		info.SupportsJSONSchema = model.JSONSchema
-		info.SupportsStreaming = model.Streaming
-		info.SupportsResponsesAPI = model.ResponsesAPI
+		info.SupportsTools = config.BoolValue(model.Tools)
+		info.SupportsParallelToolCalls = config.BoolValue(model.ParallelToolCalls)
+		info.SupportsJSONSchema = config.BoolValue(model.JSONSchema)
+		info.SupportsStreaming = config.BoolValue(model.Streaming)
+		info.SupportsResponsesAPI = config.BoolValue(model.ResponsesAPI)
+		info.Thinking = model.Thinking
 		info.ReasoningTypes = normalizeCompatConfigStringList(model.ReasoningTypes)
 		if model.ContextLength > 0 {
 			info.ContextLength = model.ContextLength
@@ -2707,6 +2705,65 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		}
 		info.UnsupportedParameters = normalizeCompatConfigStringList(model.UnsupportedParameters)
 		info.LockedParameters = cloneCompatConfigLockedParameters(model.LockedParameters)
+
+		// Fill unset capability fields from the static model catalog.
+		if name := strings.TrimSpace(model.Name); name != "" {
+			if upstream := registry.LookupStaticModelInfo(name); upstream != nil {
+				// Fill capability booleans only when the user left them unset
+				// (nil). An explicit false must survive so it can disable a
+				// capability the catalog advertises as supported.
+				if model.Tools == nil && upstream.SupportsTools {
+					info.SupportsTools = true
+				}
+				if model.ParallelToolCalls == nil && upstream.SupportsParallelToolCalls {
+					info.SupportsParallelToolCalls = true
+				}
+				if model.JSONSchema == nil && upstream.SupportsJSONSchema {
+					info.SupportsJSONSchema = true
+				}
+				if model.Streaming == nil && upstream.SupportsStreaming {
+					info.SupportsStreaming = true
+				}
+				if model.ResponsesAPI == nil && upstream.SupportsResponsesAPI {
+					info.SupportsResponsesAPI = true
+				}
+				if len(info.ReasoningTypes) == 0 && len(upstream.ReasoningTypes) > 0 {
+					info.ReasoningTypes = append([]string(nil), upstream.ReasoningTypes...)
+				}
+				if info.ContextLength == 0 && upstream.ContextLength > 0 {
+					info.ContextLength = upstream.ContextLength
+					info.InputTokenLimit = upstream.ContextLength
+				}
+				if info.MaxCompletionTokens == 0 && upstream.MaxCompletionTokens > 0 {
+					info.MaxCompletionTokens = upstream.MaxCompletionTokens
+					info.OutputTokenLimit = upstream.MaxCompletionTokens
+				}
+				if len(info.SupportedInputModalities) == 0 && len(upstream.SupportedInputModalities) > 0 {
+					info.SupportedInputModalities = append([]string(nil), upstream.SupportedInputModalities...)
+				}
+				if len(info.SupportedOutputModalities) == 0 && len(upstream.SupportedOutputModalities) > 0 {
+					info.SupportedOutputModalities = append([]string(nil), upstream.SupportedOutputModalities...)
+				}
+				if info.Thinking == nil && upstream.Thinking != nil {
+					copyThinking := *upstream.Thinking
+					if len(upstream.Thinking.Levels) > 0 {
+						copyThinking.Levels = append([]string(nil), upstream.Thinking.Levels...)
+					}
+					info.Thinking = &copyThinking
+				}
+				if len(info.UnsupportedParameters) == 0 && len(upstream.UnsupportedParameters) > 0 {
+					info.UnsupportedParameters = append([]string(nil), upstream.UnsupportedParameters...)
+				}
+				if info.LockedParameters == nil && len(upstream.LockedParameters) > 0 {
+					info.LockedParameters = clone.AnyMap(upstream.LockedParameters)
+				}
+			}
+		}
+
+		// Default thinking for non-image chat models.
+		if info.Thinking == nil && !model.Image {
+			info.Thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+		}
 		models = append(models, info)
 	}
 	return models

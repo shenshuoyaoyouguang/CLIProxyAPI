@@ -897,7 +897,7 @@ func TestGitTokenStore_Save_DisabledAuth(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	for _, a := range list {
-		if a.ID == "disabled-provider" && !a.Disabled {
+		if a.ID == "disabled-provider.json" && !a.Disabled {
 			t.Errorf("auth should be disabled in list")
 		}
 	}
@@ -937,10 +937,10 @@ func TestGitTokenStore_List_IncludesDisabled(t *testing.T) {
 	foundEnabled := false
 	foundDisabled := false
 	for _, a := range list {
-		if a.ID == "enabled-provider" {
+		if a.ID == "enabled-provider.json" {
 			foundEnabled = true
 		}
-		if a.ID == "disabled-provider" {
+		if a.ID == "disabled-provider.json" {
 			foundDisabled = true
 			if !a.Disabled {
 				t.Error("disabled auth should have Disabled=true")
@@ -998,7 +998,7 @@ func TestGitTokenStore_Delete_RemovesBoth(t *testing.T) {
 		t.Fatalf("List after delete: %v", err)
 	}
 	for _, a := range list {
-		if a.ID == "delete-provider" {
+		if a.ID == "delete-provider.json" {
 			t.Error("deleted auth still in list")
 		}
 	}

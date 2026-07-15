@@ -168,10 +168,10 @@ func TestGitTokenStore_List(t *testing.T) {
 	for _, e := range entries {
 		found[e.ID] = true
 	}
-	if !found["provider1"] {
+	if !found["provider1.json"] {
 		t.Error("missing provider1 in List results")
 	}
-	if !found["provider2"] {
+	if !found["provider2.json"] {
 		t.Error("missing provider2 in List results")
 	}
 }

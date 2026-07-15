@@ -516,7 +516,7 @@ func TestManagerExecute_OpenAICompatAliasPoolFiltersToolRequirement(t *testing.T
 	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
 	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
 		{Name: "plain-upstream", Alias: alias},
-		{Name: "tools-upstream", Alias: alias, Tools: true},
+		{Name: "tools-upstream", Alias: alias, Tools: internalconfig.Bool(true)},
 	}, executor)
 	payload := []byte(`{"messages":[{"role":"user","content":"call a tool"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
 
@@ -540,7 +540,7 @@ func TestManagerExecute_OpenAICompatAliasPoolFallsBackWhenCapabilitiesPartiallyD
 	alias := "partial-capability-alias"
 	executor := &openAICompatPoolExecutor{id: openAICompatPoolProviderKey}
 	m := newOpenAICompatPoolTestManager(t, alias, []internalconfig.OpenAICompatibilityModel{
-		{Name: "tools-only-upstream", Alias: alias, Tools: true},
+		{Name: "tools-only-upstream", Alias: alias, Tools: internalconfig.Bool(true)},
 	}, executor)
 	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
 

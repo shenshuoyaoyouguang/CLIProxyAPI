@@ -53,3 +53,9 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 func NormalizeCommentIndentation(data []byte) []byte {
 	return internalconfig.NormalizeCommentIndentation(data)
 }
+
+// BoolValue dereferences an optional bool, treating nil as false.
+func BoolValue(v *bool) bool { return internalconfig.BoolValue(v) }
+
+// Bool returns a pointer to the given bool value.
+func Bool(b bool) *bool { return internalconfig.Bool(b) }
