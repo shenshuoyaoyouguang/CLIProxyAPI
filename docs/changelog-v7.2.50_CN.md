@@ -12,8 +12,8 @@
 
 ### Breaking
 
-- `sdk/auth.FileTokenStore` 的全部 auth 路径现经 `store.ResolveManagedPath` 解析。
-- 绝对路径，以及越出 `auth-dir` 的 `..` 穿越路径，一律拒绝。
+- `sdk/auth.FileTokenStore` 的 Save/Delete 与路径解析入口现经 `store.ResolveManagedPath` 解析。
+- 越出 `auth-dir` 的 `..` 穿越与**外部**绝对路径一律拒绝；`auth-dir` 内的绝对路径仍允许。
 - Auth 文件必须位于配置的 auth 目录之下；此前允许/容忍的外部绝对路径写法不再可用。
 - 同步收紧 `internal/store` 各 backend（git/object/postgres）的 path 解析，与 `FileTokenStore` 一致。
 
