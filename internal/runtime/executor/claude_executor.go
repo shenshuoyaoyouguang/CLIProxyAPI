@@ -620,13 +620,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 
 		// Configure retry for stream errors.
-		retryCfg := helps.DefaultStreamRetryConfig()
-		if e.cfg.Streaming.StreamRetryCount > 0 {
-			retryCfg.MaxAttempts = e.cfg.Streaming.StreamRetryCount
-		}
-		if e.cfg.Streaming.StreamRetryDegradeAfter != nil {
-			retryCfg.DegradeAfterAttempts = *e.cfg.Streaming.StreamRetryDegradeAfter
-		}
+		retryCfg := helps.ResolveStreamRetryConfig(e.cfg)
 
 		// If the response target is Claude, directly forward the SSE stream without translation.
 		if responseFormat == to {
@@ -656,8 +650,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				var eventBuf []byte
 			passthroughLoop:
 				for scanner.Scan() {
-					gotSSEData = true
 					line := scanner.Bytes()
+					trimmedLine := bytes.TrimSpace(line)
+					// Only count actual SSE data lines as "gotSSEData", not comments,
+					// event type lines, ids, retries, or blank lines.
+					if len(trimmedLine) > 0 && bytes.HasPrefix(trimmedLine, []byte("data:")) {
+						gotSSEData = true
+					}
 					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 					if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 						reporter.Publish(ctx, detail)
@@ -742,8 +741,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			scanner.Buffer(nil, 52_428_800) // 50MB
 		translateLoop:
 			for scanner.Scan() {
-				gotSSEData = true
 				line := scanner.Bytes()
+				trimmedLine := bytes.TrimSpace(line)
+				// Only count actual SSE data lines as "gotSSEData", not comments,
+				// event type lines, ids, retries, or blank lines.
+				if len(trimmedLine) > 0 && bytes.HasPrefix(trimmedLine, []byte("data:")) {
+					gotSSEData = true
+				}
 				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 				if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 					reporter.Publish(ctx, detail)

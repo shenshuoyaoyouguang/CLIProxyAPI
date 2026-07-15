@@ -3,6 +3,8 @@ package helps
 import (
 	"math/rand"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 // StreamRetryConfig controls the retry behavior for streaming requests.
@@ -35,6 +37,24 @@ func DefaultStreamRetryConfig() StreamRetryConfig {
 		JitterFraction:       0.2,
 		DegradeAfterAttempts: 1,
 	}
+}
+
+// ResolveStreamRetryConfig maps app streaming config onto StreamRetryConfig.
+// When cfg is nil or stream retry is disabled, MaxAttempts is forced to 1 and
+// degrade overrides are ignored because no retry can occur.
+func ResolveStreamRetryConfig(cfg *config.Config) StreamRetryConfig {
+	retryCfg := DefaultStreamRetryConfig()
+	if cfg == nil || !cfg.Streaming.StreamRetryEnabled {
+		retryCfg.MaxAttempts = 1
+		return retryCfg
+	}
+	if cfg.Streaming.StreamRetryCount > 0 {
+		retryCfg.MaxAttempts = cfg.Streaming.StreamRetryCount
+	}
+	if cfg.Streaming.StreamRetryDegradeAfter != nil {
+		retryCfg.DegradeAfterAttempts = *cfg.Streaming.StreamRetryDegradeAfter
+	}
+	return retryCfg
 }
 
 // ShouldDegradeReasoning reports whether the retry indexed by attempt (0-based:

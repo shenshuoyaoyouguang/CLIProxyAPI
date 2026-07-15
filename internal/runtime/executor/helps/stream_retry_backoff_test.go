@@ -3,6 +3,8 @@ package helps
 import (
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 func TestDefaultStreamRetryConfig(t *testing.T) {
@@ -24,6 +26,62 @@ func TestDefaultStreamRetryConfig(t *testing.T) {
 	}
 	if cfg.DegradeAfterAttempts != 1 {
 		t.Fatalf("DegradeAfterAttempts = %d, want 1", cfg.DegradeAfterAttempts)
+	}
+}
+
+func TestResolveStreamRetryConfig_DisabledIgnoresOverrides(t *testing.T) {
+	degrade := 0
+	cfg := &config.Config{}
+	cfg.Streaming.StreamRetryEnabled = false
+	cfg.Streaming.StreamRetryCount = 9
+	cfg.Streaming.StreamRetryDegradeAfter = &degrade
+
+	got := ResolveStreamRetryConfig(cfg)
+	if got.MaxAttempts != 1 {
+		t.Fatalf("MaxAttempts = %d, want 1", got.MaxAttempts)
+	}
+	// Disabled path must not silently inherit caller degrade override.
+	def := DefaultStreamRetryConfig()
+	if got.DegradeAfterAttempts != def.DegradeAfterAttempts {
+		t.Fatalf("DegradeAfterAttempts = %d, want default %d", got.DegradeAfterAttempts, def.DegradeAfterAttempts)
+	}
+}
+
+func TestResolveStreamRetryConfig_EnabledAppliesOverrides(t *testing.T) {
+	degrade := 2
+	cfg := &config.Config{}
+	cfg.Streaming.StreamRetryEnabled = true
+	cfg.Streaming.StreamRetryCount = 3
+	cfg.Streaming.StreamRetryDegradeAfter = &degrade
+
+	got := ResolveStreamRetryConfig(cfg)
+	if got.MaxAttempts != 3 {
+		t.Fatalf("MaxAttempts = %d, want 3", got.MaxAttempts)
+	}
+	if got.DegradeAfterAttempts != 2 {
+		t.Fatalf("DegradeAfterAttempts = %d, want 2", got.DegradeAfterAttempts)
+	}
+}
+
+func TestResolveStreamRetryConfig_NilConfigDisablesRetry(t *testing.T) {
+	got := ResolveStreamRetryConfig(nil)
+	if got.MaxAttempts != 1 {
+		t.Fatalf("MaxAttempts = %d, want 1", got.MaxAttempts)
+	}
+}
+
+func TestResolveStreamRetryConfig_EnabledUsesDefaultCountWhenUnset(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Streaming.StreamRetryEnabled = true
+	// StreamRetryCount left at 0 → keep DefaultStreamRetryConfig().MaxAttempts
+
+	got := ResolveStreamRetryConfig(cfg)
+	def := DefaultStreamRetryConfig()
+	if got.MaxAttempts != def.MaxAttempts {
+		t.Fatalf("MaxAttempts = %d, want default %d", got.MaxAttempts, def.MaxAttempts)
+	}
+	if got.DegradeAfterAttempts != def.DegradeAfterAttempts {
+		t.Fatalf("DegradeAfterAttempts = %d, want default %d", got.DegradeAfterAttempts, def.DegradeAfterAttempts)
 	}
 }
 

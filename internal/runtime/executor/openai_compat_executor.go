@@ -467,15 +467,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		errScan := readStream(httpResp.Body)
 
 		// Configurable retry loop for stream errors before any SSE data arrived.
-		retryCfg := helps.DefaultStreamRetryConfig()
-		if e.cfg == nil || !e.cfg.Streaming.StreamRetryEnabled {
-			retryCfg.MaxAttempts = 1
-		} else if e.cfg.Streaming.StreamRetryCount > 0 {
-			retryCfg.MaxAttempts = e.cfg.Streaming.StreamRetryCount
-		}
-		if e.cfg != nil && e.cfg.Streaming.StreamRetryDegradeAfter != nil {
-			retryCfg.DegradeAfterAttempts = *e.cfg.Streaming.StreamRetryDegradeAfter
-		}
+		retryCfg := helps.ResolveStreamRetryConfig(e.cfg)
 
 		for attempt := 0; attempt < retryCfg.MaxAttempts; attempt++ {
 			decision := helps.ClassifyStreamError(errScan, gotSSEData)
