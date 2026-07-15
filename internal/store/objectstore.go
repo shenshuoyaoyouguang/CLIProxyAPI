@@ -306,7 +306,7 @@ func (s *ObjectTokenStore) PersistAuthFiles(ctx context.Context, _ string, paths
 		if trimmed == "" {
 			continue
 		}
-		abs, errResolve := resolveManagedPath(s.authDir, trimmed)
+		abs, errResolve := ResolveManagedPath(s.authDir, trimmed)
 		if errResolve != nil {
 			return fmt.Errorf("object store: resolve auth path: %w", errResolve)
 		}
@@ -452,7 +452,7 @@ func (s *ObjectTokenStore) uploadAuth(ctx context.Context, path string) error {
 	if path == "" {
 		return nil
 	}
-	path, err := resolveManagedPath(s.authDir, path)
+	path, err := ResolveManagedPath(s.authDir, path)
 	if err != nil {
 		return fmt.Errorf("object store: resolve auth path: %w", err)
 	}
@@ -478,7 +478,7 @@ func (s *ObjectTokenStore) deleteAuthObject(ctx context.Context, path string) er
 	if path == "" {
 		return nil
 	}
-	path, err := resolveManagedPath(s.authDir, path)
+	path, err := ResolveManagedPath(s.authDir, path)
 	if err != nil {
 		return fmt.Errorf("object store: resolve auth path: %w", err)
 	}
@@ -536,7 +536,7 @@ func (s *ObjectTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, err
 	}
 	if auth.Attributes != nil {
 		if path := strings.TrimSpace(auth.Attributes["path"]); path != "" {
-			resolved, err := resolveManagedPath(s.authDir, path)
+			resolved, err := ResolveManagedPath(s.authDir, path)
 			if err != nil {
 				return "", fmt.Errorf("object store: resolve auth path: %w", err)
 			}
@@ -553,7 +553,7 @@ func (s *ObjectTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, err
 	if !strings.HasSuffix(strings.ToLower(fileName), ".json") {
 		fileName += ".json"
 	}
-	resolved, err := resolveManagedPath(s.authDir, fileName)
+	resolved, err := ResolveManagedPath(s.authDir, fileName)
 	if err != nil {
 		return "", fmt.Errorf("object store: resolve auth path: %w", err)
 	}
@@ -575,7 +575,7 @@ func (s *ObjectTokenStore) resolveDeletePath(id string) (string, error) {
 	if !strings.HasSuffix(strings.ToLower(clean), ".json") {
 		clean += ".json"
 	}
-	resolved, err := resolveManagedPath(s.authDir, clean)
+	resolved, err := ResolveManagedPath(s.authDir, clean)
 	if err != nil {
 		return "", fmt.Errorf("object store: resolve delete path: %w", err)
 	}

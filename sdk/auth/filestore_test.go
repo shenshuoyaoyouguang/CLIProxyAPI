@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -227,4 +228,107 @@ func (f fileStoreMultiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthP
 
 func (f fileStoreMultiAuthParserFunc) ParseAuths(ctx context.Context, req pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
 	return f(ctx, req)
+}
+
+func TestFileTokenStore_PathTraversalProtection(t *testing.T) {
+	tests := []struct {
+		name      string
+		id        string
+		wantError bool
+		skipOnOS  []string // OS to skip this test case (e.g., "windows", "linux", "darwin")
+	}{
+		{
+			name:      "directory traversal",
+			id:        "../../../etc/passwd",
+			wantError: true,
+		},
+		{
+			name:      "absolute path outside base (Windows)",
+			id:        `C:\Windows\System32\drivers\etc\hosts`,
+			wantError: true,
+			skipOnOS:  []string{"linux", "darwin"},
+		},
+		{
+			name:      "absolute path outside base (Unix)",
+			id:        "/etc/passwd",
+			wantError: true,
+			skipOnOS:  []string{"windows"},
+		},
+		{
+			name:      "valid relative path",
+			id:        "subdir/auth.json",
+			wantError: false,
+		},
+		{
+			name:      "simple filename",
+			id:        "auth.json",
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Skip test case if current OS matches skip list
+			for _, skipOS := range tt.skipOnOS {
+				if runtime.GOOS == skipOS {
+					t.Skipf("skipping on %s", skipOS)
+				}
+			}
+
+			dir := t.TempDir()
+			store := &FileTokenStore{}
+			store.SetBaseDir(dir)
+
+			// Test resolveDeletePath
+			_, err := store.resolveDeletePath(tt.id)
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("resolveDeletePath() = nil, want error")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("resolveDeletePath() error = %v, want nil", err)
+				}
+			}
+
+			// Test resolveAuthPath with ID
+			_, err = store.resolveAuthPath(&cliproxyauth.Auth{ID: tt.id})
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("resolveAuthPath(ID) = nil, want error")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("resolveAuthPath(ID) error = %v, want nil", err)
+				}
+			}
+
+			// Test resolveAuthPath with FileName
+			_, err = store.resolveAuthPath(&cliproxyauth.Auth{FileName: tt.id})
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("resolveAuthPath(FileName) = nil, want error")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("resolveAuthPath(FileName) error = %v, want nil", err)
+				}
+			}
+
+			// Test resolveAuthPath with Attributes["path"]
+			_, err = store.resolveAuthPath(&cliproxyauth.Auth{Attributes: map[string]string{"path": tt.id}})
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("resolveAuthPath(Attributes[path]) = nil, want error")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("resolveAuthPath(Attributes[path]) error = %v, want nil", err)
+				}
+			}
+		})
+	}
 }

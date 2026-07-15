@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/store"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -211,14 +212,11 @@ func (s *FileTokenStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *FileTokenStore) resolveDeletePath(id string) (string, error) {
-	if strings.ContainsRune(id, os.PathSeparator) || filepath.IsAbs(id) {
-		return id, nil
-	}
 	dir := s.baseDirSnapshot()
 	if dir == "" {
 		return "", fmt.Errorf("auth filestore: directory not configured")
 	}
-	return filepath.Join(dir, id), nil
+	return store.ResolveManagedPath(dir, id)
 }
 
 func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Auth, error) {
@@ -396,31 +394,28 @@ func (s *FileTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}
-	if auth.Attributes != nil {
-		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
-			return p, nil
-		}
-	}
-	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
-		if filepath.IsAbs(fileName) {
-			return fileName, nil
-		}
-		if dir := s.baseDirSnapshot(); dir != "" {
-			return filepath.Join(dir, fileName), nil
-		}
-		return fileName, nil
-	}
-	if auth.ID == "" {
-		return "", fmt.Errorf("auth filestore: missing id")
-	}
-	if filepath.IsAbs(auth.ID) {
-		return auth.ID, nil
-	}
 	dir := s.baseDirSnapshot()
 	if dir == "" {
 		return "", fmt.Errorf("auth filestore: directory not configured")
 	}
-	return filepath.Join(dir, auth.ID), nil
+
+	// Try attributes["path"] first
+	if auth.Attributes != nil {
+		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
+			return store.ResolveManagedPath(dir, p)
+		}
+	}
+
+	// Then FileName
+	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
+		return store.ResolveManagedPath(dir, fileName)
+	}
+
+	// Finally ID
+	if auth.ID == "" {
+		return "", fmt.Errorf("auth filestore: missing id")
+	}
+	return store.ResolveManagedPath(dir, auth.ID)
 }
 
 func (s *FileTokenStore) labelFor(metadata map[string]any) string {

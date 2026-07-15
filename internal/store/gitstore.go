@@ -463,7 +463,7 @@ func (s *GitTokenStore) PersistAuthFiles(_ context.Context, message string, path
 		if trimmed == "" {
 			continue
 		}
-		resolved, errResolve := resolveManagedPath(authDir, trimmed)
+		resolved, errResolve := ResolveManagedPath(authDir, trimmed)
 		if errResolve != nil {
 			return fmt.Errorf("auth filestore: resolve auth path: %w", errResolve)
 		}
@@ -493,16 +493,16 @@ func (s *GitTokenStore) resolveDeletePath(id string) (string, error) {
 		return "", fmt.Errorf("auth filestore: directory not configured")
 	}
 	if strings.ContainsRune(id, os.PathSeparator) || filepath.IsAbs(id) {
-		return resolveManagedPath(dir, id)
+		return ResolveManagedPath(dir, id)
 	}
-	path, err := resolveManagedPath(dir, id)
+	path, err := ResolveManagedPath(dir, id)
 	if err != nil {
 		return "", fmt.Errorf("auth filestore: resolve delete path: %w", err)
 	}
 	// Also try with .json extension if the id lacks one and that file exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if !strings.HasSuffix(path, ".json") {
-			pathWithExt, errExt := resolveManagedPath(dir, id+".json")
+			pathWithExt, errExt := ResolveManagedPath(dir, id+".json")
 			if errExt != nil {
 				return "", fmt.Errorf("auth filestore: resolve delete path: %w", errExt)
 			}
@@ -586,7 +586,7 @@ func (s *GitTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 			if dir == "" {
 				return "", fmt.Errorf("auth filestore: directory not configured")
 			}
-			resolved, err := resolveManagedPath(dir, p)
+			resolved, err := ResolveManagedPath(dir, p)
 			if err != nil {
 				return "", fmt.Errorf("auth filestore: resolve auth path: %w", err)
 			}
@@ -598,7 +598,7 @@ func (s *GitTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 		if dir == "" {
 			return "", fmt.Errorf("auth filestore: directory not configured")
 		}
-		resolved, err := resolveManagedPath(dir, fileName)
+		resolved, err := ResolveManagedPath(dir, fileName)
 		if err != nil {
 			return "", fmt.Errorf("auth filestore: resolve auth path: %w", err)
 		}
@@ -611,7 +611,7 @@ func (s *GitTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 	if dir == "" {
 		return "", fmt.Errorf("auth filestore: directory not configured")
 	}
-	resolved, err := resolveManagedPath(dir, auth.ID)
+	resolved, err := ResolveManagedPath(dir, auth.ID)
 	if err != nil {
 		return "", fmt.Errorf("auth filestore: resolve auth path: %w", err)
 	}

@@ -25,15 +25,15 @@ func TestResolveManagedPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveManagedPath(baseDir, tt.input)
+			got, err := ResolveManagedPath(baseDir, tt.input)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("resolveManagedPath(%q) succeeded with %q, want error", tt.input, got)
+					t.Fatalf("ResolveManagedPath(%q) succeeded with %q, want error", tt.input, got)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("resolveManagedPath(%q) error = %v", tt.input, err)
+				t.Fatalf("ResolveManagedPath(%q) error = %v", tt.input, err)
 			}
 			if _, err := filepath.Rel(baseDir, got); err != nil {
 				t.Fatalf("resolved path %q is not relative to %q: %v", got, baseDir, err)

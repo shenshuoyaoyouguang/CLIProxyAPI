@@ -561,7 +561,7 @@ func (s *PostgresStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 	}
 	if auth.Attributes != nil {
 		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
-			resolved, err := resolveManagedPath(s.authDir, p)
+			resolved, err := ResolveManagedPath(s.authDir, p)
 			if err != nil {
 				return "", fmt.Errorf("postgres store: resolve auth path: %w", err)
 			}
@@ -569,7 +569,7 @@ func (s *PostgresStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 		}
 	}
 	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
-		resolved, err := resolveManagedPath(s.authDir, fileName)
+		resolved, err := ResolveManagedPath(s.authDir, fileName)
 		if err != nil {
 			return "", fmt.Errorf("postgres store: resolve auth path: %w", err)
 		}
@@ -578,7 +578,7 @@ func (s *PostgresStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 	if auth.ID == "" {
 		return "", fmt.Errorf("postgres store: missing id")
 	}
-	resolved, err := resolveManagedPath(s.authDir, auth.ID)
+	resolved, err := ResolveManagedPath(s.authDir, auth.ID)
 	if err != nil {
 		return "", fmt.Errorf("postgres store: resolve auth path: %w", err)
 	}
@@ -586,7 +586,7 @@ func (s *PostgresStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error)
 }
 
 func (s *PostgresStore) resolveDeletePath(id string) (string, error) {
-	resolved, err := resolveManagedPath(s.authDir, id)
+	resolved, err := ResolveManagedPath(s.authDir, id)
 	if err != nil {
 		return "", fmt.Errorf("postgres store: resolve delete path: %w", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func resolveManagedPath(baseDir, path string) (string, error) {
+func ResolveManagedPath(baseDir, path string) (string, error) {
 	baseDir = strings.TrimSpace(baseDir)
 	path = strings.TrimSpace(path)
 	if baseDir == "" {
