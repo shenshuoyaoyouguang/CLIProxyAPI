@@ -237,6 +237,23 @@ func NonStreamingKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// CompletionsEmptyChunkPolicy resolves the configured empty-chunk handling
+// policy for /v1/completions streaming. Empty/unknown values fall back to
+// "filter" (legacy behavior) so existing deployments are unchanged.
+func CompletionsEmptyChunkPolicy(cfg *config.SDKConfig) string {
+	if cfg == nil {
+		return config.CompletionsEmptyChunkPolicyFilter
+	}
+	switch cfg.Streaming.CompletionsEmptyChunkPolicy {
+	case config.CompletionsEmptyChunkPolicyFilter,
+		config.CompletionsEmptyChunkPolicyPreserve,
+		config.CompletionsEmptyChunkPolicyMark:
+		return cfg.Streaming.CompletionsEmptyChunkPolicy
+	default:
+		return config.CompletionsEmptyChunkPolicyFilter
+	}
+}
+
 // StreamingBootstrapRetries returns how many times a streaming request may be retried before any bytes are sent.
 func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 	retries := defaultStreamingBootstrapRetries

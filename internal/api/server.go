@@ -285,6 +285,11 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
+	// 禁用 X-Forwarded-For 信任，防止客户端伪造 IP 绕过基于 IP 的访问控制。
+	// 如需部署在反向代理后，应通过 WithEngineConfigurator 显式配置可信代理。
+	if err := engine.SetTrustedProxies(nil); err != nil {
+		log.Warnf("failed to disable trusted proxies: %v", err)
+	}
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}

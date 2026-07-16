@@ -39,6 +39,21 @@ func extractCustomHeaders(attrs map[string]string) map[string]string {
 	return headers
 }
 
+// sensitiveHeadersBlacklist 是禁止通过 auth.Attributes 注入的敏感头黑名单。
+// 这些头与凭证、身份、来源相关，由 executor 显式控制，不允许被覆盖。
+var sensitiveHeadersBlacklist = map[string]bool{
+	"Authorization":       true,
+	"Host":                true,
+	"Cookie":              true,
+	"Set-Cookie":          true,
+	"X-Forwarded-For":     true,
+	"X-Forwarded-Host":    true,
+	"X-Forwarded-Proto":   true,
+	"X-Real-Ip":           true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+}
+
 func applyCustomHeaders(r *http.Request, headers map[string]string) {
 	if r == nil || len(headers) == 0 {
 		return
@@ -47,13 +62,10 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
 		if k == "" || v == "" {
 			continue
 		}
-		// net/http reads Host from req.Host (not req.Header) when writing
-		// a real request, so we must mirror it there. Some callers pass
-		// synthetic requests (e.g. &http.Request{Header: ...}) and only
-		// consume r.Header afterwards, so keep the value in the header
-		// map too.
-		if http.CanonicalHeaderKey(k) == "Host" {
-			r.Host = v
+		canonical := http.CanonicalHeaderKey(k)
+		if sensitiveHeadersBlacklist[canonical] {
+			// 敏感头不允许通过自定义头注入，跳过
+			continue
 		}
 		r.Header.Set(k, v)
 	}

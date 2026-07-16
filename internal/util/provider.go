@@ -180,13 +180,11 @@ func InArray(hystack []string, needle string) bool {
 //   - string: The obscured API key.
 func HideAPIKey(apiKey string) string {
 	if len(apiKey) > 8 {
-		return apiKey[:4] + "..." + apiKey[len(apiKey)-4:]
-	} else if len(apiKey) > 4 {
 		return apiKey[:2] + "..." + apiKey[len(apiKey)-2:]
-	} else if len(apiKey) > 2 {
+	} else if len(apiKey) > 4 {
 		return apiKey[:1] + "..." + apiKey[len(apiKey)-1:]
 	}
-	return apiKey
+	return "***"
 }
 
 // maskAuthorizationHeader masks the Authorization header value while preserving the auth type prefix.
@@ -210,7 +208,8 @@ func MaskAuthorizationHeader(value string) string {
 //
 // Behavior by header key (case-insensitive):
 //   - "Authorization": Preserve the auth type prefix (e.g., "Bearer ") and mask only the credential part.
-//   - Headers containing "api-key": Mask the entire value using HideAPIKey.
+//   - Headers containing sensitive keywords (api-key, apikey, api_key, token, secret,
+//     credential, cookie, x-auth, x-token, x-secret, x-api): Mask the entire value using HideAPIKey.
 //   - Others: Return the original value unchanged.
 //
 // Parameters:
@@ -226,8 +225,15 @@ func MaskSensitiveHeaderValue(key, value string) string {
 		return MaskAuthorizationHeader(value)
 	case strings.Contains(lowerKey, "api-key"),
 		strings.Contains(lowerKey, "apikey"),
+		strings.Contains(lowerKey, "api_key"),
 		strings.Contains(lowerKey, "token"),
-		strings.Contains(lowerKey, "secret"):
+		strings.Contains(lowerKey, "secret"),
+		strings.Contains(lowerKey, "credential"),
+		strings.Contains(lowerKey, "cookie"),
+		strings.Contains(lowerKey, "x-auth"),
+		strings.Contains(lowerKey, "x-token"),
+		strings.Contains(lowerKey, "x-secret"),
+		strings.Contains(lowerKey, "x-api"):
 		return HideAPIKey(value)
 	default:
 		return value

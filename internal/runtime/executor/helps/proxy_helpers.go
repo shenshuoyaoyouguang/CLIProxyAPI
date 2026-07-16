@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -26,7 +27,30 @@ import (
 // Returns:
 //   - *http.Client: An HTTP client with configured proxy or transport
 func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
-	httpClient := &http.Client{}
+	httpClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("stopped after 5 redirects")
+			}
+			// 跨 host 重定向时，清除敏感头防止泄露
+			if len(via) > 0 {
+				prevHost := via[len(via)-1].URL.Host
+				currHost := req.URL.Host
+				if prevHost != currHost {
+					req.Header.Del("Authorization")
+					req.Header.Del("Cookie")
+					// 清除自定义 token/secret/credential 类头
+					for hk := range req.Header {
+						lk := strings.ToLower(hk)
+						if strings.Contains(lk, "token") || strings.Contains(lk, "secret") || strings.Contains(lk, "credential") || strings.Contains(lk, "api-key") || strings.Contains(lk, "apikey") {
+							req.Header.Del(hk)
+						}
+					}
+				}
+			}
+			return nil
+		},
+	}
 	if timeout > 0 {
 		httpClient.Timeout = timeout
 	}

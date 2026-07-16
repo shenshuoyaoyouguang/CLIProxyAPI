@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // RetryDecision represents whether a stream error should be retried.
@@ -19,7 +20,17 @@ const (
 )
 
 // statusErrChecker is an interface matching the statusErr type used in executor packages.
+// RetryAfter returns the delay parsed from the Retry-After header; nil when unset or zero.
 type statusErrChecker interface {
+	StatusCode() int
+	Error() string
+	RetryAfter() *time.Duration
+}
+
+// statusCodeOnlyChecker is a fallback interface for error types that only
+// expose StatusCode() without Retry-After information (e.g. legacy executors
+// or non-HTTP status errors). Those are still classified but with retryAfter=nil.
+type statusCodeOnlyChecker interface {
 	StatusCode() int
 	Error() string
 }
@@ -34,9 +45,13 @@ func ClassifyStreamError(err error, gotSSEData bool) RetryDecision {
 	if gotSSEData {
 		return RetryNone
 	}
-	// Check for statusErr (HTTP errors from upstream).
+	// Check for statusErr (HTTP errors from upstream) carrying Retry-After.
 	if se, ok := err.(statusErrChecker); ok {
-		return classifyHTTPError(se.StatusCode(), se.Error())
+		return classifyHTTPError(se.StatusCode(), se.Error(), se.RetryAfter())
+	}
+	// Fallback for error types that only implement StatusCode() (no Retry-After).
+	if se, ok := err.(statusCodeOnlyChecker); ok {
+		return classifyHTTPError(se.StatusCode(), se.Error(), nil)
 	}
 	// Network-level errors.
 	if err == io.ErrUnexpectedEOF {
@@ -51,7 +66,8 @@ func ClassifyStreamError(err error, gotSSEData bool) RetryDecision {
 }
 
 // classifyHTTPError classifies an HTTP error for retry decisions.
-func classifyHTTPError(statusCode int, body string) RetryDecision {
+// retryAfter is the delay parsed from the Retry-After header; nil when unset.
+func classifyHTTPError(statusCode int, body string, retryAfter *time.Duration) RetryDecision {
 	switch statusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		// Auth failures are never retryable with the same credential.
@@ -66,6 +82,11 @@ func classifyHTTPError(statusCode int, body string) RetryDecision {
 	case http.StatusUnprocessableEntity:
 		return RetryNone
 	case http.StatusTooManyRequests:
+		// When upstream specifies Retry-After > 0, honour it via backoff
+		// to avoid amplifying rate limiting with immediate retries.
+		if retryAfter != nil && *retryAfter > 0 {
+			return RetryWithBackoff
+		}
 		return RetryImmediately
 	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return RetryWithBackoff

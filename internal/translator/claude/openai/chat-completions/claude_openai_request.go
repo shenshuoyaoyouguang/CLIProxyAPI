@@ -132,9 +132,13 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// Model mapping to specify which Claude Code model to use
 	out, _ = sjson.SetBytes(out, "model", modelName)
 
-	// Max tokens configuration with fallback to default value
+	// Max tokens configuration with fallback to default value.
+	// Prefer max_tokens over max_completion_tokens (newer OpenAI SDKs default to
+	// max_completion_tokens); falling back to the default 32000 otherwise.
 	if maxTokens := root.Get("max_tokens"); maxTokens.Exists() {
 		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
+	} else if maxCompletionTokens := root.Get("max_completion_tokens"); maxCompletionTokens.Exists() {
+		out, _ = sjson.SetBytes(out, "max_tokens", maxCompletionTokens.Int())
 	}
 
 	// Top P setting for nucleus sampling.
@@ -332,7 +336,10 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 			choice := toolChoice.String()
 			switch choice {
 			case "none":
-				// Don't set tool_choice, Claude Code will not use tools
+				// Explicitly disable tool use for this turn. Claude API supports
+				// {"type":"none"} to forbid tool calls even when tools are defined,
+				// preventing upstream defaults from forcing a tool call.
+				out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"none"}`))
 			case "auto":
 				out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"auto"}`))
 			case "required":

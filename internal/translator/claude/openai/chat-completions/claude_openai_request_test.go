@@ -65,6 +65,59 @@ func TestConvertOpenAIRequestToClaude_DropsTemperature(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIRequestToClaude_MapsMaxCompletionTokens(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		want      int64
+	}{
+		{
+			name: "max_tokens only",
+			body: `{"model":"gpt-4.1","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`,
+			want: 100,
+		},
+		{
+			name: "max_completion_tokens only",
+			body: `{"model":"gpt-4.1","max_completion_tokens":200,"messages":[{"role":"user","content":"hi"}]}`,
+			want: 200,
+		},
+		{
+			name: "max_tokens preferred over max_completion_tokens",
+			body: `{"model":"gpt-4.1","max_tokens":300,"max_completion_tokens":400,"messages":[{"role":"user","content":"hi"}]}`,
+			want: 300,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ConvertOpenAIRequestToClaude("claude-sonnet-5", []byte(tt.body), false)
+			if got := gjson.GetBytes(result, "max_tokens").Int(); got != tt.want {
+				t.Fatalf("max_tokens = %d, want %d. Output: %s", got, tt.want, result)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIRequestToClaude_ToolChoiceNoneIsExplicit(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [{"type":"function","function":{"name":"do_work","parameters":{"type":"object","properties":{}}}}],
+		"tool_choice": "none"
+	}`
+
+	result := ConvertOpenAIRequestToClaude("claude-sonnet-5", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+
+	toolChoice := resultJSON.Get("tool_choice")
+	if !toolChoice.Exists() {
+		t.Fatalf("tool_choice should be explicitly set to {\"type\":\"none\"} to forbid tool use. Output: %s", result)
+	}
+	if got := toolChoice.Get("type").String(); got != "none" {
+		t.Fatalf("tool_choice.type = %q, want %q. Output: %s", got, "none", result)
+	}
+}
+
 func TestConvertOpenAIRequestToClaude_ToolResultTextAndBase64Image(t *testing.T) {
 	inputJSON := `{
 		"model": "gpt-4.1",

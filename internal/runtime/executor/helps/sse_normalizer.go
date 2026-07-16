@@ -348,12 +348,16 @@ func (n *SSENormalizer) releaseReady(buf *bytes.Buffer) {
 		kept := n.pending[:0]
 		for _, ev := range n.pending {
 			if n.messageStopSent {
-				// Stream is terminating; drop all remaining content_block_*.
+				// Stream is terminating; drop all remaining content_block_*
+				// and late message_delta events. Anthropic protocol requires
+				// message_delta to precede message_stop, so a message_delta
+				// arriving after message_stop must be discarded rather than
+				// forwarded out of order.
 				if isContentBlockEvent(ev.Type) {
 					continue
 				}
 				if ev.Type == translatorcommon.SSEEventMessageDelta {
-					n.messageDeltaSent = true
+					continue
 				}
 				translatorcommon.WriteSSEEventBytes(buf, ev.Type, ev.Data, 2)
 				continue

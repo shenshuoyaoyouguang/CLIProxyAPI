@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	responsesconverter "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -189,8 +191,24 @@ func (h *OpenAIAPIHandler) Completions(c *gin.Context) {
 func convertCompletionsRequestToChatCompletions(rawJSON []byte) []byte {
 	root := gjson.ParseBytes(rawJSON)
 
-	// Extract prompt from completions request
-	prompt := root.Get("prompt").String()
+	// Extract prompt from completions request. The OpenAI Completions API allows
+	// prompt to be a string or an array of strings; array form must be honored
+	// rather than collapsing to the "Complete this:" fallback.
+	prompt := ""
+	if promptResult := root.Get("prompt"); promptResult.Exists() {
+		switch {
+		case promptResult.Type == gjson.String:
+			prompt = promptResult.String()
+		case promptResult.IsArray():
+			parts := make([]string, 0, len(promptResult.Array()))
+			for _, p := range promptResult.Array() {
+				if p.Type == gjson.String {
+					parts = append(parts, p.String())
+				}
+			}
+			prompt = strings.Join(parts, "\n")
+		}
+	}
 	if prompt == "" {
 		prompt = "Complete this:"
 	}
@@ -243,9 +261,9 @@ func convertCompletionsRequestToChatCompletions(rawJSON []byte) []byte {
 		out, _ = sjson.SetBytes(out, "top_logprobs", topLogprobs.Int())
 	}
 
-	if echo := root.Get("echo"); echo.Exists() {
-		out, _ = sjson.SetBytes(out, "echo", echo.Bool())
-	}
+	// Note: "echo" is Completions-API-only and has no Chat Completions equivalent.
+	// Dropping it intentionally rather than forwarding to upstreams that may reject
+	// unknown fields with 400.
 
 	return out
 }
@@ -329,10 +347,14 @@ func convertChatCompletionsResponseToCompletions(rawJSON []byte) []byte {
 //
 // Parameters:
 //   - chunkData: The raw JSON bytes of a single chat completions stream chunk
+//   - policy: Empty-chunk handling policy. See config.CompletionsEmptyChunkPolicy* constants.
+//     "filter" drops empty chunks (legacy behavior, default).
+//     "preserve" keeps empty chunks in original timeline order with text="".
+//     "mark" keeps empty chunks and adds an "empty": true marker field.
 //
 // Returns:
 //   - []byte: The converted completions stream chunk, or nil if should be filtered out
-func convertChatCompletionsStreamChunkToCompletions(chunkData []byte) []byte {
+func convertChatCompletionsStreamChunkToCompletions(chunkData []byte, policy string) []byte {
 	root := gjson.ParseBytes(chunkData)
 
 	// Check if this chunk has any meaningful content
@@ -356,9 +378,20 @@ func convertChatCompletionsStreamChunkToCompletions(chunkData []byte) []byte {
 		})
 	}
 
-	// If no meaningful content and no usage, return nil to indicate this chunk should be skipped
-	if !hasContent && !hasUsage {
-		return nil
+	// Empty chunk handling: when there is no text content and no usage payload,
+	// the legacy behavior is to drop the chunk. The "preserve" / "mark" policies
+	// keep the chunk so clients can reconstruct the original upstream timeline
+	// (e.g. for keep-alive signals or role-only first chunks).
+	isEmptyChunk := !hasContent && !hasUsage
+	if isEmptyChunk {
+		switch policy {
+		case config.CompletionsEmptyChunkPolicyPreserve,
+			config.CompletionsEmptyChunkPolicyMark:
+			// Fall through to the conversion below; marker is added per-choice.
+		default:
+			// "filter" or any unknown value -> legacy behavior.
+			return nil
+		}
 	}
 
 	// Base completions stream response structure
@@ -404,6 +437,13 @@ func convertChatCompletionsStreamChunkToCompletions(chunkData []byte) []byte {
 			// Copy logprobs if present
 			if logprobs := choice.Get("logprobs"); logprobs.Exists() {
 				completionsChoice["logprobs"] = logprobs.Value()
+			}
+
+			// For the "mark" policy on an empty chunk, add an explicit marker
+			// so clients can distinguish intentional timeline-preserving
+			// empty chunks from real text deltas.
+			if isEmptyChunk && policy == config.CompletionsEmptyChunkPolicyMark {
+				completionsChoice["empty"] = true
 			}
 
 			choices = append(choices, completionsChoice)
@@ -619,8 +659,13 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			setSSEHeaders()
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 
+			// Resolve the configured empty-chunk policy once per stream so all
+			// chunks (first + subsequent) are handled consistently. See
+			// config.CompletionsEmptyChunkPolicy* for allowed values.
+			emptyChunkPolicy := handlers.CompletionsEmptyChunkPolicy(h.Cfg)
+
 			// Write the first chunk
-			converted := convertChatCompletionsStreamChunkToCompletions(chunk)
+			converted := convertChatCompletionsStreamChunkToCompletions(chunk, emptyChunkPolicy)
 			if converted != nil {
 				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(converted))
 				flusher.Flush()
@@ -641,7 +686,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 						if !ok {
 							return
 						}
-						converted := convertChatCompletionsStreamChunkToCompletions(chunk)
+						converted := convertChatCompletionsStreamChunkToCompletions(chunk, emptyChunkPolicy)
 						if converted == nil {
 							continue
 						}

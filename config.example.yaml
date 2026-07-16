@@ -191,11 +191,20 @@ ws-auth: true
 # When > 0, emit blank lines every N seconds for non-streaming responses to prevent idle timeouts.
 nonstream-keepalive-interval: 0
 # Streaming behavior (SSE keep-alives + safe bootstrap retries).
+# 详见 docs/sse-streaming-config.md
 # streaming:
 #   keepalive-seconds: 15   # Default: 0 (disabled). <= 0 disables keep-alives.
+#                           # 推荐生产环境设为 30，防止中间代理空闲断开长思考模型连接。
 #   bootstrap-retries: 1    # Default: 0 (disabled). Retries before first byte is sent.
 #   stream-retry-enabled: false # Default: false. Enable OpenAI-compatible retries before any SSE data arrives.
 #   stream-retry-count: 2       # Only used when stream-retry-enabled is true.
+#   stream-retry-degrade-after: 1  # Default: 1. 0=首次重试即降级 reasoning_effort; 1=首次保留原始 body, 后续降级.
+#   completions-empty-chunk-policy: filter  # Default: filter (legacy behavior).
+#                                           # /v1/completions 流式响应中空 text chunk 的处理策略:
+#                                           #   filter  - 丢弃空 chunk (向后兼容, 时间线被压缩)
+#                                           #   preserve - 保留空 chunk, text 字段为 "" (保留原始时间线)
+#                                           #   mark    - 保留空 chunk 并添加 "empty": true 标记字段
+#                                           # 详见 docs/sse-streaming-config.md §2.7
 
 # Signature cache validation for thinking blocks (Antigravity/Claude).
 # When true (default), cached signatures are preferred and validated.

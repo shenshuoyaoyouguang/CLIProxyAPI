@@ -34,6 +34,11 @@ type TLS = internalconfig.TLSConfig
 
 const (
 	DefaultPanelGitHubRepository = internalconfig.DefaultPanelGitHubRepository
+
+	// Completions empty chunk policy values for /v1/completions streaming.
+	CompletionsEmptyChunkPolicyFilter   = internalconfig.CompletionsEmptyChunkPolicyFilter
+	CompletionsEmptyChunkPolicyPreserve = internalconfig.CompletionsEmptyChunkPolicyPreserve
+	CompletionsEmptyChunkPolicyMark     = internalconfig.CompletionsEmptyChunkPolicyMark
 )
 
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }

@@ -58,12 +58,6 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			out, _ = sjson.SetBytes(out, "top_p", topP.Float())
 		}
 
-		// Top K (OpenAI doesn't have direct equivalent, but we can map it)
-		if topK := genConfig.Get("topK"); topK.Exists() {
-			// Store as custom parameter for potential use
-			out, _ = sjson.SetBytes(out, "top_k", topK.Int())
-		}
-
 		// Stop sequences
 		if stopSequences := genConfig.Get("stopSequences"); stopSequences.Exists() && stopSequences.IsArray() {
 			var stops []string
@@ -250,7 +244,14 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						// Convert response.content to JSON string
 						if response := functionResponse.Get("response"); response.Exists() {
 							if contentField := response.Get("content"); contentField.Exists() {
-								toolMsg, _ = sjson.SetBytes(toolMsg, "content", contentField.Raw)
+								var textParts []string
+								contentField.ForEach(func(_, p gjson.Result) bool {
+									if t := p.Get("text"); t.Exists() {
+										textParts = append(textParts, t.String())
+									}
+									return true
+								})
+								toolMsg, _ = sjson.SetBytes(toolMsg, "content", strings.Join(textParts, "\n"))
 							} else {
 								toolMsg, _ = sjson.SetBytes(toolMsg, "content", response.Raw)
 							}

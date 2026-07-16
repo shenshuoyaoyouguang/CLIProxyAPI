@@ -2,6 +2,7 @@ package configaccess
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -89,7 +90,16 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		if candidate.value == "" {
 			continue
 		}
-		if _, ok := p.keys[candidate.value]; ok {
+		// 使用常量时间比较遍历所有 key，避免时序攻击
+		candidateBytes := []byte(candidate.value)
+		matched := false
+		for storedKey := range p.keys {
+			if subtle.ConstantTimeCompare([]byte(storedKey), candidateBytes) == 1 {
+				matched = true
+				// 不 break，遍历所有 key 以保持常量时间
+			}
+		}
+		if matched {
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),
 				Principal: candidate.value,

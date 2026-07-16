@@ -82,6 +82,29 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 		}
 	}
 
+	// Map OpenAI response_format -> Gemini responseMimeType + responseJsonSchema.
+	// Without this mapping, JSON mode / structured outputs silently no-op on Gemini.
+	if rf := gjson.GetBytes(rawJSON, "response_format"); rf.Exists() && rf.IsObject() {
+		switch strings.ToLower(strings.TrimSpace(rf.Get("type").String())) {
+		case "json_object":
+			out, _ = sjson.SetBytes(out, "generationConfig.responseMimeType", "application/json")
+		case "json_schema":
+			out, _ = sjson.SetBytes(out, "generationConfig.responseMimeType", "application/json")
+			out, _ = sjson.DeleteBytes(out, "generationConfig.responseSchema")
+			out, _ = sjson.DeleteBytes(out, "generationConfig.responseJsonSchema")
+			// OpenAI SDK wraps the schema under json_schema.schema; some clients send
+			// the schema directly under response_format.schema. Accept both shapes.
+			schema := rf.Get("json_schema.schema")
+			if !schema.Exists() {
+				schema = rf.Get("schema")
+			}
+			if schema.Exists() {
+				cleaned := util.CleanJSONSchemaForGemini(schema.Raw)
+				out, _ = sjson.SetRawBytes(out, "generationConfig.responseJsonSchema", []byte(cleaned))
+			}
+		}
+	}
+
 	// Map OpenAI modalities -> Gemini generationConfig.responseModalities
 	// e.g. "modalities": ["image", "text"] -> ["IMAGE", "TEXT"]
 	if mods := gjson.GetBytes(rawJSON, "modalities"); mods.Exists() && mods.IsArray() {

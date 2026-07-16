@@ -87,4 +87,22 @@ type StreamingConfig struct {
 	// treated as 0. Unset (nil) means the executor uses the default from
 	// helps.DefaultStreamRetryConfig (currently 1).
 	StreamRetryDegradeAfter *int `yaml:"stream-retry-degrade-after,omitempty" json:"stream-retry-degrade-after,omitempty"`
+
+	// CompletionsEmptyChunkPolicy controls how /v1/completions streaming handles
+	// upstream chat-completions chunks whose delta has no text content and no
+	// usage field. Filtering such chunks changes the original timeline; some
+	// clients rely on the empty chunks to reconstruct timing/keep-alive signals.
+	// Allowed values:
+	//   - "filter"  (default): drop empty chunks (legacy behavior)
+	//   - "preserve": keep empty chunks in original order, text field is ""
+	//   - "mark"    : keep empty chunks and add an "empty": true marker field
+	// Any other/empty value falls back to "filter".
+	CompletionsEmptyChunkPolicy string `yaml:"completions-empty-chunk-policy,omitempty" json:"completions-empty-chunk-policy,omitempty"`
 }
+
+// Completions empty chunk policy string constants.
+const (
+	CompletionsEmptyChunkPolicyFilter   = "filter"
+	CompletionsEmptyChunkPolicyPreserve = "preserve"
+	CompletionsEmptyChunkPolicyMark     = "mark"
+)

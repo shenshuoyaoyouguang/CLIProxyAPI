@@ -10,8 +10,11 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,6 +115,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return
 	}
+	if errValidate := validateBaseURL(baseURL); errValidate != nil {
+		log.WithField("provider", e.Identifier()).Warnf("baseURL validation warning: %v", errValidate)
+		// 仅警告不阻止，兼容自建内网网关场景
+	}
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -138,7 +145,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	// Strip OpenAI SDK private field "extra_body" that strict upstreams (e.g. z.ai GLM) reject with 400.
+	// OpenAICompatibility 无 Strict 字段，统一剥离以防上游 400。
 	if updated, errDel := sjson.DeleteBytes(translated, "extra_body"); errDel == nil {
+		log.WithField("provider", e.Identifier()).Debug("openai compat executor: stripped extra_body field (strict upstreams reject it)")
 		translated = updated
 	}
 	normalizeReq := openAICompatProviderNormalizeRequest{
@@ -177,7 +186,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = newStatusErrFromResponse(httpResp.StatusCode, b, httpResp.Header)
 		return resp, err
 	}
 	body, err := io.ReadAll(httpResp.Body)
@@ -211,6 +220,10 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 	if baseURL == "" {
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return resp, err
+	}
+	if errValidate := validateBaseURL(baseURL); errValidate != nil {
+		log.WithField("provider", e.Identifier()).Warnf("baseURL validation warning: %v", errValidate)
+		// 仅警告不阻止，兼容自建内网网关场景
 	}
 
 	payload, contentType, errPrepare := prepareOpenAICompatImagesPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), false)
@@ -267,6 +280,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImagesStream(ctx, auth, req, opts, endpointPath)
 	}
+	if opts.Alt == "responses/compact" {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
+	}
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
@@ -277,6 +293,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if baseURL == "" {
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return nil, err
+	}
+	if errValidate := validateBaseURL(baseURL); errValidate != nil {
+		log.WithField("provider", e.Identifier()).Warnf("baseURL validation warning: %v", errValidate)
+		// 仅警告不阻止，兼容自建内网网关场景
 	}
 
 	from := opts.SourceFormat
@@ -299,18 +319,20 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	// Strip OpenAI SDK private field "extra_body" that strict upstreams (e.g. z.ai GLM) reject with 400.
+	// OpenAICompatibility 无 Strict 字段，统一剥离以防上游 400。
 	if updated, errDel := sjson.DeleteBytes(translated, "extra_body"); errDel == nil {
+		log.WithField("provider", e.Identifier()).Debug("openai compat executor: stripped extra_body field (strict upstreams reject it)")
 		translated = updated
 	}
 	normalizeReq := openAICompatProviderNormalizeRequest{
 		Model:       baseModel,
 		CompatModel: e.resolveCompatModel(auth, baseModel),
 	}
-	translated = applyOpenAICompatProviderNormalizeRules(translated, normalizeReq)
-
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
+	// 先设置 include_usage 再 normalize，让 UnsupportedParameters 有机会过滤 stream_options。
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
+	translated = applyOpenAICompatProviderNormalizeRules(translated, normalizeReq)
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
 	var authID, authLabel, authType, authValue string
@@ -351,7 +373,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("openai compat executor: close response body error: %v", errClose)
 		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = newStatusErrFromResponse(httpResp.StatusCode, b, httpResp.Header)
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -449,8 +471,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 						continue
 					}
 					if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-						// B2: only return the error; outer block handles reporting.
-						return statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+						// JSON 错误体视为上游错误返回；其余非 SSE JSON 行（注释/心跳片段）跳过不中断流。
+						if bytes.Contains(trimmedLine, []byte(`"error"`)) {
+							return statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+						}
+						helps.LogWithRequestID(ctx).Debugf("openai compat executor: skipping non-SSE JSON line in stream: %s", helps.SummarizeErrorBody("application/json", trimmedLine))
+						continue
 					}
 					continue
 				}
@@ -555,7 +581,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				if errClose := httpResp2.Body.Close(); errClose != nil {
 					log.Errorf("openai compat executor: close retry response body error: %v", errClose)
 				}
-				errScan = statusErr{code: httpResp2.StatusCode, msg: string(b)}
+				errScan = newStatusErrFromResponse(httpResp2.StatusCode, b, httpResp2.Header)
 				gotSSEData = false
 				continue // re-classify in next iteration
 			}
@@ -600,6 +626,10 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 	if baseURL == "" {
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return nil, err
+	}
+	if errValidate := validateBaseURL(baseURL); errValidate != nil {
+		log.WithField("provider", e.Identifier()).Warnf("baseURL validation warning: %v", errValidate)
+		// 仅警告不阻止，兼容自建内网网关场景
 	}
 
 	payload, contentType, errPrepare := prepareOpenAICompatImagesPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), true)
@@ -667,7 +697,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, body)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), body))
-		return nil, statusErr{code: httpResp.StatusCode, msg: string(body)}
+		return nil, newStatusErrFromResponse(httpResp.StatusCode, body, httpResp.Header)
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -870,6 +900,53 @@ func rewriteOpenAICompatImagesMultipartPayload(payload []byte, model string, bou
 	return body.Bytes(), writer.FormDataContentType(), nil
 }
 
+// privateIPBlocks 列出私有/环回/链路本地 IP 段，用于 SSRF 校验。
+var privateIPBlocks = func() []net.IPNet {
+	blocks := []string{
+		"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
+	}
+	var nets []net.IPNet
+	for _, b := range blocks {
+		_, n, _ := net.ParseCIDR(b)
+		if n != nil {
+			nets = append(nets, *n)
+		}
+	}
+	return nets
+}()
+
+// validateBaseURL 校验 baseURL 协议和 IP 范围，防止 SSRF。
+func validateBaseURL(baseURL string) error {
+	if baseURL == "" {
+		return fmt.Errorf("empty baseURL")
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid baseURL: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("baseURL scheme must be http or https, got: %s", scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("baseURL missing host")
+	}
+	// 解析 host 为 IP
+	ip := net.ParseIP(host)
+	if ip != nil {
+		// 是 IP，校验是否内网
+		for _, block := range privateIPBlocks {
+			if block.Contains(ip) {
+				return fmt.Errorf("baseURL host is private/loopback IP: %s", host)
+			}
+		}
+	}
+	// 如果是域名，不解析（避免 DNS rebinding 的复杂处理，仅校验协议）
+	return nil
+}
+
 func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (baseURL, apiKey string) {
 	if auth == nil {
 		return "", ""
@@ -957,6 +1034,43 @@ func (e statusErr) Error() string {
 func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
 
+// newStatusErrFromResponse 从 HTTP 响应构造 statusErr，解析 Retry-After 头。
+func newStatusErrFromResponse(statusCode int, body []byte, headers http.Header) statusErr {
+	se := statusErr{code: statusCode, msg: string(body)}
+	if headers != nil {
+		if ra := headers.Get("Retry-After"); ra != "" {
+			if dur, err := parseRetryAfter(ra); err == nil {
+				se.retryAfter = &dur
+			}
+		}
+	}
+	return se
+}
+
+// parseRetryAfter 解析 Retry-After 头，支持秒数和 HTTP-date 格式。
+func parseRetryAfter(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("empty Retry-After")
+	}
+	// 尝试秒数
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds < 0 {
+			seconds = 0
+		}
+		return time.Duration(seconds) * time.Second, nil
+	}
+	// 尝试 HTTP-date
+	if t, err := http.ParseTime(value); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			d = 0
+		}
+		return d, nil
+	}
+	return 0, fmt.Errorf("invalid Retry-After: %s", value)
+}
+
 // buildRequest constructs an HTTP request for the OpenAI-compatible executor with
 // common headers (Content-Type, Authorization, User-Agent, custom attributes) and
 // records the request log.
@@ -967,6 +1081,8 @@ func (e *OpenAICompatExecutor) buildRequest(ctx context.Context, method, baseURL
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", contentType)
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Accept-Encoding", "identity")
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}

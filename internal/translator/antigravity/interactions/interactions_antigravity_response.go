@@ -13,6 +13,12 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// antigravityToInteractionsStreamState holds stream conversion state.
+//
+// Builder owns the shared Interactions SSE state machine (Started/Completed/ActiveStep*).
+// ToolNameMap is kept here (not inside the common Builder) because only antigravity
+// returns sanitized/disambiguated function names that must be restored to original
+// client-facing names before SSE events are emitted.
 type antigravityToInteractionsStreamState struct {
 	Builder     *translatorcommon.InteractionsSSEBuilder
 	Finished    bool
@@ -166,7 +172,7 @@ func ensureAntigravityInteractionsStep(out [][]byte, st *antigravityToInteractio
 		return out
 	}
 	out = st.Builder.AppendStepStop(out)
-	// 生成 StepID 作为 function_call id 缺失时的回退值，与迁移前行为一致。
+	// Generate StepID as a fallback when function_call id is missing (pre-migration behavior).
 	st.StepID = fmt.Sprintf("step_%d", time.Now().UnixNano())
 	params := translatorcommon.StepStartParams{Type: stepType}
 	if stepType == "function_call" {
@@ -202,7 +208,8 @@ func appendAntigravityPartToInteractionsStream(out [][]byte, st *antigravityToIn
 	}
 	if fr := part.Get("functionResponse"); fr.Exists() {
 		out = ensureAntigravityInteractionsStep(out, st, "function_result", fr)
-		// function_result delta 不在 Builder 的 9 类事件中，保留 provider 自定义实现。
+		// function_result deltas are not one of the Builder's 9 shared event types;
+		// keep a provider-specific implementation here.
 		delta := []byte(`{"index":0,"delta":{"type":"function_result","name":"","result":{}},"event_type":"step.delta"}`)
 		delta, _ = sjson.SetBytes(delta, "index", st.Builder.ActiveStepIndex)
 		delta, _ = sjson.SetBytes(delta, "delta.name", fr.Get("name").String())
@@ -218,7 +225,8 @@ func appendAntigravityPartToInteractionsStream(out [][]byte, st *antigravityToIn
 func appendAntigravityThoughtSignature(out [][]byte, st *antigravityToInteractionsStreamState, part gjson.Result) [][]byte {
 	if signature := antigravityThoughtSignature(part); signature != "" {
 		out = ensureAntigravityInteractionsStep(out, st, "thought", gjson.Result{})
-		// thought_signature delta 不在 Builder 的 9 类事件中，保留 provider 自定义实现。
+		// thought_signature deltas are not one of the Builder's 9 shared event types;
+		// keep a provider-specific implementation here.
 		signatureDelta := []byte(`{"index":0,"delta":{"signature":"","type":"thought_signature"},"event_type":"step.delta"}`)
 		signatureDelta, _ = sjson.SetBytes(signatureDelta, "index", st.Builder.ActiveStepIndex)
 		signatureDelta, _ = sjson.SetBytes(signatureDelta, "delta.signature", signature)

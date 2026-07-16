@@ -169,6 +169,49 @@ func TestConvertAntigravityResponseToInteractionsRestoresDisambiguatedName(t *te
 	}
 }
 
+func TestConvertAntigravityResponseToInteractionsStreamRestoresDisambiguatedNames(t *testing.T) {
+	first := "mcp__plugin_cloudflare_cloudflare-builds__workers_builds_get_build"
+	second := "mcp__plugin_cloudflare_cloudflare-builds__workers_builds_get_build_logs"
+	original := []byte(`{"tools":[{"name":"` + first + `"},{"name":"` + second + `"}]}`)
+	forward := util.SanitizedFunctionNameMap(original)
+	firstMapped := forward[first]
+	secondMapped := forward[second]
+	if firstMapped == "" || secondMapped == "" || firstMapped == secondMapped {
+		t.Fatalf("mapped names = %q and %q, want distinct non-empty names", firstMapped, secondMapped)
+	}
+
+	var param any
+	ctx := context.Background()
+	model := "antigravity-test"
+
+	// Chunk 1: functionCall for the first colliding tool name.
+	callEvents := ConvertAntigravityResponseToInteractions(ctx, model, original, nil, []byte(
+		`data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"`+firstMapped+`","id":"call_1","args":{"q":"x"}}}]}}]}}`,
+	), &param)
+	callStart := findAntigravityInteractionsEventPayload(callEvents, "step.start")
+	if got := gjson.GetBytes(callStart, "step.name").String(); got != first {
+		t.Fatalf("function_call step.name = %q, want %q. Events: %q", got, first, callEvents)
+	}
+	if got := gjson.GetBytes(callStart, "step.call_id").String(); got != "call_1" {
+		t.Fatalf("function_call step.call_id = %q, want call_1. Events: %q", got, callEvents)
+	}
+
+	// Chunk 2: functionResponse for the second colliding tool name (same stream state).
+	resultEvents := ConvertAntigravityResponseToInteractions(ctx, model, original, nil, []byte(
+		`data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"functionResponse":{"name":"`+secondMapped+`","id":"call_2","response":{"ok":true}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}}`,
+	), &param)
+	resultDelta := findAntigravityInteractionsFunctionResultDelta(resultEvents)
+	if got := gjson.GetBytes(resultDelta, "delta.name").String(); got != second {
+		t.Fatalf("function_result delta.name = %q, want %q. Events: %q", got, second, resultEvents)
+	}
+
+	// Chunk 3: [DONE] must still flush completion without dropping stream state.
+	doneEvents := ConvertAntigravityResponseToInteractions(ctx, model, original, nil, []byte(`data: [DONE]`), &param)
+	if !containsAntigravityInteractionsDone(doneEvents) {
+		t.Fatalf("[DONE] path missing terminal done marker. Events: %q", doneEvents)
+	}
+}
+
 func findAntigravityInteractionsEventPayload(events [][]byte, eventType string) []byte {
 	prefix := []byte("data:")
 	for _, event := range events {
@@ -184,4 +227,37 @@ func findAntigravityInteractionsEventPayload(events [][]byte, eventType string) 
 		}
 	}
 	return nil
+}
+
+func findAntigravityInteractionsFunctionResultDelta(events [][]byte) []byte {
+	prefix := []byte("data:")
+	for _, event := range events {
+		for _, line := range bytes.Split(event, []byte("\n")) {
+			line = bytes.TrimSpace(line)
+			if !bytes.HasPrefix(line, prefix) {
+				continue
+			}
+			payload := bytes.TrimSpace(line[len(prefix):])
+			if gjson.GetBytes(payload, "delta.type").String() == "function_result" {
+				return payload
+			}
+		}
+	}
+	return nil
+}
+
+func containsAntigravityInteractionsDone(events [][]byte) bool {
+	for _, event := range events {
+		if bytes.Contains(event, []byte("[DONE]")) {
+			return true
+		}
+		// Some builders emit a typed done event without the literal [DONE] marker.
+		if payload := findAntigravityInteractionsEventPayload([][]byte{event}, "done"); len(payload) > 0 {
+			return true
+		}
+		if payload := findAntigravityInteractionsEventPayload([][]byte{event}, "response.done"); len(payload) > 0 {
+			return true
+		}
+	}
+	return false
 }

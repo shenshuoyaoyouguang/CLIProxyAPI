@@ -257,6 +257,51 @@ func TestConvertOpenAIRequestToGeminiMapsMaxTokens(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIRequestToGeminiMapsResponseFormat(t *testing.T) {
+	t.Run("json_object", func(t *testing.T) {
+		body := `{"model":"gemini-2.0-flash","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`
+		out := ConvertOpenAIRequestToGemini("gemini-2.0-flash", []byte(body), false)
+		if got := gjson.GetBytes(out, "generationConfig.responseMimeType").String(); got != "application/json" {
+			t.Fatalf("responseMimeType = %q, want application/json. Output: %s", got, out)
+		}
+		if gjson.GetBytes(out, "generationConfig.responseJsonSchema").Exists() {
+			t.Fatalf("responseJsonSchema should not be set for json_object. Output: %s", out)
+		}
+	})
+
+	t.Run("json_schema with OpenAI SDK shape", func(t *testing.T) {
+		body := `{
+			"model":"gemini-2.0-flash",
+			"messages":[{"role":"user","content":"hi"}],
+			"response_format":{
+				"type":"json_schema",
+				"json_schema":{
+					"name":"person",
+					"schema":{
+						"type":"object",
+						"properties":{"name":{"type":"string"},"age":{"type":"integer"}},
+						"required":["name"]
+					}
+				}
+			}
+		}`
+		out := ConvertOpenAIRequestToGemini("gemini-2.0-flash", []byte(body), false)
+		if got := gjson.GetBytes(out, "generationConfig.responseMimeType").String(); got != "application/json" {
+			t.Fatalf("responseMimeType = %q, want application/json. Output: %s", got, out)
+		}
+		schema := gjson.GetBytes(out, "generationConfig.responseJsonSchema")
+		if !schema.Exists() {
+			t.Fatalf("responseJsonSchema should be set for json_schema. Output: %s", out)
+		}
+		if got := schema.Get("type").String(); got != "object" {
+			t.Fatalf("schema.type = %q, want object. Output: %s", got, out)
+		}
+		if got := schema.Get("properties.name.type").String(); got != "string" {
+			t.Fatalf("schema.properties.name.type = %q, want string. Output: %s", got, out)
+		}
+	})
+}
+
 func TestConvertOpenAIRequestToGeminiCleansToolSchemaRequiredFields(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-2.0-flash",
