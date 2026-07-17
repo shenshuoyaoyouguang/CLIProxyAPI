@@ -2068,6 +2068,11 @@ func TestXAIExecutorExecuteNormalizesReasoningOutputForNonStreamTranslation(t *t
 
 func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.T) {
 	const requestedModel = "grok-imagine-image-quality"
+	// ttftDelay makes the first response byte arrive a measurable time after the
+	// request is sent. Without it, a localhost round trip can complete inside the
+	// same clock tick, leaving TTFT at exactly 0 and making the assertion below
+	// flaky. Asserting TTFT >= ttftDelay mirrors the robust aistudio pattern.
+	const ttftDelay = 20 * time.Millisecond
 
 	var gotPath string
 	var gotAuth string
@@ -2086,6 +2091,7 @@ func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.
 		if errRead != nil {
 			t.Fatalf("read body: %v", errRead)
 		}
+		time.Sleep(ttftDelay)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"created":123,"data":[{"b64_json":"AA=="}],"usage":{"cost_in_usd_ticks":250000}}`))
 	}))
@@ -2151,8 +2157,8 @@ func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.
 	if record.Detail != (usage.Detail{}) {
 		t.Fatalf("detail = %+v, want zero token usage", record.Detail)
 	}
-	if record.TTFT <= 0 {
-		t.Fatalf("ttft = %v, want positive duration", record.TTFT)
+	if record.TTFT < ttftDelay {
+		t.Fatalf("ttft = %v, want >= %v", record.TTFT, ttftDelay)
 	}
 	assertNoAdditionalXAIUsageRecord(t, plugin.records)
 }

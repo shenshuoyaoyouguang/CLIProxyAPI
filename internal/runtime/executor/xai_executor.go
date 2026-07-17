@@ -216,7 +216,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		}
 	}
 
-	return resp, statusErr{code: http.StatusRequestTimeout, msg: "xai stream error: stream disconnected before response.completed"}
+	return resp, statusErr{code: http.StatusBadGateway, msg: xaiIncompleteStreamMessage}
 }
 
 func (e *XAIExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
@@ -674,6 +674,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		var outputItemsFallback [][]byte
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
 		var pendingEventLine []byte
+		sawCompleted := false
 		emitTranslatedLine := func(translatedLine []byte) bool {
 			chunks := sdktranslator.TranslateStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param)
 			for i := range chunks {
@@ -714,6 +715,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					case "response.output_item.done":
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 					case "response.completed":
+						sawCompleted = true
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
 							reporter.Publish(ctx, detail)
 						}
@@ -758,6 +760,21 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			reporter.PublishFailure(ctx, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
+			return
+		}
+		// The socket closed cleanly. A well-formed xAI Responses stream always
+		// terminates with a response.completed event; its absence means the upstream
+		// truncated the response mid-reasoning. Surface it instead of forging a
+		// successful close, which would silently drop an incomplete reasoning chain.
+		// Skip when the context was cancelled (client disconnect, not a truncation).
+		if ctx.Err() == nil && !sawCompleted {
+			streamErr := newXAIIncompleteStreamError()
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.PublishFailure(ctx, streamErr)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 			case <-ctx.Done():
 			}
 		}
@@ -2673,6 +2690,26 @@ func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]by
 
 	patched, _ := sjson.SetRawBytes(eventData, "response.output", outputArray)
 	return patched
+}
+
+// xaiIncompleteStreamMessage describes an xAI stream that closed before the
+// upstream emitted response.completed, leaving the reasoning chain truncated.
+const xaiIncompleteStreamMessage = "stream error: xai stream closed before response.completed"
+
+// newXAIIncompleteStreamError reports an xAI stream that ended without a
+// terminal response.completed event. It is deliberately NOT request-scoped:
+// when the truncation happens before any chunk is buffered, the conductor can
+// safely fail over to another auth/upstream; once chunks have been forwarded to
+// the client, bootstrap has already succeeded so the conductor surfaces the
+// error without retrying (which would duplicate output).
+//
+// The status code is intentionally 502 BadGateway (matching Gemini's
+// newGeminiIncompleteStreamError) rather than 408 RequestTimeout: although the
+// Codex path uses 408, Codex's error exposes IsRequestScoped()=true, whereas
+// xAI's does not. Reusing 408 here would falsely suggest the same retry
+// semantics, so 502 is used to signal "upstream gave us a truncated response".
+func newXAIIncompleteStreamError() statusErr {
+	return statusErr{code: http.StatusBadGateway, msg: xaiIncompleteStreamMessage}
 }
 
 // xaiFreeUsageExhaustedCooldown is the free-tier rolling window advertised by

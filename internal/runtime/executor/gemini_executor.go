@@ -71,6 +71,38 @@ func (e *GeminiExecutor) Identifier() string {
 	return e.identifier
 }
 
+// geminiIncompleteStreamMessage describes a Gemini stream that closed before the
+// upstream emitted a terminal finishReason, leaving the reasoning chain truncated.
+const geminiIncompleteStreamMessage = "stream error: gemini stream closed before a terminal finishReason"
+
+// newGeminiIncompleteStreamError builds the error surfaced when a Gemini stream
+// ends without a terminal finishReason.
+//
+// It is intentionally NOT request-scoped: the conductor's stream bootstrap
+// distinguishes the two truncation cases on its own. An empty-stream truncation
+// arrives as the first chunk (bootstrap error) and can safely fail over to
+// another auth/model, while a mid-stream truncation arrives after chunks have
+// already been forwarded, so the conductor will not retry and the client sees an
+// honest error instead of a silently short reasoning chain.
+func newGeminiIncompleteStreamError() statusErr {
+	return statusErr{code: http.StatusBadGateway, msg: geminiIncompleteStreamMessage}
+}
+
+// geminiStreamPayloadHasFinishReason reports whether an SSE payload carries a
+// non-empty finishReason, i.e. a legitimate terminal chunk. It accepts both the
+// bare Gemini shape (candidates.0.finishReason) and the Interactions/Antigravity
+// wrapped shape (response.candidates.0.finishReason).
+func geminiStreamPayloadHasFinishReason(payload []byte) bool {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return false
+	}
+	finish := gjson.GetBytes(payload, "candidates.0.finishReason")
+	if !finish.Exists() {
+		finish = gjson.GetBytes(payload, "response.candidates.0.finishReason")
+	}
+	return finish.Exists() && strings.TrimSpace(finish.String()) != ""
+}
+
 // RequestToFormat reports the upstream request format used after auth selection.
 func (e *GeminiExecutor) RequestToFormat(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) sdktranslator.Format {
 	if strings.EqualFold(strings.TrimSpace(e.Identifier()), "gemini-interactions") && nativeInteractionsSourceFormat(opts.SourceFormat) {
@@ -340,6 +372,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		var param any
+		sawFinishReason := false
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -347,6 +380,9 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			payload := helps.JSONPayload(filtered)
 			if len(payload) == 0 {
 				continue
+			}
+			if geminiStreamPayloadHasFinishReason(payload) {
+				sawFinishReason = true
 			}
 			if detail, ok := helps.ParseGeminiStreamUsage(payload); ok {
 				reporter.Publish(ctx, detail)
@@ -360,20 +396,36 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				}
 			}
 		}
-		lines := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param)
-		for i := range lines {
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
-			case <-ctx.Done():
-				return
-			}
-		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
+			}
+			return
+		}
+		// The socket closed cleanly. A well-formed Gemini stream always terminates
+		// with a non-empty finishReason; its absence means the upstream truncated
+		// the response mid-reasoning. Surface it instead of forging a successful
+		// [DONE], which would silently drop an incomplete reasoning chain. Skip when
+		// the context was cancelled (client disconnect, not an upstream truncation).
+		if ctx.Err() == nil && !sawFinishReason {
+			streamErr := newGeminiIncompleteStreamError()
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			reporter.PublishFailure(ctx, streamErr)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+			case <-ctx.Done():
+			}
+			return
+		}
+		lines := sdktranslator.TranslateStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param)
+		for i := range lines {
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
