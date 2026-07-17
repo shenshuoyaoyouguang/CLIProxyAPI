@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -114,7 +115,8 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
 
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	thinkingToFormat := e.thinkingFormatForModel(to.String(), req.Model)
+	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), thinkingToFormat, e.Identifier())
 	if err != nil {
 		return resp, err
 	}
@@ -128,7 +130,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 		translated = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "openai compat executor", translated)
 	}
-	reporter.SetTranslatedReasoningEffort(translated, to.String())
+	reporter.SetTranslatedReasoningEffort(translated, thinkingToFormat)
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -315,7 +317,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	thinkingToFormat := e.thinkingFormatForModel(to.String(), req.Model)
+	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), thinkingToFormat, e.Identifier())
 	if err != nil {
 		return nil, err
 	}
@@ -323,11 +326,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
-
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
-	reporter.SetTranslatedReasoningEffort(translated, to.String())
+	reporter.SetTranslatedReasoningEffort(translated, thinkingToFormat)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -586,11 +588,11 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 
 	modelForCounting := baseModel
 
-	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	thinkingToFormat := e.thinkingFormatForModel(to.String(), req.Model)
+	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), thinkingToFormat, e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
-
 	enc, err := helps.TokenizerForModel(modelForCounting)
 	if err != nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("openai compat executor: tokenizer init failed: %w", err)
@@ -780,6 +782,21 @@ func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byt
 	}
 	payload, _ = sjson.SetBytes(payload, "model", model)
 	return payload
+}
+
+// thinkingFormatForModel returns the thinking provider format to use for the
+// given translator target format and model. DeepSeek models routed through the
+// standard OpenAI Chat Completions path use the dedicated DeepSeek applier;
+// other targets (e.g. openai-response) keep the translator format.
+func (e *OpenAICompatExecutor) thinkingFormatForModel(toFormat, model string) string {
+	if toFormat != "openai" {
+		return toFormat
+	}
+	baseModel := thinking.ParseSuffix(model).ModelName
+	if modelkind.IsDeepSeekModel(baseModel) {
+		return "deepseek"
+	}
+	return toFormat
 }
 
 type statusErr struct {

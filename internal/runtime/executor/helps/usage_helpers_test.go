@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/tidwall/gjson"
 )
 
 func TestParseOpenAIUsageChatCompletions(t *testing.T) {
@@ -528,4 +529,66 @@ type TestUsageExecutor struct{}
 
 func (TestUsageExecutor) Identifier() string {
 	return "test-provider"
+}
+
+func TestParseOpenAIUsageNormalizesDeepSeekCacheFields(t *testing.T) {
+	data := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":3,"completion_tokens_details":{"reasoning_tokens":2}}}`)
+	detail := ParseOpenAIUsage(data)
+	if detail.InputTokens != 10 {
+		t.Fatalf("input tokens = %d, want 10", detail.InputTokens)
+	}
+	if detail.OutputTokens != 5 {
+		t.Fatalf("output tokens = %d, want 5", detail.OutputTokens)
+	}
+	if detail.TotalTokens != 15 {
+		t.Fatalf("total tokens = %d, want 15", detail.TotalTokens)
+	}
+	if detail.CachedTokens != 8 {
+		t.Fatalf("cached tokens = %d, want 8", detail.CachedTokens)
+	}
+	if detail.CacheReadTokens != 8 {
+		t.Fatalf("cache read tokens = %d, want 8", detail.CacheReadTokens)
+	}
+	if detail.CacheCreationTokens != 3 {
+		t.Fatalf("cache creation tokens = %d, want 3", detail.CacheCreationTokens)
+	}
+	if detail.ReasoningTokens != 2 {
+		t.Fatalf("reasoning tokens = %d, want 2", detail.ReasoningTokens)
+	}
+}
+
+func TestParseOpenAIUsagePrefersStandardCacheFieldsOverDeepSeek(t *testing.T) {
+	// Standard OpenAI cache fields should win when both are present.
+	data := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":4},"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":3}}`)
+	detail := ParseOpenAIUsage(data)
+	if detail.CachedTokens != 4 {
+		t.Fatalf("cached tokens = %d, want 4", detail.CachedTokens)
+	}
+	if detail.CacheReadTokens != 4 {
+		t.Fatalf("cache read tokens = %d, want 4", detail.CacheReadTokens)
+	}
+}
+
+func TestParseOpenAIStreamUsageNormalizesDeepSeekCacheFields(t *testing.T) {
+	line := []byte(`data: {"id":"chunk_1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_cache_hit_tokens":6,"prompt_cache_miss_tokens":2}}`)
+	detail, ok := ParseOpenAIStreamUsage(line)
+	if !ok {
+		t.Fatal("ParseOpenAIStreamUsage() ok = false, want true")
+	}
+	if detail.CachedTokens != 6 {
+		t.Fatalf("cached tokens = %d, want 6", detail.CachedTokens)
+	}
+	if detail.CacheReadTokens != 6 {
+		t.Fatalf("cache read tokens = %d, want 6", detail.CacheReadTokens)
+	}
+	if detail.CacheCreationTokens != 2 {
+		t.Fatalf("cache creation tokens = %d, want 2", detail.CacheCreationTokens)
+	}
+}
+
+func TestHasOpenAIStyleUsageTokenFieldsDetectsDeepSeekCacheFields(t *testing.T) {
+	node := gjson.Parse(`{"prompt_cache_hit_tokens":1,"prompt_cache_miss_tokens":2}`)
+	if !hasOpenAIStyleUsageTokenFields(node) {
+		t.Fatal("hasOpenAIStyleUsageTokenFields() = false, want true for DeepSeek cache fields")
+	}
 }

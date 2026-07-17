@@ -18,6 +18,7 @@ import (
 	// Register native provider appliers via package init side effects.
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/claude"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/codex"
+	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/deepseek"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/gemini"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/thinking/provider/openai"
 	"github.com/tidwall/gjson"
@@ -96,6 +97,75 @@ func TestApplyThinking_MalformedBodyReturnedUnchanged(t *testing.T) {
 	}
 }
 
+func TestApplyThinking_DeepSeekNativeThinkingObject(t *testing.T) {
+	registerModels(t, "test-pipe-deepseek-native", "deepseek", []*registry.ModelInfo{
+		{
+			ID:   "deepseek-r1",
+			Type: "deepseek",
+			Thinking: &registry.ThinkingSupport{
+				Levels:         []string{"low", "medium", "high", "max"},
+				DynamicAllowed: true,
+				ZeroAllowed:    true,
+			},
+		},
+	})
+
+	body := []byte(`{"thinking":{"type":"enabled","effort":"max"},"reasoning_effort":"low"}`)
+	out, err := thinking.ApplyThinking(body, "deepseek-r1", "openai", "deepseek", "deepseek")
+	if err != nil {
+		t.Fatalf("ApplyThinking error: %v", err)
+	}
+	if gjson.GetBytes(out, "thinking").Exists() {
+		t.Fatalf("enabled DeepSeek output must remove native thinking object: %s", out)
+	}
+	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "max" {
+		t.Fatalf("reasoning_effort = %q, want max. output: %s", got, out)
+	}
+}
+
+func TestApplyThinking_DeepSeekDisabledStripsEffort(t *testing.T) {
+	registerModels(t, "test-pipe-deepseek-disabled", "deepseek", []*registry.ModelInfo{
+		{
+			ID:   "deepseek-r1",
+			Type: "deepseek",
+			Thinking: &registry.ThinkingSupport{
+				Levels:      []string{"low", "medium", "high", "max"},
+				ZeroAllowed: true,
+			},
+		},
+	})
+
+	body := []byte(`{"thinking":{"type":"disabled"},"reasoning_effort":"high"}`)
+	out, err := thinking.ApplyThinking(body, "deepseek-r1", "openai", "deepseek", "deepseek")
+	if err != nil {
+		t.Fatalf("ApplyThinking error: %v", err)
+	}
+	if gjson.GetBytes(out, "reasoning_effort").Exists() {
+		t.Fatalf("disabled DeepSeek output must remove reasoning_effort: %s", out)
+	}
+	if got := gjson.GetBytes(out, "thinking.type").String(); got != "disabled" {
+		t.Fatalf("thinking.type = %q, want disabled. output: %s", got, out)
+	}
+}
+
+func TestApplyThinking_DeepSeekUnsupportedModelStripsThinkingConfig(t *testing.T) {
+	registerModels(t, "test-pipe-deepseek-unsupported", "deepseek", []*registry.ModelInfo{
+		{ID: "deepseek-no-think", Type: "deepseek"},
+	})
+
+	body := []byte(`{"thinking":{"type":"enabled","effort":"high"},"reasoning_effort":"low","messages":[]}`)
+	out, err := thinking.ApplyThinking(body, "deepseek-no-think", "openai", "deepseek", "deepseek")
+	if err != nil {
+		t.Fatalf("ApplyThinking error: %v", err)
+	}
+	if gjson.GetBytes(out, "thinking").Exists() || gjson.GetBytes(out, "reasoning_effort").Exists() {
+		t.Fatalf("unsupported DeepSeek model must strip thinking config: %s", out)
+	}
+	if !gjson.GetBytes(out, "messages").Exists() {
+		t.Fatalf("non-thinking fields must be preserved: %s", out)
+	}
+}
+
 // TestApplyThinking_ExtractReasoningEffort verifies the usage-logging helper
 // derives a canonical reasoning_effort label consistently with ApplyThinking's
 // suffix priority.
@@ -120,5 +190,67 @@ func TestApplyThinking_ExtractReasoningEffort(t *testing.T) {
 				t.Errorf("ExtractReasoningEffort = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestApplyThinking_DeepSeekEnabledWithoutEffortDefaultsToAuto verifies that
+// thinking:{type:enabled} without explicit effort defaults to auto mode.
+// Previously the native thinking object was leaked to DeepSeek, which silently
+// dropped thinking.
+func TestApplyThinking_DeepSeekEnabledWithoutEffortDefaultsToAuto(t *testing.T) {
+	registerModels(t, "test-pipe-deepseek-auto", "deepseek", []*registry.ModelInfo{
+		{
+			ID:   "deepseek-r1",
+			Type: "deepseek",
+			Thinking: &registry.ThinkingSupport{
+				Levels:         []string{"low", "medium", "high", "max"},
+				DynamicAllowed: true,
+				ZeroAllowed:    true,
+			},
+		},
+	})
+
+	body := []byte(`{"thinking":{"type":"enabled"}}`)
+	out, err := thinking.ApplyThinking(body, "deepseek-r1", "openai", "deepseek", "deepseek")
+	if err != nil {
+		t.Fatalf("ApplyThinking error: %v", err)
+	}
+	if gjson.GetBytes(out, "thinking").Exists() {
+		t.Fatalf("enabled DeepSeek output must remove native thinking object: %s", out)
+	}
+	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "auto" {
+		t.Fatalf("reasoning_effort = %q, want auto. output: %s", got, out)
+	}
+}
+
+// TestApplyThinking_DeepSeekReasoningEffortOnly verifies that a body with only
+// reasoning_effort (no native thinking object) is handled correctly on the
+// enabled path. The applier must strip the thinking key safely and set the
+// reasoning_effort field.
+func TestApplyThinking_DeepSeekReasoningEffortOnly(t *testing.T) {
+	registerModels(t, "test-pipe-deepseek-effortonly", "deepseek", []*registry.ModelInfo{
+		{
+			ID:   "deepseek-r1",
+			Type: "deepseek",
+			Thinking: &registry.ThinkingSupport{
+				Levels:         []string{"low", "medium", "high", "max"},
+				DynamicAllowed: true,
+			},
+		},
+	})
+
+	body := []byte(`{"reasoning_effort":"high","messages":[]}`)
+	out, err := thinking.ApplyThinking(body, "deepseek-r1", "openai", "deepseek", "deepseek")
+	if err != nil {
+		t.Fatalf("ApplyThinking error: %v", err)
+	}
+	if gjson.GetBytes(out, "thinking").Exists() {
+		t.Fatalf("output must not contain thinking object: %s", out)
+	}
+	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "high" {
+		t.Fatalf("reasoning_effort = %q, want high. output: %s", got, out)
+	}
+	if !gjson.GetBytes(out, "messages").Exists() {
+		t.Fatalf("non-thinking fields must be preserved: %s", out)
 	}
 }

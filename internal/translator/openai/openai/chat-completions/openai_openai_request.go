@@ -3,6 +3,8 @@
 package chat_completions
 
 import (
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/tidwall/sjson"
 )
 
@@ -25,6 +27,9 @@ func ConvertOpenAIRequestToOpenAI(modelName string, inputRawJSON []byte, _ bool)
 		// For now, we'll return the original, but in a real scenario, logging or a more robust error
 		// handling mechanism would be needed.
 		return inputRawJSON
+	}
+	if modelkind.IsDeepSeekModel(modelName) {
+		updatedJSON = thinking.FilterDeepSeekReasoningContentFromHistory(updatedJSON)
 	}
 	return updatedJSON
 }

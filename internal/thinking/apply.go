@@ -27,6 +27,7 @@ var nativeProviderAppliers = map[string]ProviderApplier{
 	"antigravity": nil,
 	"kimi":        nil,
 	"xai":         nil,
+	"deepseek":    nil,
 }
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.
@@ -422,9 +423,53 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 		return extractCodexConfig(body)
 	case "kimi":
 		return extractKimiConfig(body)
+	case "deepseek":
+		return extractDeepSeekConfig(body)
 	default:
 		return ThinkingConfig{}
 	}
+}
+
+// extractDeepSeekConfig extracts DeepSeek's thinking configuration from request body.
+//
+// DeepSeek accepts the native thinking object (thinking.type / thinking.effort) and
+// the OpenAI-compatible reasoning_effort legacy field. When thinking is explicitly
+// disabled, all effort fields are ignored.
+func extractDeepSeekConfig(body []byte) ThinkingConfig {
+	thinkingType := gjson.GetBytes(body, "thinking.type")
+	if thinkingType.Exists() {
+		switch strings.ToLower(strings.TrimSpace(thinkingType.String())) {
+		case "disabled":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "enabled":
+			if effort := gjson.GetBytes(body, "thinking.effort"); effort.Exists() {
+				value := strings.ToLower(strings.TrimSpace(effort.String()))
+				switch value {
+				case "":
+					// Explicit enabled with empty effort defaults to auto.
+					return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+				case "none":
+					return ThinkingConfig{Mode: ModeNone, Budget: 0}
+				case "auto":
+					return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+				default:
+					return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+				}
+			}
+			// Enabled without explicit effort defaults to auto.
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		}
+	}
+
+	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+		value := strings.ToLower(strings.TrimSpace(effort.String()))
+		if value == "none" {
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		}
+		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	}
+
+	return ThinkingConfig{}
 }
 
 func hasThinkingConfig(config ThinkingConfig) bool {

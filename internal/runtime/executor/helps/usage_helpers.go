@@ -568,7 +568,9 @@ func hasOpenAIStyleUsageTokenFields(usageNode gjson.Result) bool {
 		usageNode.Get("input_tokens_details.cache_write_tokens").Exists() ||
 		usageNode.Get("input_tokens_details.cache_creation_tokens").Exists() ||
 		usageNode.Get("completion_tokens_details.reasoning_tokens").Exists() ||
-		usageNode.Get("output_tokens_details.reasoning_tokens").Exists()
+		usageNode.Get("output_tokens_details.reasoning_tokens").Exists() ||
+		usageNode.Get("prompt_cache_hit_tokens").Exists() ||
+		usageNode.Get("prompt_cache_miss_tokens").Exists()
 }
 
 func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
@@ -589,6 +591,11 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 	if !cached.Exists() {
 		cached = usageNode.Get("input_tokens_details.cached_tokens")
 	}
+	// DeepSeek reports cache hits as prompt_cache_hit_tokens; normalize to the
+	// OpenAI-compatible cached_tokens detail when no standard field is present.
+	if !cached.Exists() {
+		cached = usageNode.Get("prompt_cache_hit_tokens")
+	}
 	if cached.Exists() {
 		detail.CachedTokens = cached.Int()
 		detail.CacheReadTokens = cached.Int()
@@ -600,6 +607,11 @@ func parseOpenAIStyleUsageNode(usageNode gjson.Result) usage.Detail {
 		"prompt_tokens_details.cache_creation_tokens",
 		"prompt_tokens_details.cache_write_tokens",
 	)
+	// DeepSeek reports cache misses as prompt_cache_miss_tokens; normalize to
+	// cache_creation_tokens when no standard field is present.
+	if !cacheCreation.Exists() {
+		cacheCreation = usageNode.Get("prompt_cache_miss_tokens")
+	}
 	if cacheCreation.Exists() {
 		detail.CacheCreationTokens = cacheCreation.Int()
 	}

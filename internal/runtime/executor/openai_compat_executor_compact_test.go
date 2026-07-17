@@ -106,6 +106,165 @@ func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T)
 	}
 }
 
+func TestOpenAICompatExecutorDeepSeekThinkingAndHistoryFilter(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{
+		"model":"deepseek-r1",
+		"thinking":{"type":"enabled","effort":"max"},
+		"messages":[
+			{"role":"user","content":"q1"},
+			{"role":"assistant","content":"a1","reasoning_content":"plain thought","tool_calls":[]},
+			{"role":"user","content":"q2"},
+			{"role":"assistant","content":"","reasoning_content":"tool thought","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"result"},
+			{"role":"user","content":"q3"}
+		]
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-r1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gjson.GetBytes(gotBody, "thinking").Exists() {
+		t.Fatalf("native thinking object must be translated away: %s", gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "reasoning_effort").String(); got != "max" {
+		t.Fatalf("reasoning_effort = %q, want max. body=%s", got, gotBody)
+	}
+	if gjson.GetBytes(gotBody, "messages.1.reasoning_content").Exists() {
+		t.Fatalf("plain assistant reasoning_content must be stripped: %s", gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "messages.3.reasoning_content").String(); got != "tool thought" {
+		t.Fatalf("tool assistant reasoning_content = %q, want tool thought. body=%s", got, gotBody)
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekNormalizesNestedFunctionToolChoice(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup_number","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{
+		"model":"DeepSeek-V4-Flash",
+		"messages":[{"role":"user","content":"call lookup"}],
+		"tools":[{"type":"function","function":{"name":"lookup_number","parameters":{"type":"object"}}}],
+		"tool_choice":{"type":"function","function":{"name":"lookup_number"}}
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "DeepSeek-V4-Flash",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "tool_choice.type").String(); got != "function" {
+		t.Fatalf("tool_choice.type = %q, want function. body=%s", got, gotBody)
+	}
+	// DeepSeek expects the standard OpenAI nested format: tool_choice.function.name
+	// 验证嵌套格式：{"type":"function","function":{"name":"lookup_number"}}
+	if got := gjson.GetBytes(gotBody, "tool_choice.function.name").String(); got != "lookup_number" {
+		t.Fatalf("tool_choice.function.name = %q, want lookup_number (nested form per DeepSeek API docs). body=%s", got, gotBody)
+	}
+	// 扁平化字段不应存在
+	if gjson.GetBytes(gotBody, "tool_choice.name").Exists() {
+		t.Fatalf("tool_choice.name must NOT exist at top level; DeepSeek requires nested function.name. body=%s", gotBody)
+	}
+	// function 嵌套对象必须保留
+	if !gjson.GetBytes(gotBody, "tool_choice.function").Exists() {
+		t.Fatalf("tool_choice.function must exist (nested form per DeepSeek API docs). body=%s", gotBody)
+	}
+}
+
+// TestOpenAICompatExecutorDeepSeekPreservesNestedToolChoice 验证 DeepSeek
+// tool_choice 保持标准 OpenAI 嵌套格式，符合 DeepSeek 官方 API 文档要求。
+//
+// 官方文档格式（https://api-docs.deepseek.com/api/create-chat-completion）：
+//
+//	{"type": "function", "function": {"name": "my_function"}}
+//
+// 扁平化格式 {"type":"function","name":"x"} 不被 DeepSeek 接受。
+func TestOpenAICompatExecutorDeepSeekPreservesNestedToolChoice(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup_number","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{
+		"model":"DeepSeek-V4-Flash",
+		"messages":[{"role":"user","content":"call lookup"}],
+		"tools":[{"type":"function","function":{"name":"lookup_number","parameters":{"type":"object"}}}],
+		"tool_choice":{"type":"function","function":{"name":"lookup_number"}}
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "DeepSeek-V4-Flash",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// 验证 tool_choice 保持嵌套格式：{"type":"function","function":{"name":"lookup_number"}}
+	if got := gjson.GetBytes(gotBody, "tool_choice.type").String(); got != "function" {
+		t.Fatalf("tool_choice.type = %q, want function. body=%s", got, gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "tool_choice.function.name").String(); got != "lookup_number" {
+		t.Fatalf("tool_choice.function.name = %q, want lookup_number (nested form per DeepSeek API docs). body=%s", got, gotBody)
+	}
+
+	// 扁平化字段不应存在 —— DeepSeek 不接受 {"type":"function","name":"x"}
+	if gjson.GetBytes(gotBody, "tool_choice.name").Exists() {
+		t.Fatalf("tool_choice.name must NOT exist at top level; DeepSeek requires nested function.name. body=%s", gotBody)
+	}
+
+	// function 嵌套对象必须保留
+	if !gjson.GetBytes(gotBody, "tool_choice.function").Exists() {
+		t.Fatalf("tool_choice.function must exist (nested form per DeepSeek API docs). body=%s", gotBody)
+	}
+}
+
 func TestOpenAICompatExecutorImagesGenerationsPassthrough(t *testing.T) {
 	var gotPath string
 	var gotBody []byte

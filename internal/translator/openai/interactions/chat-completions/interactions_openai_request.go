@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -20,6 +22,9 @@ func ConvertInteractionsRequestToOpenAI(modelName string, inputRawJSON []byte, s
 	out = copyInteractionsToolsToOpenAI(out, root)
 	out = copyInteractionsGenerationConfigToOpenAI(out, root)
 	out = copyInteractionsOpenAITopLevel(out, root)
+	if modelkind.IsDeepSeekModel(modelName) {
+		out = thinking.FilterDeepSeekReasoningContentFromHistory(out)
+	}
 	return out
 }
 
@@ -42,10 +47,31 @@ func appendInteractionsInputToOpenAIMessages(out []byte, input gjson.Result) []b
 		return out
 	}
 	if input.IsArray() {
+		pendingReasoning := ""
+		flushPendingReasoning := func() {
+			if pendingReasoning == "" {
+				return
+			}
+			out = appendInteractionsThoughtTextToOpenAI(out, pendingReasoning)
+			pendingReasoning = ""
+		}
 		input.ForEach(func(_, step gjson.Result) bool {
-			out = appendInteractionsStepToOpenAI(out, step, "user")
+			switch step.Get("type").String() {
+			case "thought":
+				pendingReasoning = appendReasoningText(pendingReasoning, interactionsText(step.Get("content")))
+			case "model_output":
+				out = appendInteractionsMessageToOpenAIWithReasoning(out, step, "assistant", pendingReasoning)
+				pendingReasoning = ""
+			case "function_call":
+				out = appendInteractionsFunctionCallToOpenAI(out, step, pendingReasoning)
+				pendingReasoning = ""
+			default:
+				flushPendingReasoning()
+				out = appendInteractionsStepToOpenAI(out, step, "user")
+			}
 			return true
 		})
+		flushPendingReasoning()
 		return out
 	}
 	if input.IsObject() {
@@ -63,7 +89,7 @@ func appendInteractionsStepToOpenAI(out []byte, step gjson.Result, defaultRole s
 	case "thought":
 		return appendInteractionsThoughtToOpenAI(out, step)
 	case "function_call":
-		return appendInteractionsFunctionCallToOpenAI(out, step)
+		return appendInteractionsFunctionCallToOpenAI(out, step, "")
 	case "function_result":
 		return appendInteractionsFunctionResultToOpenAI(out, step)
 	default:
@@ -78,8 +104,15 @@ func appendInteractionsStepToOpenAI(out []byte, step gjson.Result, defaultRole s
 }
 
 func appendInteractionsMessageToOpenAI(out []byte, step gjson.Result, role string) []byte {
+	return appendInteractionsMessageToOpenAIWithReasoning(out, step, role, "")
+}
+
+func appendInteractionsMessageToOpenAIWithReasoning(out []byte, step gjson.Result, role string, reasoningContent string) []byte {
 	msg := []byte(`{"role":"","content":""}`)
 	msg, _ = sjson.SetBytes(msg, "role", role)
+	if role == "assistant" && reasoningContent != "" {
+		msg, _ = sjson.SetBytes(msg, "reasoning_content", reasoningContent)
+	}
 	content := step.Get("content")
 	if content.Type == gjson.String {
 		msg, _ = sjson.SetBytes(msg, "content", content.String())
@@ -92,8 +125,12 @@ func appendInteractionsMessageToOpenAI(out []byte, step gjson.Result, role strin
 }
 
 func appendInteractionsThoughtToOpenAI(out []byte, step gjson.Result) []byte {
+	return appendInteractionsThoughtTextToOpenAI(out, interactionsText(step.Get("content")))
+}
+
+func appendInteractionsThoughtTextToOpenAI(out []byte, text string) []byte {
 	msg := []byte(`{"role":"assistant","content":"","reasoning_content":""}`)
-	msg, _ = sjson.SetBytes(msg, "reasoning_content", interactionsText(step.Get("content")))
+	msg, _ = sjson.SetBytes(msg, "reasoning_content", text)
 	out, _ = sjson.SetRawBytes(out, "messages.-1", msg)
 	return out
 }
@@ -139,8 +176,11 @@ func appendInteractionsContentToOpenAIMessage(msg []byte, content gjson.Result, 
 	return msg
 }
 
-func appendInteractionsFunctionCallToOpenAI(out []byte, step gjson.Result) []byte {
+func appendInteractionsFunctionCallToOpenAI(out []byte, step gjson.Result, reasoningContent string) []byte {
 	msg := []byte(`{"role":"assistant","content":"","tool_calls":[]}`)
+	if reasoningContent != "" {
+		msg, _ = sjson.SetBytes(msg, "reasoning_content", reasoningContent)
+	}
 	toolCall := []byte(`{"id":"","type":"function","function":{"name":"","arguments":"{}"}}`)
 	callID := firstNonEmpty(step.Get("call_id").String(), step.Get("id").String(), "call_0")
 	toolCall, _ = sjson.SetBytes(toolCall, "id", callID)
@@ -149,6 +189,16 @@ func appendInteractionsFunctionCallToOpenAI(out []byte, step gjson.Result) []byt
 	msg, _ = sjson.SetRawBytes(msg, "tool_calls.-1", toolCall)
 	out, _ = sjson.SetRawBytes(out, "messages.-1", msg)
 	return out
+}
+
+func appendReasoningText(current, next string) string {
+	if next == "" {
+		return current
+	}
+	if current == "" {
+		return next
+	}
+	return current + "\n" + next
 }
 
 func appendInteractionsFunctionResultToOpenAI(out []byte, step gjson.Result) []byte {
@@ -285,19 +335,26 @@ func interactionsText(value gjson.Result) string {
 	if text := value.Get("text"); text.Exists() {
 		return text.String()
 	}
+	if value.IsArray() {
+		return interactionsPartsText(value)
+	}
 	for _, path := range []string{"content", "parts"} {
 		parts := value.Get(path)
 		if !parts.Exists() || !parts.IsArray() {
 			continue
 		}
-		var builder strings.Builder
-		parts.ForEach(func(_, part gjson.Result) bool {
-			builder.WriteString(firstNonEmpty(part.Get("text").String(), part.Get("content.text").String()))
-			return true
-		})
-		return builder.String()
+		return interactionsPartsText(parts)
 	}
 	return ""
+}
+
+func interactionsPartsText(parts gjson.Result) string {
+	var builder strings.Builder
+	parts.ForEach(func(_, part gjson.Result) bool {
+		builder.WriteString(firstNonEmpty(part.Get("text").String(), part.Get("content.text").String()))
+		return true
+	})
+	return builder.String()
 }
 
 func interactionsReasoningEffort(root, gen gjson.Result) string {
