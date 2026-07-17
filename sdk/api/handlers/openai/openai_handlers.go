@@ -500,6 +500,17 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 			return
 		case chunk, ok := <-dataChan:
 			if !ok {
+				// Stream closed without data. Surface a pending upstream error
+				// instead of faking a successful [DONE] if one is queued.
+				if errMsg, okPending := pendingStreamError(errChan); okPending {
+					h.WriteErrorResponse(c, errMsg)
+					if errMsg != nil {
+						cliCancel(errMsg.Error)
+					} else {
+						cliCancel(nil)
+					}
+					return
+				}
 				// Stream closed without data? Send DONE or just headers.
 				setSSEHeaders()
 				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
@@ -686,4 +697,23 @@ func (h *OpenAIAPIHandler) handleStreamResult(c *gin.Context, flusher http.Flush
 			_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		},
 	})
+}
+
+// pendingStreamError non-blockingly checks whether an upstream error is already
+// queued on the error channel. Used by peek loops so a pending terminal error is
+// not shadowed by a simultaneously-closed data channel (which would otherwise
+// fabricate a successful [DONE] to the client).
+func pendingStreamError(errs <-chan *interfaces.ErrorMessage) (*interfaces.ErrorMessage, bool) {
+	if errs == nil {
+		return nil, false
+	}
+	select {
+	case errMsg, ok := <-errs:
+		if !ok {
+			return nil, false
+		}
+		return errMsg, true
+	default:
+		return nil, false
+	}
 }

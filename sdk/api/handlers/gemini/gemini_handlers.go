@@ -219,6 +219,17 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 			return
 		case chunk, ok := <-dataChan:
 			if !ok {
+				// Closed without data. Surface a pending upstream error
+				// instead of faking a successful stream if one is queued.
+				if errMsg, okPending := pendingStreamError(errChan); okPending {
+					h.WriteErrorResponse(c, errMsg)
+					if errMsg != nil {
+						cliCancel(errMsg.Error)
+					} else {
+						cliCancel(nil)
+					}
+					return
+				}
 				// Closed without data
 				if alt == "" {
 					setSSEHeaders()
@@ -338,4 +349,22 @@ func (h *GeminiAPIHandler) forwardGeminiStream(c *gin.Context, flusher http.Flus
 			}
 		},
 	})
+}
+
+// pendingStreamError non-blockingly checks whether an upstream error is already
+// queued on the error channel. Used by peek loops so a pending terminal error is
+// not shadowed by a simultaneously-closed data channel.
+func pendingStreamError(errs <-chan *interfaces.ErrorMessage) (*interfaces.ErrorMessage, bool) {
+	if errs == nil {
+		return nil, false
+	}
+	select {
+	case errMsg, ok := <-errs:
+		if !ok {
+			return nil, false
+		}
+		return errMsg, true
+	default:
+		return nil, false
+	}
 }

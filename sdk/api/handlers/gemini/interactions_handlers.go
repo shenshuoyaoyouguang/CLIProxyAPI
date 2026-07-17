@@ -155,11 +155,18 @@ func (h *GeminiAPIHandler) handleInteractionsStream(c *gin.Context, cliCtx conte
 		defer close(errs)
 		for chunk := range stream.Chunks {
 			if chunk.Err != nil {
-				errs <- &interfaces.ErrorMessage{StatusCode: chunk.Err.StatusCode, Error: chunk.Err}
+				select {
+				case errs <- &interfaces.ErrorMessage{StatusCode: chunk.Err.StatusCode, Error: chunk.Err}:
+				case <-cliCtx.Done():
+				}
 				return
 			}
 			if len(chunk.Payload) > 0 {
-				data <- chunk.Payload
+				select {
+				case data <- chunk.Payload:
+				case <-cliCtx.Done():
+					return
+				}
 			}
 		}
 	}()
