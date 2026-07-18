@@ -446,6 +446,25 @@ func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
 	h.persist(c)
 }
 
+// updateIntFieldClamped binds an int value, clamps negatives to fallback,
+// then persists. Each caller supplies its own fallback to preserve
+// independent semantics.
+func (h *Handler) updateIntFieldClamped(c *gin.Context, fallback int, set func(int)) {
+	var body struct {
+		Value *int `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	value := *body.Value
+	if value < 0 {
+		value = fallback
+	}
+	set(value)
+	h.persist(c)
+}
+
 func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 	var body struct {
 		Value *string `json:"value"`

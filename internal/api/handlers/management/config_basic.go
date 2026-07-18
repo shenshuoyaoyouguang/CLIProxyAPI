@@ -24,11 +24,31 @@ const (
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {
-	if h == nil || h.cfg == nil {
+	if h == nil {
 		c.JSON(200, gin.H{})
 		return
 	}
-	c.JSON(200, new(*h.cfg))
+	// Serialize the config to JSON while holding h.mu. Other management
+	// handlers (PutDebug, PutWebsocketAuth, PutRoutingStrategy, ...) mutate
+	// fields of *h.cfg without taking the lock before calling persist, and
+	// PutConfigYAML replaces h.cfg entirely under the lock. A shallow copy
+	// (`cfgCopy := *cfg`) is not enough because slices and maps inside Config
+	// would still share backing arrays with the live config, racing the JSON
+	// encoder. Encoding under the lock guarantees a consistent snapshot.
+	h.mu.Lock()
+	cfg := h.cfg
+	if cfg == nil {
+		h.mu.Unlock()
+		c.JSON(200, gin.H{})
+		return
+	}
+	rendered, errMarshal := json.Marshal(cfg)
+	h.mu.Unlock()
+	if errMarshal != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed", "message": errMarshal.Error()})
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", rendered)
 }
 
 type releaseInfo struct {
@@ -193,7 +213,7 @@ func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
 }
 
-// UsageStatisticsEnabled
+// LoggingToFile
 func (h *Handler) GetLoggingToFile(c *gin.Context) {
 	c.JSON(200, gin.H{"logging-to-file": h.cfg.LoggingToFile})
 }
@@ -206,19 +226,7 @@ func (h *Handler) GetLogsMaxTotalSizeMB(c *gin.Context) {
 	c.JSON(200, gin.H{"logs-max-total-size-mb": h.cfg.LogsMaxTotalSizeMB})
 }
 func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
-	var body struct {
-		Value *int `json:"value"`
-	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	value := *body.Value
-	if value < 0 {
-		value = 0
-	}
-	h.cfg.LogsMaxTotalSizeMB = value
-	h.persist(c)
+	h.updateIntFieldClamped(c, 0, func(v int) { h.cfg.LogsMaxTotalSizeMB = v })
 }
 
 // ErrorLogsMaxFiles
@@ -226,19 +234,7 @@ func (h *Handler) GetErrorLogsMaxFiles(c *gin.Context) {
 	c.JSON(200, gin.H{"error-logs-max-files": h.cfg.ErrorLogsMaxFiles})
 }
 func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
-	var body struct {
-		Value *int `json:"value"`
-	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	value := *body.Value
-	if value < 0 {
-		value = 10
-	}
-	h.cfg.ErrorLogsMaxFiles = value
-	h.persist(c)
+	h.updateIntFieldClamped(c, 10, func(v int) { h.cfg.ErrorLogsMaxFiles = v })
 }
 
 // Request log
