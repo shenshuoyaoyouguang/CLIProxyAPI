@@ -1878,6 +1878,14 @@ func (a *thinkingAdapter) Apply(body []byte, config thinking.ThinkingConfig, mod
 	return bytes.Clone(resp.Body), nil
 }
 
+// SupportsNativeDisabled reports whether the underlying plugin applier emits a
+// native explicit disable marker for ModeNone. The plugin SDK's ThinkingApplier
+// interface does not yet expose this capability, so we default to false. This
+// preserves the previous behavior where plugin providers were never in the
+// hardcoded disabled-capable list and ModeNone clamped to the lowest level
+// rather than being treated as fully disabled.
+func (a *thinkingAdapter) SupportsNativeDisabled() bool { return false }
+
 func (h *Host) NormalizeRequest(ctx context.Context, from, to sdktranslator.Format, model string, body []byte, stream bool) []byte {
 	current := bytes.Clone(body)
 	for _, record := range h.activeRecords() {
