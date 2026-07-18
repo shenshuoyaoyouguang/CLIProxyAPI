@@ -21,7 +21,8 @@ var safeOptions = &sjson.Options{Optimistic: false}
 // Rule:
 //   - Assistant messages without tool_calls have their reasoning_content removed.
 //     If the message becomes empty (no effective content and no tool_calls), it
-//     is dropped from the messages array.
+//     is dropped from the messages array. Effective content includes both plain
+//     string content and non-empty OpenAI content-part arrays.
 //   - Assistant messages with tool_calls keep their reasoning_content so it is
 //     passed back to the API in subsequent turns.
 //
@@ -90,9 +91,8 @@ func filterAssistantMessage(message gjson.Result) []byte {
 			// Fall back to the original message rather than risk a corrupted one.
 			return []byte(message.Raw)
 		}
-		content := gjson.GetBytes(msg, "content")
-		if !content.Exists() || content.Type != gjson.String || strings.TrimSpace(content.String()) == "" {
-			// No effective content left (missing, non-string, or blank content):
+		if !hasEffectiveAssistantContent(gjson.GetBytes(msg, "content")) {
+			// No effective content left (missing, blank string, or empty parts):
 			// drop the message without breaking the surrounding JSON array.
 			return nil
 		}
@@ -106,4 +106,45 @@ func filterAssistantMessage(message gjson.Result) []byte {
 func hasAssistantToolCalls(message gjson.Result) bool {
 	toolCalls := message.Get("tool_calls")
 	return toolCalls.Exists() && toolCalls.IsArray() && len(toolCalls.Array()) > 0
+}
+
+// hasEffectiveAssistantContent reports whether an assistant message still has
+// usable content after reasoning_content is stripped. OpenAI Chat Completions
+// content may be either a plain string or an array of content parts (as
+// produced by Responses → Chat Completions conversion).
+func hasEffectiveAssistantContent(content gjson.Result) bool {
+	if !content.Exists() || content.Type == gjson.Null {
+		return false
+	}
+	if content.Type == gjson.String {
+		return strings.TrimSpace(content.String()) != ""
+	}
+	if content.IsArray() {
+		for _, part := range content.Array() {
+			if part.Type == gjson.String {
+				if strings.TrimSpace(part.String()) != "" {
+					return true
+				}
+				continue
+			}
+			if !part.IsObject() {
+				continue
+			}
+			// Common OpenAI multimodal text parts: {"type":"text","text":"..."}
+			if text := strings.TrimSpace(part.Get("text").String()); text != "" {
+				return true
+			}
+			// Image / other non-empty parts also count as effective content.
+			if part.Get("image_url").Exists() || part.Get("input_audio").Exists() || part.Get("file").Exists() {
+				return true
+			}
+			if partType := strings.TrimSpace(part.Get("type").String()); partType != "" && partType != "text" {
+				return true
+			}
+		}
+		return false
+	}
+	// Unexpected content shapes (number/bool/object) are treated as non-empty so
+	// we keep the message rather than drop potentially meaningful history.
+	return true
 }

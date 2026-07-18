@@ -44,6 +44,38 @@ func TestFilterDeepSeekReasoningContentFromHistory_StripsReasoningForPlainAssist
 	}
 }
 
+func TestFilterDeepSeekReasoningContentFromHistory_StripsReasoningForArrayContent(t *testing.T) {
+	// Responses → Chat Completions conversion emits content as an array of
+	// parts. The filter must keep that message after stripping reasoning.
+	body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"text","text":"hello"}],"reasoning_content":"let me think"},{"role":"user","content":"next"}]}`)
+	out := FilterDeepSeekReasoningContentFromHistory(body)
+
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 3 {
+		t.Fatalf("messages count = %d, want 3. output: %s", got, out)
+	}
+	if gjson.GetBytes(out, "messages.1.reasoning_content").Exists() {
+		t.Fatalf("messages.1.reasoning_content must be stripped. output: %s", out)
+	}
+	if got := gjson.GetBytes(out, "messages.1.content.0.text").String(); got != "hello" {
+		t.Fatalf("messages.1.content.0.text = %q, want hello. output: %s", got, out)
+	}
+}
+
+func TestFilterDeepSeekReasoningContentFromHistory_DropsEmptyArrayContent(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[],"reasoning_content":"thinking only"},{"role":"user","content":"next"}]}`)
+	out := FilterDeepSeekReasoningContentFromHistory(body)
+
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
+		t.Fatalf("messages count = %d, want 2. output: %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "user" {
+		t.Fatalf("messages.0.role = %q, want user. output: %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "user" {
+		t.Fatalf("messages.1.role = %q, want user. output: %s", got, out)
+	}
+}
+
 func TestFilterDeepSeekReasoningContentFromHistory_DropsEmptyAssistantMessage(t *testing.T) {
 	// Assistant message with only reasoning_content and no content/tool_calls should be dropped.
 	body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","reasoning_content":"thinking only"},{"role":"user","content":"next"}]}`)
