@@ -27,6 +27,16 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const (
+	// xaiResponsesWebsocketIdleTimeout bounds how long a read may block waiting
+	// for the next upstream message. This is an intentional liveness exception
+	// to the project's no-post-connect-timeout rule (see AGENTS.md), aligned
+	// with the Codex websocket liveness deadline so a stalled peer cannot hold
+	// the read goroutine forever.
+	xaiResponsesWebsocketIdleTimeout = 5 * time.Minute
+	xaiResponsesWebsocketReadLimit   = 64 << 20 // 64 MiB, aligned with wsrelay
+)
+
 // XAIWebsocketsExecutor executes xAI Responses requests using a WebSocket transport.
 type XAIWebsocketsExecutor struct {
 	*XAIExecutor
@@ -900,6 +910,7 @@ func (e *XAIWebsocketsExecutor) dialXAIWebsocket(ctx context.Context, auth *clip
 	if conn != nil {
 		// Avoid gorilla/websocket flate tail validation issues on some upstreams/Go versions.
 		conn.EnableWriteCompression(false)
+		conn.SetReadLimit(xaiResponsesWebsocketReadLimit)
 	}
 	return conn, resp, err
 }
@@ -997,7 +1008,8 @@ func configureXAIWebsocketConn(sess *codexWebsocketSession, conn *websocket.Conn
 	conn.SetPingHandler(func(appData string) error {
 		sess.writeMu.Lock()
 		defer sess.writeMu.Unlock()
-		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Time{})
+		// Bound pong write so a stalled peer cannot hold writeMu forever.
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
 	})
 }
 
@@ -1042,6 +1054,7 @@ func (e *XAIWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, co
 		return
 	}
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
 		if errRead != nil {
 			ch, done := sess.activeForConn(conn)
