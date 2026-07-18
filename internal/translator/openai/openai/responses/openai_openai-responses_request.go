@@ -3,6 +3,8 @@ package responses
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -337,6 +339,10 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	// Convert tool_choice if present
 	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
 		out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(toolChoice.Raw))
+	}
+
+	if modelkind.IsDeepSeekModel(modelName) {
+		out = thinking.FilterDeepSeekReasoningContentFromHistory(out)
 	}
 
 	return out

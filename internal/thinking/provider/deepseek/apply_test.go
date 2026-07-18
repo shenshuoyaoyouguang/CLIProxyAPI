@@ -51,11 +51,10 @@ func TestDeepSeekApply_TranslationMatrix(t *testing.T) {
 			wantEffort: "max",
 		},
 		{
-			name:       "auto_maps_to_auto_effort",
-			body:       `{}`,
-			config:     thinking.ThinkingConfig{Mode: thinking.ModeAuto, Budget: -1},
-			model:      deepseekModel(),
-			wantEffort: "auto",
+			name:   "auto_uses_deepseek_default_effort",
+			body:   `{}`,
+			config: thinking.ThinkingConfig{Mode: thinking.ModeAuto, Budget: -1},
+			model:  deepseekModel(),
 		},
 		{
 			name:       "budget_converts_to_level_effort",
@@ -65,11 +64,11 @@ func TestDeepSeekApply_TranslationMatrix(t *testing.T) {
 			wantEffort: "high",
 		},
 		{
-			name:       "none_produces_disabled_object",
-			body:       `{}`,
-			config:     thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0},
-			model:      deepseekModel(),
-			wantType:   "disabled",
+			name:     "none_produces_disabled_object",
+			body:     `{}`,
+			config:   thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0},
+			model:    deepseekModel(),
+			wantType: "disabled",
 		},
 		{
 			name:       "none_with_clamped_level_respects_fallback",

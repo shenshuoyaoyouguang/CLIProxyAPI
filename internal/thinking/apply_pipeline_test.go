@@ -218,8 +218,8 @@ func TestApplyThinking_DeepSeekEnabledWithoutEffortDefaultsToAuto(t *testing.T) 
 	if gjson.GetBytes(out, "thinking").Exists() {
 		t.Fatalf("enabled DeepSeek output must remove native thinking object: %s", out)
 	}
-	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "auto" {
-		t.Fatalf("reasoning_effort = %q, want auto. output: %s", got, out)
+	if gjson.GetBytes(out, "reasoning_effort").Exists() {
+		t.Fatalf("reasoning_effort must be absent so DeepSeek uses its default effort. output: %s", out)
 	}
 }
 

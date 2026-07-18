@@ -493,4 +493,36 @@ func TestXAIStream_CompletedDoesNotErrorOnClose(t *testing.T) {
 	}
 }
 
+func TestXAIStream_IncompleteDoesNotErrorOnClose(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.incomplete","response":{"id":"resp_1","object":"response","created_at":0,"status":"incomplete","model":"grok-4.5","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
 
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider:   "xai",
+		Attributes: map[string]string{"base_url": server.URL},
+		Metadata:   map[string]any{"access_token": "xai-token"},
+	}
+
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":"hi"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	sawErr, payloads := drainStream(t, result)
+	if sawErr {
+		t.Fatal("well-formed xai stream (response.incomplete) must not surface a truncation error")
+	}
+	if payloads == 0 {
+		t.Fatal("expected incomplete response payloads to be forwarded")
+	}
+}

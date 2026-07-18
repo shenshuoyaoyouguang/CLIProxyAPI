@@ -203,7 +203,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		switch gjson.GetBytes(eventData, "type").String() {
 		case "response.output_item.done":
 			xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-		case "response.completed":
+		case "response.completed", "response.incomplete":
 			if detail, ok := helps.ParseCodexUsage(eventData); ok {
 				reporter.Publish(ctx, detail)
 			}
@@ -674,7 +674,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		var outputItemsFallback [][]byte
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
 		var pendingEventLine []byte
-		sawCompleted := false
+		sawTerminal := false
 		emitTranslatedLine := func(translatedLine []byte) bool {
 			chunks := sdktranslator.TranslateStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param)
 			for i := range chunks {
@@ -714,8 +714,8 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					switch normalizedEventName {
 					case "response.output_item.done":
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-					case "response.completed":
-						sawCompleted = true
+					case "response.completed", "response.incomplete":
+						sawTerminal = true
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
 							reporter.Publish(ctx, detail)
 						}
@@ -765,11 +765,11 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			return
 		}
 		// The socket closed cleanly. A well-formed xAI Responses stream always
-		// terminates with a response.completed event; its absence means the upstream
+		// terminates with a terminal response event; its absence means the upstream
 		// truncated the response mid-reasoning. Surface it instead of forging a
 		// successful close, which would silently drop an incomplete reasoning chain.
 		// Skip when the context was cancelled (client disconnect, not a truncation).
-		if ctx.Err() == nil && !sawCompleted {
+		if ctx.Err() == nil && !sawTerminal {
 			streamErr := newXAIIncompleteStreamError()
 			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 			reporter.PublishFailure(ctx, streamErr)

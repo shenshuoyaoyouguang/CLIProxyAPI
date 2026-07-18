@@ -80,8 +80,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		}
 		effort = normalizeDeepSeekEffort(level)
 	case thinking.ModeAuto:
-		// Auto mode maps to "auto" effort.
-		effort = string(thinking.LevelAuto)
+		return applyDefaultThinking(body)
 	default:
 		return body, nil
 	}
@@ -112,7 +111,7 @@ func applyCompatibleDeepSeek(body []byte, config thinking.ThinkingConfig) ([]byt
 		}
 		return applyDisabledThinking(body)
 	case thinking.ModeAuto:
-		effort = string(thinking.LevelAuto)
+		return applyDefaultThinking(body)
 	case thinking.ModeBudget:
 		// Convert budget to level.
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
@@ -125,6 +124,18 @@ func applyCompatibleDeepSeek(body []byte, config thinking.ThinkingConfig) ([]byt
 	}
 
 	return applyReasoningEffort(body, effort)
+}
+
+func applyDefaultThinking(body []byte) ([]byte, error) {
+	result, errDeleteThinking := sjson.DeleteBytes(body, "thinking")
+	if errDeleteThinking != nil {
+		return body, fmt.Errorf("deepseek thinking: failed to clear thinking object: %w", errDeleteThinking)
+	}
+	result, errDeleteEffort := sjson.DeleteBytes(result, "reasoning_effort")
+	if errDeleteEffort != nil {
+		return body, fmt.Errorf("deepseek thinking: failed to clear reasoning_effort: %w", errDeleteEffort)
+	}
+	return result, nil
 }
 
 // normalizeDeepSeekEffort maps internal thinking levels to DeepSeek-accepted values.
