@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	log "github.com/sirupsen/logrus"
@@ -20,6 +21,16 @@ const (
 	// maxRESPBulkSize caps a single RESP bulk string payload to limit memory
 	// allocation and prevent integer overflow in length+2 calculations.
 	maxRESPBulkSize = 1 << 24 // 16 MiB
+	// maxRESPArrayCount caps RESP array arity for this command surface
+	// (AUTH / SUBSCRIBE / LPOP / RPOP). Large *N would otherwise allow OOM
+	// via make([]string, 0, N) before any bulk body is validated.
+	maxRESPArrayCount = 16
+	// maxRedisPopCount bounds LPOP/RPOP COUNT to avoid large memory spikes.
+	maxRedisPopCount = 100
+	// redisConnectionIdleTimeout bounds how long a redis-mux session may sit
+	// idle between commands after protocol sniffing. Auth and subscribe loops
+	// refresh the deadline on activity.
+	redisConnectionIdleTimeout = 2 * time.Minute
 )
 
 type redisSubscriptionCommand struct {
@@ -53,6 +64,11 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 		}
 	}()
 
+	refreshDeadline := func() {
+		_ = conn.SetReadDeadline(time.Now().Add(redisConnectionIdleTimeout))
+	}
+	refreshDeadline()
+
 	flush := func() bool {
 		if errFlush := writer.Flush(); errFlush != nil {
 			log.Errorf("redis protocol flush error: %v", errFlush)
@@ -72,6 +88,7 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 			return
 		}
 
+		refreshDeadline()
 		args, errRead := readRESPArray(reader)
 		if errRead != nil {
 			if !errors.Is(errRead, io.EOF) {
@@ -406,11 +423,17 @@ func parsePopCount(args []string) (count int, hasCount bool, ok bool) {
 	if len(args) == 2 {
 		return 1, false, true
 	}
-	parsed, errParse := strconv.Atoi(strings.TrimSpace(args[2]))
+	parsed, errParse := strconv.ParseInt(strings.TrimSpace(args[2]), 10, 64)
 	if errParse != nil {
+		return 0, true, false
+	}
+	if parsed <= 0 {
 		return 0, true, true
 	}
-	return parsed, true, true
+	if parsed > maxRedisPopCount {
+		parsed = maxRedisPopCount
+	}
+	return int(parsed), true, true
 }
 
 func readRESPArray(reader *bufio.Reader) ([]string, error) {
@@ -425,10 +448,14 @@ func readRESPArray(reader *bufio.Reader) ([]string, error) {
 	if errLine != nil {
 		return nil, errLine
 	}
-	count, errParse := strconv.Atoi(line)
-	if errParse != nil || count < 0 {
+	parsed, errParse := strconv.ParseInt(line, 10, 64)
+	if errParse != nil || parsed < 0 {
 		return nil, fmt.Errorf("protocol error")
 	}
+	if parsed > maxRESPArrayCount {
+		return nil, fmt.Errorf("protocol error: array too large")
+	}
+	count := int(parsed)
 	args := make([]string, 0, count)
 	for i := 0; i < count; i++ {
 		value, errString := readRESPString(reader)
@@ -460,16 +487,23 @@ func readRESPBulkString(reader *bufio.Reader) (string, error) {
 	if errLine != nil {
 		return "", errLine
 	}
-	length, errParse := strconv.Atoi(line)
+	// Parse as int64 first so oversized decimal lengths fail cleanly instead of
+	// wrapping through platform-dependent int overflow in strconv.Atoi.
+	parsed, errParse := strconv.ParseInt(line, 10, 64)
 	if errParse != nil {
 		return "", fmt.Errorf("protocol error")
 	}
-	if length < 0 {
+	// RESP null bulk string is exactly $-1. Any other negative length is invalid.
+	if parsed == -1 {
 		return "", nil
 	}
-	if length > maxRESPBulkSize {
+	if parsed < 0 {
+		return "", fmt.Errorf("protocol error: invalid bulk string length")
+	}
+	if parsed > maxRESPBulkSize {
 		return "", fmt.Errorf("protocol error: bulk string too large")
 	}
+	length := int(parsed)
 	buf := make([]byte, length+2)
 	if _, errRead := io.ReadFull(reader, buf); errRead != nil {
 		return "", errRead
