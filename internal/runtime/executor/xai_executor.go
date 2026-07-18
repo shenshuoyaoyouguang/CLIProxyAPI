@@ -209,6 +209,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 			}
 			completedData := xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 			completedData = xaiNormalizeReasoningSummaryData(completedData)
+			logXAIResponseServiceTier(ctx, completedData)
 			cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, completedData)
 			var param any
 			out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, completedData, &param)
@@ -721,6 +722,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						}
 						eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 						eventData = xaiNormalizeReasoningSummaryData(eventData)
+						logXAIResponseServiceTier(ctx, eventData)
 						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
 						normalizedEventName = gjson.GetBytes(eventData, "type").String()
 					}
@@ -947,18 +949,20 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body = normalizeXAIInputCustomToolCalls(body)
 	body = normalizeXAIInputNamespaceToolCalls(body)
 	body = normalizeXAIInputReasoningItems(body)
-	body = sanitizeXAIInputEncryptedContent(body)
+	body = sanitizeXAIInputEncryptedContent(ctx, body)
 	body = normalizeCodexInstructions(body)
 	body = sanitizeXAIResponsesBody(body, baseModel)
 	body = normalizeXAIImageRefs(body)
+	body = ensureXAIServiceTier(body, opts)
 
-	sessionID, errSession := xaiResolveComposerSessionID(ctx, req, opts, baseModel)
+	sessionID, sessionSource, errSession := xaiResolveSessionID(ctx, req, opts, baseModel, body)
 	if errSession != nil {
 		return nil, errSession
 	}
 	if sessionID != "" {
 		body, _ = sjson.SetBytes(body, "prompt_cache_key", sessionID)
 	}
+	logXAIRequestContract(ctx, baseModel, sessionID, sessionSource, body)
 
 	return &xaiPreparedRequest{
 		baseModel:             baseModel,
@@ -1160,21 +1164,44 @@ func applyXAIChatHeaders(r *http.Request, auth *cliproxyauth.Auth, token string,
 	applyXAICustomHeaders(r, auth)
 }
 
-func xaiResolveComposerSessionID(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string) (string, error) {
-	if sessionID := xaiExecutionSessionID(req, opts); sessionID != "" {
-		return sessionID, nil
+// xaiResolveSessionID resolves the sticky conversation key used for
+// prompt_cache_key and x-grok-conv-id. Priority:
+//  1) trusted execution session metadata
+//  2) client prompt_cache_key on the raw request or prepared body
+//  3) Claude Code session-derived cache (any model when session is present)
+//  4) composer-only: generate a UUID so isolated conversations stay sticky
+// Non-composer models without (1)-(3) stay without a key (stateless).
+func xaiResolveSessionID(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string, body []byte) (sessionID string, source string, err error) {
+	if value := xaiMetadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
+		return value, "execution", nil
 	}
-	if !xaiRequiresIsolatedConversation(baseModel) {
-		return "", nil
+	if value := xaiMetadataString(req.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
+		return value, "execution", nil
+	}
+	if key := strings.TrimSpace(gjson.GetBytes(req.Payload, "prompt_cache_key").String()); key != "" {
+		return key, "client", nil
+	}
+	if key := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); key != "" {
+		return key, "client", nil
 	}
 	cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, baseModel, req.Payload, opts.Headers)
 	if errCache != nil {
-		return "", errCache
+		return "", "", errCache
 	}
 	if ok {
-		return cached.ID, nil
+		return cached.ID, "claude_code", nil
 	}
-	return uuid.NewString(), nil
+	if xaiRequiresIsolatedConversation(baseModel) {
+		return uuid.NewString(), "composer_uuid", nil
+	}
+	return "", "none", nil
+}
+
+// xaiResolveComposerSessionID is retained for callers/tests that only need the
+// session identifier; source metadata is available via xaiResolveSessionID.
+func xaiResolveComposerSessionID(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string) (string, error) {
+	sessionID, _, err := xaiResolveSessionID(ctx, req, opts, baseModel, nil)
+	return sessionID, err
 }
 
 func xaiExecutionSessionID(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
@@ -1188,6 +1215,49 @@ func xaiExecutionSessionID(req cliproxyexecutor.Request, opts cliproxyexecutor.O
 		return strings.TrimSpace(promptCacheKey.String())
 	}
 	return ""
+}
+
+// ensureXAIServiceTier keeps a body-level service_tier when present; otherwise
+// injects a non-auto tier from request metadata so clients that only surface
+// the field via handlers metadata still reach xAI.
+func ensureXAIServiceTier(body []byte, opts cliproxyexecutor.Options) []byte {
+	if existing := strings.TrimSpace(gjson.GetBytes(body, "service_tier").String()); existing != "" {
+		return body
+	}
+	tier := strings.TrimSpace(xaiMetadataString(opts.Metadata, cliproxyexecutor.ServiceTierMetadataKey))
+	if tier == "" || strings.EqualFold(tier, "auto") {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "service_tier", tier)
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+func logXAIRequestContract(ctx context.Context, model, sessionID, sessionSource string, body []byte) {
+	serviceTier := strings.TrimSpace(gjson.GetBytes(body, "service_tier").String())
+	if serviceTier == "" {
+		serviceTier = "auto"
+	}
+	helps.LogWithRequestID(ctx).Infof(
+		"xai: request contract model=%s session_source=%s session_set=%t service_tier=%s",
+		strings.TrimSpace(model),
+		sessionSource,
+		strings.TrimSpace(sessionID) != "",
+		serviceTier,
+	)
+}
+
+func logXAIResponseServiceTier(ctx context.Context, payload []byte) {
+	tier := strings.TrimSpace(gjson.GetBytes(payload, "response.service_tier").String())
+	if tier == "" {
+		tier = strings.TrimSpace(gjson.GetBytes(payload, "service_tier").String())
+	}
+	if tier == "" {
+		return
+	}
+	helps.LogWithRequestID(ctx).Infof("xai: response service_tier=%s", tier)
 }
 
 func xaiRequiresIsolatedConversation(model string) bool {
@@ -2316,7 +2386,7 @@ func xaiFunctionParametersNeedSimplification(tool gjson.Result, namespaceName st
 	return false
 }
 
-func sanitizeXAIInputEncryptedContent(body []byte) []byte {
+func sanitizeXAIInputEncryptedContent(ctx context.Context, body []byte) []byte {
 	input := gjson.GetBytes(body, "input")
 	if !input.Exists() || !input.IsArray() {
 		return body
@@ -2388,12 +2458,12 @@ func sanitizeXAIInputEncryptedContent(body []byte) []byte {
 		return body
 	}
 	if dropCount > 0 {
-		log.WithFields(log.Fields{
+		helps.LogWithRequestID(ctx).WithFields(log.Fields{
 			"component":       "xai_encrypted_content_sanitizer",
 			"dropped":         dropCount,
 			"first_item_type": firstItemType,
 			"first_reason":    firstReason,
-		}).Debug("xai executor: removed invalid encrypted_content before upstream")
+		}).Warn("xai executor: removed invalid encrypted_content before upstream")
 	}
 	return mergeAdjacentXAIInputReasoningSummaries(updated)
 }

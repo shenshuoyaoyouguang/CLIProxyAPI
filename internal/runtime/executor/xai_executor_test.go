@@ -3278,9 +3278,68 @@ func TestXAIExecutorComposerReusesClaudeCodeSession(t *testing.T) {
 	}
 }
 
+func TestXAIExecutorClaudeCodeSessionPinsNonComposerPromptCacheKey(t *testing.T) {
+	exec := NewXAIExecutor(&config.Config{})
+	payload := []byte(`{"model":"grok-4.5","metadata":{"user_id":"{\"session_id\":\"cache-session-45\"}"},"input":"hello"}`)
+	req := cliproxyexecutor.Request{Model: "grok-4.5", Payload: payload}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Stream: true}
+
+	first, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest first error: %v", err)
+	}
+	second, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest second error: %v", err)
+	}
+
+	firstKey := gjson.GetBytes(first.body, "prompt_cache_key").String()
+	secondKey := gjson.GetBytes(second.body, "prompt_cache_key").String()
+	if firstKey == "" {
+		t.Fatalf("first prompt_cache_key is empty; body=%s", string(first.body))
+	}
+	if secondKey != firstKey {
+		t.Fatalf("same Claude Code session produced different prompt_cache_key: first=%q second=%q", firstKey, secondKey)
+	}
+	if first.sessionID != firstKey {
+		t.Fatalf("sessionID = %q, want prompt_cache_key %q", first.sessionID, firstKey)
+	}
+}
+
+func TestEnsureXAIServiceTierInjectsPriorityFromMetadata(t *testing.T) {
+	body := []byte(`{"model":"grok-4.5","input":"hi"}`)
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.ServiceTierMetadataKey: "priority"},
+	}
+	got := ensureXAIServiceTier(body, opts)
+	if gjson.GetBytes(got, "service_tier").String() != "priority" {
+		t.Fatalf("service_tier = %q, want priority; body=%s", gjson.GetBytes(got, "service_tier").String(), got)
+	}
+}
+
+func TestEnsureXAIServiceTierPreservesBodyAndSkipsAuto(t *testing.T) {
+	body := []byte(`{"model":"grok-4.5","service_tier":"default","input":"hi"}`)
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.ServiceTierMetadataKey: "priority"},
+	}
+	got := ensureXAIServiceTier(body, opts)
+	if gjson.GetBytes(got, "service_tier").String() != "default" {
+		t.Fatalf("body service_tier should win, got %q; body=%s", gjson.GetBytes(got, "service_tier").String(), got)
+	}
+
+	autoBody := []byte(`{"model":"grok-4.5","input":"hi"}`)
+	autoOpts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.ServiceTierMetadataKey: "auto"},
+	}
+	gotAuto := ensureXAIServiceTier(autoBody, autoOpts)
+	if gjson.GetBytes(gotAuto, "service_tier").Exists() {
+		t.Fatalf("auto metadata must not inject service_tier; body=%s", gotAuto)
+	}
+}
+
 func TestSanitizeXAIInputEncryptedContent_DropsInvalidReasoningBlob(t *testing.T) {
 	body := []byte(`{"model":"grok-4.3","input":[{"type":"reasoning","summary":[],"encrypted_content":"bad"},{"type":"reasoning","summary":[],"encrypted_content":"gAAAAABinvalid-gpt-shape"},{"role":"user","content":"hi"}]}`)
-	got := sanitizeXAIInputEncryptedContent(body)
+	got := sanitizeXAIInputEncryptedContent(context.Background(), body)
 	if gjson.GetBytes(got, "input.0.encrypted_content").Exists() || gjson.GetBytes(got, "input.1.encrypted_content").Exists() {
 		t.Fatalf("invalid encrypted_content should be removed: %s", string(got))
 	}
@@ -3290,7 +3349,7 @@ func TestSanitizeXAIInputEncryptedContent_PreservesValidBlob(t *testing.T) {
 	sample := testValidGrokEncryptedContent()
 	body := []byte(`{"model":"grok-4.3","input":[{"type":"reasoning","summary":[],"encrypted_content":""}]}`)
 	body, _ = sjson.SetBytes(body, "input.0.encrypted_content", sample)
-	got := sanitizeXAIInputEncryptedContent(body)
+	got := sanitizeXAIInputEncryptedContent(context.Background(), body)
 	if gotEnc := gjson.GetBytes(got, "input.0.encrypted_content").String(); gotEnc != sample {
 		t.Fatalf("valid encrypted_content should be preserved, got %q", gotEnc)
 	}
