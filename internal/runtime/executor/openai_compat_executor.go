@@ -16,6 +16,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/ratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -23,6 +24,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -38,13 +40,20 @@ const (
 // It performs request/response translation and executes against the provider base URL
 // using per-auth credentials (API key) and per-auth HTTP transport (proxy) from context.
 type OpenAICompatExecutor struct {
-	provider string
-	cfg      *config.Config
+	provider    string
+	cfg         *config.Config
+	gatewayHook *ratelimit.DeepSeekGatewayHook
 }
 
 // NewOpenAICompatExecutor creates an executor bound to a provider key (e.g., "openrouter").
 func NewOpenAICompatExecutor(provider string, cfg *config.Config) *OpenAICompatExecutor {
 	return &OpenAICompatExecutor{provider: provider, cfg: cfg}
+}
+
+// WithDeepSeekGatewayHook injects the DeepSeek gateway hook for concurrency governance.
+func (e *OpenAICompatExecutor) WithDeepSeekGatewayHook(hook *ratelimit.DeepSeekGatewayHook) *OpenAICompatExecutor {
+	e.gatewayHook = hook
+	return e
 }
 
 // Identifier implements cliproxyauth.ProviderExecutor.
@@ -130,46 +139,84 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 		translated = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "openai compat executor", translated)
 	}
+	// DeepSeek Gateway Hook: acquire slot and inject a single top-level "user".
+	userID := ""
+	useGateway := e.gatewayHook != nil && e.gatewayHook.Enabled() && ratelimit.IsDeepSeekURL(baseURL)
+	if useGateway {
+		userID = e.gatewayHook.ResolveUserID(ctx, opts.Headers, auth)
+		release, acquireErr := e.gatewayHook.AcquireSlot(ctx, userID)
+		if acquireErr != nil {
+			return resp, acquireErr
+		}
+		defer release()
+		translated = injectOpenAICompatUserValue(translated, userID)
+	} else {
+		translated = injectOpenAICompatUser(translated, auth, baseURL, req.Model)
+	}
 	reporter.SetTranslatedReasoningEffort(translated, thinkingToFormat)
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
-	if err != nil {
-		return resp, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      translated,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
+
+	doOnce := func(reqCtx context.Context) (*http.Response, error) {
+		httpReq, errNew := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(translated))
+		if errNew != nil {
+			return nil, errNew
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+		var attrs map[string]string
+		if auth != nil {
+			attrs = auth.Attributes
+		}
+		util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+		return httpClient.Do(httpReq)
+	}
+
+	// Log once using a throwaway request for headers (body is the translated payload).
+	{
+		var authID, authLabel, authType, authValue string
+		if auth != nil {
+			authID = auth.ID
+			authLabel = auth.Label
+			authType, authValue = auth.AccountInfo()
+		}
+		logHeaders := make(http.Header)
+		logHeaders.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			logHeaders.Set("Authorization", "Bearer "+apiKey)
+		}
+		logHeaders.Set("User-Agent", "cli-proxy-openai-compat")
+		helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+			URL:       url,
+			Method:    http.MethodPost,
+			Headers:   logHeaders,
+			Body:      translated,
+			Provider:  e.Identifier(),
+			AuthID:    authID,
+			AuthLabel: authLabel,
+			AuthType:  authType,
+			AuthValue: authValue,
+		})
+	}
+
+	var httpResp *http.Response
+	var execErr error
+	if useGateway {
+		httpResp, execErr = e.gatewayHook.ExecuteWithRetry(ctx, userID, doOnce)
+	} else {
+		httpResp, execErr = doOnce(ctx)
+	}
+	if execErr != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, execErr)
+		return resp, execErr
+	}
+	if httpResp == nil {
+		err = statusErr{code: http.StatusBadGateway, msg: "empty upstream response"}
 		return resp, err
 	}
 	defer func() {
@@ -329,48 +376,96 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
+
+	// DeepSeek Gateway Hook: acquire slot for the full stream lifetime and inject top-level "user".
+	userID := ""
+	useGateway := e.gatewayHook != nil && e.gatewayHook.Enabled() && ratelimit.IsDeepSeekURL(baseURL)
+	var releaseSlot ratelimit.ReleaseFunc
+	if useGateway {
+		userID = e.gatewayHook.ResolveUserID(ctx, opts.Headers, auth)
+		var acquireErr error
+		releaseSlot, acquireErr = e.gatewayHook.AcquireSlot(ctx, userID)
+		if acquireErr != nil {
+			return nil, acquireErr
+		}
+		// Held until the stream goroutine finishes (not when ExecuteStream returns).
+		translated = injectOpenAICompatUserValue(translated, userID)
+	} else {
+		translated = injectOpenAICompatUser(translated, auth, baseURL, req.Model)
+	}
 	reporter.SetTranslatedReasoningEffort(translated, thinkingToFormat)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("Cache-Control", "no-cache")
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      translated,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
+
+	doOnce := func(reqCtx context.Context) (*http.Response, error) {
+		httpReq, errNew := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(translated))
+		if errNew != nil {
+			return nil, errNew
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+		var attrs map[string]string
+		if auth != nil {
+			attrs = auth.Attributes
+		}
+		util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("Cache-Control", "no-cache")
+		return httpClient.Do(httpReq)
+	}
+
+	{
+		var authID, authLabel, authType, authValue string
+		if auth != nil {
+			authID = auth.ID
+			authLabel = auth.Label
+			authType, authValue = auth.AccountInfo()
+		}
+		logHeaders := make(http.Header)
+		logHeaders.Set("Content-Type", "application/json")
+		logHeaders.Set("Accept", "text/event-stream")
+		logHeaders.Set("Cache-Control", "no-cache")
+		if apiKey != "" {
+			logHeaders.Set("Authorization", "Bearer "+apiKey)
+		}
+		logHeaders.Set("User-Agent", "cli-proxy-openai-compat")
+		helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+			URL:       url,
+			Method:    http.MethodPost,
+			Headers:   logHeaders,
+			Body:      translated,
+			Provider:  e.Identifier(),
+			AuthID:    authID,
+			AuthLabel: authLabel,
+			AuthType:  authType,
+			AuthValue: authValue,
+		})
+	}
+
+	var httpResp *http.Response
+	var execErr error
+	if useGateway {
+		httpResp, execErr = e.gatewayHook.ExecuteWithRetry(ctx, userID, doOnce)
+	} else {
+		httpResp, execErr = doOnce(ctx)
+	}
+	if execErr != nil {
+		if releaseSlot != nil {
+			releaseSlot()
+		}
+		helps.RecordAPIResponseError(ctx, e.cfg, execErr)
+		return nil, execErr
+	}
+	if httpResp == nil {
+		if releaseSlot != nil {
+			releaseSlot()
+		}
+		err = statusErr{code: http.StatusBadGateway, msg: "empty upstream response"}
 		return nil, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
@@ -381,12 +476,20 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("openai compat executor: close response body error: %v", errClose)
 		}
+		if releaseSlot != nil {
+			releaseSlot()
+		}
 		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
+		defer func() {
+			if releaseSlot != nil {
+				releaseSlot()
+			}
+		}()
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("openai compat executor: close response body error: %v", errClose)
@@ -797,6 +900,70 @@ func (e *OpenAICompatExecutor) thinkingFormatForModel(toFormat, model string) st
 		return "deepseek"
 	}
 	return toFormat
+}
+
+// injectOpenAICompatUser sets a stable OpenAI-compatible "user" field for DeepSeek
+// requests so upstream routing/rate limits can distinguish credentials. Existing
+// non-empty client user values are preserved.
+func injectOpenAICompatUser(payload []byte, auth *cliproxyauth.Auth, baseURL, model string) []byte {
+	if len(payload) == 0 || !shouldInjectDeepSeekUser(baseURL, model) {
+		return payload
+	}
+	if existing := strings.TrimSpace(gjson.GetBytes(payload, "user").String()); existing != "" {
+		return payload
+	}
+	userID := deepSeekUserID(auth)
+	if userID == "" {
+		return payload
+	}
+	return injectOpenAICompatUserValue(payload, userID)
+}
+
+// injectOpenAICompatUserValue writes top-level "user" when empty.
+// Gateway governance and the legacy inject path both go through this so the
+// payload carries a single identity field (never nested extra_body.user_id).
+func injectOpenAICompatUserValue(payload []byte, userID string) []byte {
+	if len(payload) == 0 || strings.TrimSpace(userID) == "" {
+		return payload
+	}
+	if existing := strings.TrimSpace(gjson.GetBytes(payload, "user").String()); existing != "" {
+		return payload
+	}
+	updated, errSet := sjson.SetBytes(payload, "user", userID)
+	if errSet != nil {
+		return payload
+	}
+	return updated
+}
+
+func shouldInjectDeepSeekUser(baseURL, model string) bool {
+	baseModel := thinking.ParseSuffix(model).ModelName
+	if modelkind.IsDeepSeekModel(baseModel) {
+		return true
+	}
+	host := strings.ToLower(strings.TrimSpace(baseURL))
+	return strings.Contains(host, "deepseek.com") || strings.Contains(host, "api.deepseek")
+}
+
+func deepSeekUserID(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Attributes != nil {
+		if v := strings.TrimSpace(auth.Attributes["deepseek_user_id"]); v != "" {
+			return v
+		}
+		if v := strings.TrimSpace(auth.Attributes["user_seed"]); v != "" {
+			return v
+		}
+	}
+	// EnsureIndex() returns "" exactly when auth has no ID and no other identity
+	// seed (see Auth.indexSeed), so an additional auth.ID fallback here would be
+	// unreachable.
+	if idx := strings.TrimSpace(auth.EnsureIndex()); idx != "" {
+		return "cliproxy-" + idx
+	}
+	return ""
 }
 
 type statusErr struct {

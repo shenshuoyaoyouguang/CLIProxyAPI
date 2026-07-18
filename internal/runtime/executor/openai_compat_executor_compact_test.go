@@ -106,6 +106,128 @@ func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T)
 	}
 }
 
+func TestOpenAICompatExecutorDeepSeekInjectsStableUser(t *testing.T) {
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	authA := &cliproxyauth.Auth{
+		ID: "deepseek-auth-a",
+		Attributes: map[string]string{
+			"base_url": server.URL + "/v1",
+			"api_key":  "key-a",
+		},
+	}
+	authB := &cliproxyauth.Auth{
+		ID: "deepseek-auth-b",
+		Attributes: map[string]string{
+			"base_url": server.URL + "/v1",
+			"api_key":  "key-b",
+		},
+	}
+	payload := []byte(`{"model":"deepseek-r1","messages":[{"role":"user","content":"hi"}]}`)
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: false}
+
+	if _, err := executor.Execute(context.Background(), authA, cliproxyexecutor.Request{Model: "deepseek-r1", Payload: payload}, opts); err != nil {
+		t.Fatalf("execute A: %v", err)
+	}
+	if _, err := executor.Execute(context.Background(), authA, cliproxyexecutor.Request{Model: "deepseek-r1", Payload: payload}, opts); err != nil {
+		t.Fatalf("execute A again: %v", err)
+	}
+	if _, err := executor.Execute(context.Background(), authB, cliproxyexecutor.Request{Model: "deepseek-r1", Payload: payload}, opts); err != nil {
+		t.Fatalf("execute B: %v", err)
+	}
+
+	if len(bodies) != 3 {
+		t.Fatalf("got %d bodies, want 3", len(bodies))
+	}
+	userA1 := gjson.GetBytes(bodies[0], "user").String()
+	userA2 := gjson.GetBytes(bodies[1], "user").String()
+	userB := gjson.GetBytes(bodies[2], "user").String()
+	if userA1 == "" || !strings.HasPrefix(userA1, "cliproxy-") {
+		t.Fatalf("user A = %q, want cliproxy- prefix", userA1)
+	}
+	if userA1 != userA2 {
+		t.Fatalf("same auth user must be stable: %q vs %q", userA1, userA2)
+	}
+	if userA1 == userB {
+		t.Fatalf("different auth keys must produce different user values: %q", userA1)
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekPreservesClientUser(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	// Use an auth with an ID so deepSeekUserID returns a non-empty value.
+	// This ensures the test verifies that the existing client "user" field
+	// is preserved even when an injectable userID is available, rather than
+	// passing simply because no userID could be generated.
+	auth := &cliproxyauth.Auth{
+		ID: "deepseek-auth-preserve",
+		Attributes: map[string]string{
+			"base_url": server.URL + "/v1",
+			"api_key":  "test",
+		},
+	}
+	payload := []byte(`{"model":"deepseek-r1","user":"client-user","messages":[{"role":"user","content":"hi"}]}`)
+	if _, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-r1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "user").String(); got != "client-user" {
+		t.Fatalf("user = %q, want client-user; body=%s", got, gotBody)
+	}
+}
+
+func TestOpenAICompatExecutorNonDeepSeekSkipsUserInjection(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`)
+	if _, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-4o-mini",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gjson.GetBytes(gotBody, "user").Exists() {
+		t.Fatalf("non-DeepSeek requests must not inject user: %s", gotBody)
+	}
+}
+
 func TestOpenAICompatExecutorDeepSeekThinkingAndHistoryFilter(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
