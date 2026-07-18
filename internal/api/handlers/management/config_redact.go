@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -20,6 +21,51 @@ func redactSecretValue(secret string) string {
 		return "***"
 	}
 	return secret[:4] + "..." + secret[len(secret)-4:]
+}
+
+// redactProxyURL removes userinfo (username/password) from a proxy URL while
+// keeping scheme/host/port/path so operators can still see which proxy is set.
+// Non-URL strings fall back to redactSecretValue.
+func redactProxyURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		// Opaque or malformed values may still embed credentials.
+		return redactSecretValue(raw)
+	}
+	if parsed.User != nil {
+		parsed.User = nil
+	}
+	return parsed.String()
+}
+
+// isSensitiveHeaderName reports whether a header name typically carries secrets.
+func isSensitiveHeaderName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie",
+		"x-api-key", "x-auth-token", "x-access-token", "api-key", "apikey":
+		return true
+	default:
+		return strings.Contains(name, "token") ||
+			strings.Contains(name, "secret") ||
+			strings.Contains(name, "password") ||
+			strings.Contains(name, "auth") ||
+			strings.Contains(name, "cookie")
+	}
+}
+
+// looksLikePEMPrivateKey detects PEM private-key material that may appear under
+// generic field names such as tls.key.
+func looksLikePEMPrivateKey(value string) bool {
+	upper := strings.ToUpper(value)
+	return strings.Contains(upper, "PRIVATE KEY") ||
+		strings.Contains(upper, "BEGIN RSA PRIVATE") ||
+		strings.Contains(upper, "BEGIN EC PRIVATE") ||
+		strings.Contains(upper, "BEGIN OPENSSH PRIVATE")
 }
 
 // marshalConfigForManagementJSON returns a JSON snapshot of cfg with provider
@@ -48,7 +94,12 @@ func redactJSONSecrets(node any) {
 	case map[string]any:
 		for key, child := range value {
 			switch strings.ToLower(key) {
-			case "api-key", "api_key", "apikey":
+			case "api-key", "api_key", "apikey",
+				"password", "secret", "token",
+				"access-token", "access_token",
+				"refresh-token", "refresh_token",
+				"client-secret", "client_secret",
+				"private-key", "private_key":
 				if secret, ok := child.(string); ok {
 					value[key] = redactSecretValue(secret)
 					continue
@@ -67,12 +118,41 @@ func redactJSONSecrets(node any) {
 			case "api-key-entries", "api_key_entries":
 				redactJSONSecrets(child)
 				continue
+			case "proxy-url", "proxy_url":
+				if proxy, ok := child.(string); ok {
+					value[key] = redactProxyURL(proxy)
+					continue
+				}
+			case "headers":
+				if headers, ok := child.(map[string]any); ok {
+					redactHeaderMap(headers)
+					continue
+				}
+			case "key":
+				// TLS and similar configs use a generic "key" field for private material.
+				if secret, ok := child.(string); ok && looksLikePEMPrivateKey(secret) {
+					value[key] = redactSecretValue(secret)
+					continue
+				}
 			}
 			redactJSONSecrets(child)
 		}
 	case []any:
 		for _, item := range value {
 			redactJSONSecrets(item)
+		}
+	}
+}
+
+func redactHeaderMap(headers map[string]any) {
+	for name, raw := range headers {
+		secret, ok := raw.(string)
+		if !ok {
+			redactJSONSecrets(raw)
+			continue
+		}
+		if isSensitiveHeaderName(name) {
+			headers[name] = redactSecretValue(secret)
 		}
 	}
 }
