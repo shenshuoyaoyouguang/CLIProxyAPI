@@ -171,15 +171,18 @@ func (s *session) cleanup(cause error) {
 		close(s.closed)
 		s.pending.Range(func(key, value any) bool {
 			req := value.(*pendingRequest)
-			msg := Message{ID: key.(string), Type: MessageTypeError, Payload: map[string]any{"error": cause.Error()}}
+			msg := Message{ID: key.(string), Type: MessageTypeError}
+			if cause != nil {
+				msg.Payload = map[string]any{"error": cause.Error()}
+			}
 			select {
 			case req.ch <- msg:
 			default:
 			}
 			req.close()
+			s.pending.Delete(key)
 			return true
 		})
-		s.pending = sync.Map{}
 		_ = s.conn.Close()
 		if s.manager != nil {
 			s.manager.handleSessionClosed(s, cause)

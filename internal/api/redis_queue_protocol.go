@@ -17,6 +17,9 @@ import (
 const (
 	redisUsageChannel  = "usage"
 	redisErrorsChannel = "errors"
+	// maxRESPBulkSize caps a single RESP bulk string payload to limit memory
+	// allocation and prevent integer overflow in length+2 calculations.
+	maxRESPBulkSize = 1 << 24 // 16 MiB
 )
 
 type redisSubscriptionCommand struct {
@@ -464,11 +467,14 @@ func readRESPBulkString(reader *bufio.Reader) (string, error) {
 	if length < 0 {
 		return "", nil
 	}
+	if length > maxRESPBulkSize {
+		return "", fmt.Errorf("protocol error: bulk string too large")
+	}
 	buf := make([]byte, length+2)
 	if _, errRead := io.ReadFull(reader, buf); errRead != nil {
 		return "", errRead
 	}
-	if length+2 < 2 || buf[length] != '\r' || buf[length+1] != '\n' {
+	if buf[length] != '\r' || buf[length+1] != '\n' {
 		return "", fmt.Errorf("protocol error")
 	}
 	return string(buf[:length]), nil

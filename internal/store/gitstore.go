@@ -29,6 +29,7 @@ const gcInterval = 5 * time.Minute
 type GitTokenStore struct {
 	mu        sync.Mutex
 	dirLock   sync.RWMutex
+	gcMu      sync.Mutex
 	baseDir   string
 	repoDir   string
 	configDir string
@@ -933,6 +934,12 @@ func (s *GitTokenStore) rewriteHeadAsSingleCommit(repo *git.Repository, branch p
 }
 
 func (s *GitTokenStore) maybeRunGC(repoDir string) {
+	if s == nil {
+		return
+	}
+	s.gcMu.Lock()
+	defer s.gcMu.Unlock()
+
 	now := time.Now()
 	if now.Sub(s.lastGC) < gcInterval {
 		return
