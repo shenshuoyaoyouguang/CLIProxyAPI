@@ -305,6 +305,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		return false, http.StatusForbidden, "remote management disabled"
 	}
 
+	h.mu.Lock()
 	cfg := h.cfg
 	var (
 		allowRemote bool
@@ -314,10 +315,13 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		allowRemote = cfg.RemoteManagement.AllowRemote
 		secretHash = cfg.RemoteManagement.SecretKey
 	}
-	if h.allowRemoteOverride {
+	allowRemoteOverride := h.allowRemoteOverride
+	envSecret := h.envSecret
+	localPassword := h.localPassword
+	h.mu.Unlock()
+	if allowRemoteOverride {
 		allowRemote = true
 	}
-	envSecret := h.envSecret
 
 	now := time.Now()
 	h.attemptsMu.Lock()
@@ -373,8 +377,8 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 
 	if localClient {
-		if lp := h.localPassword; lp != "" {
-			if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
+		if localPassword != "" {
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(localPassword)) == 1 {
 				reset()
 				return true, 0, ""
 			}
@@ -421,7 +425,9 @@ func (h *Handler) persistLocked(c *gin.Context) bool {
 	return true
 }
 
-// Helper methods for simple types
+// Helper methods for simple types.
+// set() runs under h.mu together with persist so concurrent GetConfig /
+// field setters cannot race on *h.cfg.
 func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 	var body struct {
 		Value *bool `json:"value"`
@@ -430,8 +436,14 @@ func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	set(*body.Value)
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
@@ -442,8 +454,14 @@ func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	set(*body.Value)
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // updateIntFieldClamped binds an int value, clamps negatives to fallback,
@@ -461,8 +479,14 @@ func (h *Handler) updateIntFieldClamped(c *gin.Context, fallback int, set func(i
 	if value < 0 {
 		value = fallback
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	set(value)
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
@@ -473,6 +497,12 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	set(*body.Value)
-	h.persist(c)
+	h.persistLocked(c)
 }

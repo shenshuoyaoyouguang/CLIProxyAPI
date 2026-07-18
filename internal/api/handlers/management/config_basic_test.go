@@ -60,14 +60,22 @@ func TestGetConfig_RendersConfigUnderLock(t *testing.T) {
 	}
 	// Note: Host and Port use json:"-" so they are not serialized. Only verify
 	// the visible slice/map fields to confirm the deep snapshot round-trips.
+	// API keys are redacted in GetConfig so a stolen management session cannot
+	// bulk-export provider credentials.
 	if len(body.OpenAICompatibility) != 2 {
 		t.Fatalf("openai-compatibility entries = %d, want 2", len(body.OpenAICompatibility))
 	}
 	if body.OpenAICompatibility[0].Name != "alpha" || body.OpenAICompatibility[1].Name != "beta" {
 		t.Fatalf("openai-compatibility order/content mismatch: %+v", body.OpenAICompatibility)
 	}
-	if len(body.ClaudeKey) != 2 || body.ClaudeKey[0].APIKey != "sk-alpha" || body.ClaudeKey[1].APIKey != "sk-beta" {
-		t.Fatalf("claude-api-key mismatch: %+v", body.ClaudeKey)
+	if len(body.ClaudeKey) != 2 {
+		t.Fatalf("claude-api-key entries = %d, want 2", len(body.ClaudeKey))
+	}
+	if body.ClaudeKey[0].APIKey == "sk-alpha" || body.ClaudeKey[1].APIKey == "sk-beta" {
+		t.Fatalf("claude-api-key must be redacted, got %+v", body.ClaudeKey)
+	}
+	if body.ClaudeKey[0].APIKey != redactSecretValue("sk-alpha") || body.ClaudeKey[1].APIKey != redactSecretValue("sk-beta") {
+		t.Fatalf("claude-api-key redaction mismatch: %+v", body.ClaudeKey)
 	}
 	if body.OAuthExcludedModels["claude"] == nil || len(body.OAuthExcludedModels["claude"]) != 2 {
 		t.Fatalf("oauth-excluded-models mismatch: %+v", body.OAuthExcludedModels)

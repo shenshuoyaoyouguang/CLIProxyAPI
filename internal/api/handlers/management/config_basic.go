@@ -29,12 +29,11 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		return
 	}
 	// Serialize the config to JSON while holding h.mu. Other management
-	// handlers (PutDebug, PutWebsocketAuth, PutRoutingStrategy, ...) mutate
-	// fields of *h.cfg without taking the lock before calling persist, and
-	// PutConfigYAML replaces h.cfg entirely under the lock. A shallow copy
-	// (`cfgCopy := *cfg`) is not enough because slices and maps inside Config
-	// would still share backing arrays with the live config, racing the JSON
-	// encoder. Encoding under the lock guarantees a consistent snapshot.
+	// handlers mutate fields of *h.cfg under the same lock before persist, and
+	// PutConfigYAML replaces h.cfg entirely under the lock. Encoding under the
+	// lock guarantees a consistent snapshot. Secrets are redacted so a stolen
+	// management session cannot bulk-export every provider API key; dedicated
+	// key endpoints remain available for full values when needed.
 	h.mu.Lock()
 	cfg := h.cfg
 	if cfg == nil {
@@ -42,10 +41,10 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		c.JSON(200, gin.H{})
 		return
 	}
-	rendered, errMarshal := json.Marshal(cfg)
+	rendered, errMarshal := marshalConfigForManagementJSON(cfg)
 	h.mu.Unlock()
 	if errMarshal != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed", "message": errMarshal.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed", "message": "failed to encode config"})
 		return
 	}
 	c.Data(http.StatusOK, "application/json; charset=utf-8", rendered)
@@ -60,8 +59,12 @@ type releaseInfo struct {
 func (h *Handler) GetLatestVersion(c *gin.Context) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	proxyURL := ""
-	if h != nil && h.cfg != nil {
-		proxyURL = strings.TrimSpace(h.cfg.ProxyURL)
+	if h != nil {
+		h.mu.Lock()
+		if h.cfg != nil {
+			proxyURL = strings.TrimSpace(h.cfg.ProxyURL)
+		}
+		h.mu.Unlock()
 	}
 	if proxyURL != "" {
 		sdkCfg := &sdkconfig.SDKConfig{ProxyURL: proxyURL}
@@ -202,12 +205,20 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 }
 
 // Debug
-func (h *Handler) GetDebug(c *gin.Context) { c.JSON(200, gin.H{"debug": h.cfg.Debug}) }
+func (h *Handler) GetDebug(c *gin.Context) {
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.Debug
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"debug": v})
+}
 func (h *Handler) PutDebug(c *gin.Context) { h.updateBoolField(c, func(v bool) { h.cfg.Debug = v }) }
 
 // UsageStatisticsEnabled
 func (h *Handler) GetUsageStatisticsEnabled(c *gin.Context) {
-	c.JSON(200, gin.H{"usage-statistics-enabled": h.cfg.UsageStatisticsEnabled})
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.UsageStatisticsEnabled
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"usage-statistics-enabled": v})
 }
 func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
@@ -215,7 +226,10 @@ func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
 
 // LoggingToFile
 func (h *Handler) GetLoggingToFile(c *gin.Context) {
-	c.JSON(200, gin.H{"logging-to-file": h.cfg.LoggingToFile})
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.LoggingToFile
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"logging-to-file": v})
 }
 func (h *Handler) PutLoggingToFile(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.LoggingToFile = v })
@@ -223,7 +237,13 @@ func (h *Handler) PutLoggingToFile(c *gin.Context) {
 
 // LogsMaxTotalSizeMB
 func (h *Handler) GetLogsMaxTotalSizeMB(c *gin.Context) {
-	c.JSON(200, gin.H{"logs-max-total-size-mb": h.cfg.LogsMaxTotalSizeMB})
+	h.mu.Lock()
+	v := 0
+	if h.cfg != nil {
+		v = h.cfg.LogsMaxTotalSizeMB
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"logs-max-total-size-mb": v})
 }
 func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
 	h.updateIntFieldClamped(c, 0, func(v int) { h.cfg.LogsMaxTotalSizeMB = v })
@@ -231,21 +251,35 @@ func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
 
 // ErrorLogsMaxFiles
 func (h *Handler) GetErrorLogsMaxFiles(c *gin.Context) {
-	c.JSON(200, gin.H{"error-logs-max-files": h.cfg.ErrorLogsMaxFiles})
+	h.mu.Lock()
+	v := 0
+	if h.cfg != nil {
+		v = h.cfg.ErrorLogsMaxFiles
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"error-logs-max-files": v})
 }
 func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 	h.updateIntFieldClamped(c, 10, func(v int) { h.cfg.ErrorLogsMaxFiles = v })
 }
 
 // Request log
-func (h *Handler) GetRequestLog(c *gin.Context) { c.JSON(200, gin.H{"request-log": h.cfg.RequestLog}) }
+func (h *Handler) GetRequestLog(c *gin.Context) {
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.RequestLog
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"request-log": v})
+}
 func (h *Handler) PutRequestLog(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.RequestLog = v })
 }
 
 // Websocket auth
 func (h *Handler) GetWebsocketAuth(c *gin.Context) {
-	c.JSON(200, gin.H{"ws-auth": h.cfg.WebsocketAuth})
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.WebsocketAuth
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"ws-auth": v})
 }
 func (h *Handler) PutWebsocketAuth(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.WebsocketAuth = v })
@@ -253,7 +287,13 @@ func (h *Handler) PutWebsocketAuth(c *gin.Context) {
 
 // Request retry
 func (h *Handler) GetRequestRetry(c *gin.Context) {
-	c.JSON(200, gin.H{"request-retry": h.cfg.RequestRetry})
+	h.mu.Lock()
+	v := 0
+	if h.cfg != nil {
+		v = h.cfg.RequestRetry
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"request-retry": v})
 }
 func (h *Handler) PutRequestRetry(c *gin.Context) {
 	h.updateIntField(c, func(v int) { h.cfg.RequestRetry = v })
@@ -261,7 +301,13 @@ func (h *Handler) PutRequestRetry(c *gin.Context) {
 
 // Max retry interval
 func (h *Handler) GetMaxRetryInterval(c *gin.Context) {
-	c.JSON(200, gin.H{"max-retry-interval": h.cfg.MaxRetryInterval})
+	h.mu.Lock()
+	v := 0
+	if h.cfg != nil {
+		v = h.cfg.MaxRetryInterval
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"max-retry-interval": v})
 }
 func (h *Handler) PutMaxRetryInterval(c *gin.Context) {
 	h.updateIntField(c, func(v int) { h.cfg.MaxRetryInterval = v })
@@ -269,7 +315,10 @@ func (h *Handler) PutMaxRetryInterval(c *gin.Context) {
 
 // ForceModelPrefix
 func (h *Handler) GetForceModelPrefix(c *gin.Context) {
-	c.JSON(200, gin.H{"force-model-prefix": h.cfg.ForceModelPrefix})
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.ForceModelPrefix
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"force-model-prefix": v})
 }
 func (h *Handler) PutForceModelPrefix(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.ForceModelPrefix = v })
@@ -289,9 +338,15 @@ func normalizeRoutingStrategy(strategy string) (string, bool) {
 
 // RoutingStrategy
 func (h *Handler) GetRoutingStrategy(c *gin.Context) {
-	strategy, ok := normalizeRoutingStrategy(h.cfg.Routing.Strategy)
+	h.mu.Lock()
+	raw := ""
+	if h.cfg != nil {
+		raw = h.cfg.Routing.Strategy
+	}
+	h.mu.Unlock()
+	strategy, ok := normalizeRoutingStrategy(raw)
 	if !ok {
-		c.JSON(200, gin.H{"strategy": strings.TrimSpace(h.cfg.Routing.Strategy)})
+		c.JSON(200, gin.H{"strategy": strings.TrimSpace(raw)})
 		return
 	}
 	c.JSON(200, gin.H{"strategy": strategy})
@@ -309,16 +364,36 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid strategy"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	h.cfg.Routing.Strategy = normalized
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // Proxy URL
-func (h *Handler) GetProxyURL(c *gin.Context) { c.JSON(200, gin.H{"proxy-url": h.cfg.ProxyURL}) }
+func (h *Handler) GetProxyURL(c *gin.Context) {
+	h.mu.Lock()
+	v := ""
+	if h.cfg != nil {
+		v = h.cfg.ProxyURL
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"proxy-url": v})
+}
 func (h *Handler) PutProxyURL(c *gin.Context) {
 	h.updateStringField(c, func(v string) { h.cfg.ProxyURL = v })
 }
 func (h *Handler) DeleteProxyURL(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	h.cfg.ProxyURL = ""
-	h.persist(c)
+	h.persistLocked(c)
 }
