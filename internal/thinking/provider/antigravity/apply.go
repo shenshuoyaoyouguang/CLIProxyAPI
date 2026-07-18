@@ -20,6 +20,11 @@ type Applier struct{}
 
 var _ thinking.ProviderApplier = (*Applier)(nil)
 
+// SupportsNativeDisabled reports whether Antigravity honors an explicit disable
+// marker for ModeNone. Antigravity disables thinking by clearing thinkingConfig or
+// via a zero budget, not via a disabled marker, so it is not fully disabled-capable.
+func (a *Applier) SupportsNativeDisabled() bool { return false }
+
 // NewApplier creates a new Antigravity thinking applier.
 func NewApplier() *Applier {
 	return &Applier{}

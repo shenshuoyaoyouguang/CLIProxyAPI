@@ -46,6 +46,9 @@ func ConvertLevelToBudget(level string) (int, bool) {
 
 // BudgetThreshold constants define the upper bounds for each thinking level.
 // These are used by ConvertBudgetToLevel for range-based mapping.
+// Their values intentionally match the corresponding entries in levelToBudgetMap
+// (the level's representative budget equals its upper-bound), so the two must be
+// kept in sync if either is changed.
 const (
 	// ThresholdMinimal is the upper bound for "minimal" level (1-512)
 	ThresholdMinimal = 512

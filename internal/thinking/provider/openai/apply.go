@@ -2,14 +2,11 @@
 //
 // OpenAI models use the reasoning_effort format with discrete levels
 // (low/medium/high). Some models support xhigh and none levels.
-// See: _bmad-output/planning-artifacts/architecture.md#Epic-8
 package openai
 
 import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // Applier implements thinking.ProviderApplier for OpenAI models.
@@ -21,6 +18,12 @@ import (
 type Applier struct{}
 
 var _ thinking.ProviderApplier = (*Applier)(nil)
+
+// SupportsNativeDisabled reports whether OpenAI honors an explicit disable marker
+// for ModeNone. OpenAI has no disabled marker; ModeNone clamps to the lowest
+// supported reasoning_effort level (or "none" when advertised), so it must not be
+// treated as fully disabled.
+func (a *Applier) SupportsNativeDisabled() bool { return false }
 
 // NewApplier creates a new OpenAI thinking applier.
 func NewApplier() *Applier {
@@ -51,67 +54,9 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		return body, nil
 	}
 
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
-
-	if config.Mode == thinking.ModeLevel {
-		result, _ := sjson.SetBytes(body, "reasoning_effort", string(config.Level))
-		return result, nil
-	}
-
-	effort := ""
-	support := modelInfo.Thinking
-	if config.Budget == 0 {
-		if support.ZeroAllowed || thinking.HasLevel(support.Levels, string(thinking.LevelNone)) {
-			effort = string(thinking.LevelNone)
-		}
-	}
-	if effort == "" && config.Level != "" {
-		effort = string(config.Level)
-	}
-	if effort == "" && len(support.Levels) > 0 {
-		effort = support.Levels[0]
-	}
-	if effort == "" {
-		return body, nil
-	}
-
-	result, _ := sjson.SetBytes(body, "reasoning_effort", effort)
-	return result, nil
+	return thinking.BuildRegisteredEffort(body, config, modelInfo.Thinking, "reasoning_effort")
 }
 
 func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig) ([]byte, error) {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
-
-	var effort string
-	switch config.Mode {
-	case thinking.ModeLevel:
-		if config.Level == "" {
-			return body, nil
-		}
-		effort = string(config.Level)
-	case thinking.ModeNone:
-		effort = string(thinking.LevelNone)
-		if config.Level != "" {
-			effort = string(config.Level)
-		}
-	case thinking.ModeAuto:
-		// Auto mode for user-defined models: pass through as "auto"
-		effort = string(thinking.LevelAuto)
-	case thinking.ModeBudget:
-		// Budget mode: convert budget to level using threshold mapping
-		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
-		if !ok {
-			return body, nil
-		}
-		effort = level
-	default:
-		return body, nil
-	}
-
-	result, _ := sjson.SetBytes(body, "reasoning_effort", effort)
-	return result, nil
+	return thinking.BuildCompatibleEffort(body, config, "reasoning_effort", "invalid budget for reasoning_effort conversion")
 }

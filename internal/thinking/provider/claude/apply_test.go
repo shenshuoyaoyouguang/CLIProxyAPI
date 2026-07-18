@@ -157,6 +157,46 @@ func TestClaudeApply_TranslationMatrix(t *testing.T) {
 	}
 }
 
+// TestClaudeApply_BudgetCappedAtMaxTokensMinusGap verifies that when the requested
+// budget is at or above max_tokens, the applied thinking.budget_tokens is reduced to
+// max_tokens - claudeBudgetMaxGap (Anthropic requires budget_tokens < max_tokens).
+func TestClaudeApply_BudgetCappedAtMaxTokensMinusGap(t *testing.T) {
+	applier := NewApplier()
+	model := budgetModel() // MaxCompletionTokens=64000, Min/Max=1024/32000
+
+	cases := []struct {
+		name       string
+		body       string
+		budget     int
+		wantBudget int64
+	}{
+		{
+			name:       "budget_equals_max_tokens",
+			body:       `{"max_tokens":8000}`,
+			budget:     8000,
+			wantBudget: 8000 - claudeBudgetMaxGap,
+		},
+		{
+			name:       "budget_exceeds_max_tokens",
+			body:       `{"max_tokens":8000}`,
+			budget:     32000,
+			wantBudget: 8000 - claudeBudgetMaxGap,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := applier.Apply([]byte(tc.body), thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: tc.budget}, model)
+			if err != nil {
+				t.Fatalf("Apply returned error: %v", err)
+			}
+			if got := gjson.GetBytes(out, "thinking.budget_tokens").Int(); got != tc.wantBudget {
+				t.Errorf("thinking.budget_tokens = %d, want %d (max_tokens-claudeBudgetMaxGap)", got, tc.wantBudget)
+			}
+		})
+	}
+}
+
 // TestClaudeApply_NilThinkingPassthrough verifies that a model without thinking
 // support is left untouched.
 func TestClaudeApply_NilThinkingPassthrough(t *testing.T) {
@@ -169,5 +209,79 @@ func TestClaudeApply_NilThinkingPassthrough(t *testing.T) {
 	}
 	if string(out) != string(body) {
 		t.Errorf("body mutated for nil-thinking model: got %s, want %s", out, body)
+	}
+}
+
+// TestNormalizeClaudeBudget_WritesAdjustedBudgetBack pins the contract that
+// normalizeClaudeBudget itself writes the adjusted budget back into
+// thinking.budget_tokens on the returned body. The Apply path relies on this
+// (it no longer re-writes the field at the call site), so a future refactor
+// that drops the in-function write would silently break the clamp. Run this
+// alongside the higher-level Apply test to keep both layers honest.
+func TestNormalizeClaudeBudget_WritesAdjustedBudgetBack(t *testing.T) {
+	applier := NewApplier()
+	model := budgetModel() // MaxCompletionTokens=64000
+
+	cases := []struct {
+		name        string
+		body        string
+		budget      int
+		wantBudget  int64
+		wantWritten bool
+	}{
+		{
+			name:        "budget below max_tokens: no write needed",
+			body:        `{"max_tokens":64000,"thinking":{"type":"enabled","budget_tokens":16384}}`,
+			budget:      16384,
+			wantBudget:  16384,
+			wantWritten: false, // adjustedBudget == budgetTokens; in-function write is skipped
+		},
+		{
+			name:        "budget equals max_tokens: clamped and written",
+			body:        `{"max_tokens":8000,"thinking":{"type":"enabled","budget_tokens":8000}}`,
+			budget:      8000,
+			wantBudget:  8000 - claudeBudgetMaxGap,
+			wantWritten: true,
+		},
+		{
+			name:        "budget exceeds max_tokens: clamped and written",
+			body:        `{"max_tokens":8000,"thinking":{"type":"enabled","budget_tokens":32000}}`,
+			budget:      32000,
+			wantBudget:  8000 - claudeBudgetMaxGap,
+			wantWritten: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, adjusted := applier.normalizeClaudeBudget([]byte(tc.body), tc.budget, model)
+			if int64(adjusted) != tc.wantBudget {
+				t.Fatalf("adjusted budget = %d, want %d", adjusted, tc.wantBudget)
+			}
+			got := gjson.GetBytes(out, "thinking.budget_tokens").Int()
+			if got != tc.wantBudget {
+				t.Fatalf("thinking.budget_tokens in returned body = %d, want %d (body=%s)", got, tc.wantBudget, out)
+			}
+		})
+	}
+}
+
+// TestNormalizeClaudeBudget_ApplierPathReliesOnInFunctionWrite is a behavioural
+// mirror of the Apply call site: Apply no longer re-writes thinking.budget_tokens
+// after normalizeClaudeBudget returns. If a future change removes the
+// in-function write, this test will fail because budget_tokens will retain the
+// pre-clamp value.
+func TestNormalizeClaudeBudget_ApplierPathReliesOnInFunctionWrite(t *testing.T) {
+	applier := NewApplier()
+	model := budgetModel()
+	body := []byte(`{"max_tokens":8000}`)
+	out, err := applier.Apply(body, thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 32000}, model)
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	got := gjson.GetBytes(out, "thinking.budget_tokens").Int()
+	if got != 8000-claudeBudgetMaxGap {
+		t.Fatalf("Apply did not propagate normalizeClaudeBudget's clamped value; got %d, want %d (body=%s)",
+			got, 8000-claudeBudgetMaxGap, out)
 	}
 }

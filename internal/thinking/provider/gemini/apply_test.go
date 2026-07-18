@@ -169,3 +169,70 @@ func TestGeminiApply_NilThinkingPassthrough(t *testing.T) {
 		t.Errorf("expected passthrough, got: %s", out)
 	}
 }
+
+// TestGeminiApply_ModeNoneHidesThoughts verifies that a ModeNone request always emits
+// includeThoughts=false, even when the budget is clamped to a positive value (a model
+// that cannot be disabled). Non-disabled modes must emit includeThoughts=true by default.
+func TestGeminiApply_ModeNoneHidesThoughts(t *testing.T) {
+	a := NewApplier()
+
+	// Budget-only model (no Levels): ModeNone keeps thinkingConfig with
+	// thinkingBudget and includeThoughts=false regardless of whether Budget=0 or >0.
+	budgetOnlyCases := []struct {
+		name   string
+		config thinking.ThinkingConfig
+	}{
+		{name: "none_budget_zero", config: thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}},
+		// A clamped positive budget (model cannot disable) must still hide thoughts.
+		{name: "none_budget_clamped", config: thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 4096}},
+	}
+	for _, tc := range budgetOnlyCases {
+		t.Run("budget_only/"+tc.name, func(t *testing.T) {
+			out, err := a.Apply([]byte(`{}`), tc.config, gemini25Model())
+			if err != nil {
+				t.Fatalf("Apply error: %v", err)
+			}
+			if gjson.GetBytes(out, "generationConfig.thinkingConfig.thinkingBudget").Exists() {
+				if got := gjson.GetBytes(out, "generationConfig.thinkingConfig.includeThoughts").Bool(); got {
+					t.Errorf("ModeNone must set includeThoughts=false, got true (%s)", out)
+				}
+			}
+		})
+	}
+
+	// Level model: ModeNone + Budget=0 removes thinkingConfig entirely (no includeThoughts).
+	t.Run("level/none_disables_removes_config", func(t *testing.T) {
+		out, err := a.Apply([]byte(`{}`), thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}, gemini3Model())
+		if err != nil {
+			t.Fatalf("Apply error: %v", err)
+		}
+		if gjson.GetBytes(out, "generationConfig.thinkingConfig").Exists() {
+			t.Errorf("ModeNone level model must remove thinkingConfig, got: %s", out)
+		}
+	})
+
+	// Non-disabled modes emit includeThoughts=true by default.
+	enabledCases := []struct {
+		name   string
+		config thinking.ThinkingConfig
+	}{
+		{name: "budget_positive", config: thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 8192}},
+		{name: "auto", config: thinking.ThinkingConfig{Mode: thinking.ModeAuto, Budget: -1}},
+		{name: "level", config: thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelHigh}},
+	}
+	for _, tc := range enabledCases {
+		t.Run("enabled/"+tc.name, func(t *testing.T) {
+			model := gemini25Model()
+			if tc.config.Mode == thinking.ModeLevel {
+				model = gemini3Model()
+			}
+			out, err := a.Apply([]byte(`{}`), tc.config, model)
+			if err != nil {
+				t.Fatalf("Apply error: %v", err)
+			}
+			if got := gjson.GetBytes(out, "generationConfig.thinkingConfig.includeThoughts").Bool(); !got {
+				t.Errorf("%s must emit includeThoughts=true, got false (%s)", tc.name, out)
+			}
+		})
+	}
+}

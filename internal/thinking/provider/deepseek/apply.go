@@ -24,6 +24,11 @@ type Applier struct{}
 
 var _ thinking.ProviderApplier = (*Applier)(nil)
 
+// SupportsNativeDisabled reports whether DeepSeek honors an explicit
+// thinking.type="disabled" marker for ModeNone. DeepSeek emits the disabled marker
+// (see applyDisabledThinking), so thinking stays fully off.
+func (a *Applier) SupportsNativeDisabled() bool { return true }
+
 // NewApplier creates a new DeepSeek thinking applier.
 func NewApplier() *Applier { return &Applier{} }
 
@@ -126,7 +131,9 @@ func applyCompatibleDeepSeek(body []byte, config thinking.ThinkingConfig) ([]byt
 	return applyReasoningEffort(body, effort)
 }
 
-func applyDefaultThinking(body []byte) ([]byte, error) {
+// clearThinkingFields removes the thinking object and reasoning_effort key,
+// returning the trimmed body or a wrapped error.
+func clearThinkingFields(body []byte) ([]byte, error) {
 	result, errDeleteThinking := sjson.DeleteBytes(body, "thinking")
 	if errDeleteThinking != nil {
 		return body, fmt.Errorf("deepseek thinking: failed to clear thinking object: %w", errDeleteThinking)
@@ -136,6 +143,10 @@ func applyDefaultThinking(body []byte) ([]byte, error) {
 		return body, fmt.Errorf("deepseek thinking: failed to clear reasoning_effort: %w", errDeleteEffort)
 	}
 	return result, nil
+}
+
+func applyDefaultThinking(body []byte) ([]byte, error) {
+	return clearThinkingFields(body)
 }
 
 // normalizeDeepSeekEffort maps internal thinking levels to DeepSeek-accepted values.
@@ -151,9 +162,9 @@ func normalizeDeepSeekEffort(effort string) string {
 }
 
 func applyReasoningEffort(body []byte, effort string) ([]byte, error) {
-	result, errDeleteThinking := sjson.DeleteBytes(body, "thinking")
-	if errDeleteThinking != nil {
-		return body, fmt.Errorf("deepseek thinking: failed to clear thinking object: %w", errDeleteThinking)
+	result, err := clearThinkingFields(body)
+	if err != nil {
+		return body, err
 	}
 	result, errSetEffort := sjson.SetBytes(result, "reasoning_effort", effort)
 	if errSetEffort != nil {
@@ -163,13 +174,9 @@ func applyReasoningEffort(body []byte, effort string) ([]byte, error) {
 }
 
 func applyDisabledThinking(body []byte) ([]byte, error) {
-	result, errDeleteThinking := sjson.DeleteBytes(body, "thinking")
-	if errDeleteThinking != nil {
-		return body, fmt.Errorf("deepseek thinking: failed to clear thinking object: %w", errDeleteThinking)
-	}
-	result, errDeleteEffort := sjson.DeleteBytes(result, "reasoning_effort")
-	if errDeleteEffort != nil {
-		return body, fmt.Errorf("deepseek thinking: failed to clear reasoning_effort: %w", errDeleteEffort)
+	result, err := clearThinkingFields(body)
+	if err != nil {
+		return body, err
 	}
 	result, errSetType := sjson.SetBytes(result, "thinking.type", "disabled")
 	if errSetType != nil {

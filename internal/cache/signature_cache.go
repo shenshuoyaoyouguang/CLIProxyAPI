@@ -2,14 +2,13 @@ package cache
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	log "github.com/sirupsen/logrus"
 )
@@ -24,7 +23,14 @@ const (
 	// SignatureCacheTTL is how long signatures are valid
 	SignatureCacheTTL = 3 * time.Hour
 
-	// SignatureTextHashLen is the length of the hash key (16 hex chars = 64-bit key space)
+	// SignatureTextHashLen is the length of the hash key (16 hex chars = 64-bit key space).
+	// The length is kept at 16 purely for wire/key-layout compatibility with the previous
+	// SHA-256 prefix; it is NOT a cryptographic-strength indicator. Because the key is a
+	// 64-bit non-cryptographic xxhash digest, the collision probability is far higher than
+	// a full SHA-256 (birthday-bound to roughly 50% at ~2^32 distinct keys). A collision in
+	// this cache only ever yields a wrong-value cache hit or a redundant signature
+	// recomputation for a different text; it cannot corrupt data or leak secrets, so the
+	// weaker, much faster hash is an acceptable trade-off on the hot path.
 	SignatureTextHashLen = 16
 
 	// MinValidSignatureLen is the minimum length for a signature to be considered valid
@@ -32,6 +38,10 @@ const (
 
 	// CacheCleanupInterval controls how often stale entries are purged
 	CacheCleanupInterval = 10 * time.Minute
+
+	// maxSignatureEntriesPerGroup caps in-memory entries per model group to
+	// prevent unbounded growth under high-cardinality text keys.
+	maxSignatureEntriesPerGroup = 10000
 )
 
 // signatureCache stores signatures by model group -> textHash -> SignatureEntry
@@ -51,16 +61,28 @@ var currentSignatureKVClient = func() (signatureKVClient, bool, error) {
 	return homekv.CurrentKVClient()
 }
 
-// groupCache is the inner map type
+// groupCache is the inner per-model-group bucket. The entries map is a
+// small LRU keyed by text hash; signature_cache.go only touches the
+// outer sync.Map of groupCaches, so the inner LRU guards itself.
 type groupCache struct {
-	mu      sync.RWMutex
-	entries map[string]SignatureEntry
+	entries *LRUCache[string, SignatureEntry]
 }
 
-// hashText creates a stable, Unicode-safe key from text content
+// hashText creates a stable, Unicode-safe key from text content.
+// It uses xxhash/v2 (non-cryptographic, 64-bit) on the hot path instead of
+// SHA-256 for speed. The digest is formatted as %016x so the key length (16 hex
+// chars) and cache-key layout match the previous SHA-256 prefix exactly, keeping
+// existing key namespaces and tooling compatible.
+//
+// Collision semantics: unlike SHA-256, a 64-bit digest collides with meaningful
+// probability at scale (birthday-bound to ~50% near 2^32 distinct keys). For this
+// cache that consequence is benign — a collision can only produce a cache hit on a
+// different text's signature (triggering a recompute) or a redundant store; it
+// never corrupts stored data or exposes secrets. Hot signatures stay resident via
+// the sliding TTL (SignatureCacheTTL), so transient collisions do not accumulate
+// into correctness issues.
 func hashText(text string) string {
-	h := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(h[:])[:SignatureTextHashLen]
+	return fmt.Sprintf("%016x", xxhash.Sum64String(text))
 }
 
 // getOrCreateGroupCache gets or creates a cache bucket for a model group
@@ -71,7 +93,14 @@ func getOrCreateGroupCache(groupKey string) *groupCache {
 	if val, ok := signatureCache.Load(groupKey); ok {
 		return val.(*groupCache)
 	}
-	sc := &groupCache{entries: make(map[string]SignatureEntry)}
+	entries := NewLRUCache[string, SignatureEntry](maxSignatureEntriesPerGroup, SignatureCacheTTL, nil)
+	// Sliding TTL: every Get refreshes the entry age, matching the previous
+	// "oldest last-touched" eviction behavior of the signature cache and the
+	// three reasoning replay caches. Hot signatures therefore stay alive as
+	// long as they are being read, avoiding thundering-herd re-validation on
+	// frequently accessed model groups.
+	entries.SetSliding(true)
+	sc := &groupCache{entries: entries}
 	actual, _ := signatureCache.LoadOrStore(groupKey, sc)
 	return actual.(*groupCache)
 }
@@ -89,28 +118,28 @@ func startCacheCleanup() {
 }
 
 // purgeExpiredCaches removes caches with no valid (non-expired) entries.
+// It is responsible only for the signature cache's own buckets; other caches
+// register their purge functions via registerCacheCleanup and run through
+// runCacheCleanupCallbacks, so this file no longer reaches into their state.
 func purgeExpiredCaches() {
 	now := time.Now()
+	// Two-phase purge: collect empty buckets during Range, then delete them
+	// outside the callback. Deleting from a sync.Map inside its Range callback
+	// is undefined behavior, so signatureCache.Delete must not run here.
+	var emptyBuckets []any
 	signatureCache.Range(func(key, value any) bool {
 		sc := value.(*groupCache)
-		sc.mu.Lock()
-		// Remove expired entries
-		for k, entry := range sc.entries {
-			if now.Sub(entry.Timestamp) > SignatureCacheTTL {
-				delete(sc.entries, k)
-			}
-		}
-		isEmpty := len(sc.entries) == 0
-		sc.mu.Unlock()
-		// Remove cache bucket if empty
-		if isEmpty {
-			signatureCache.Delete(key)
+		// Remove expired entries from the inner LRU (internally locked).
+		sc.entries.PurgeExpired(now)
+		if sc.entries.Len() == 0 {
+			emptyBuckets = append(emptyBuckets, key)
 		}
 		return true
 	})
-	purgeExpiredCodexReasoningReplayCache(now)
-	purgeExpiredXAIReasoningReplayCache(now)
-	purgeExpiredAntigravityReasoningReplayCache(now)
+	for _, key := range emptyBuckets {
+		signatureCache.Delete(key)
+	}
+	runCacheCleanupCallbacks(now)
 }
 
 // CacheSignature stores a thinking signature for a given model group and text.
@@ -144,13 +173,10 @@ func CacheSignatureBestEffort(ctx context.Context, modelName, text, signature st
 	groupKey := GetModelGroup(modelName)
 	textHash := hashText(text)
 	sc := getOrCreateGroupCache(groupKey)
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
-	sc.entries[textHash] = SignatureEntry{
+	sc.entries.Set(textHash, SignatureEntry{
 		Signature: signature,
 		Timestamp: time.Now(),
-	}
+	})
 	return true
 }
 
@@ -207,41 +233,34 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 
 	textHash := hashText(text)
 
-	now := time.Now()
-
-	sc.mu.Lock()
-	entry, exists := sc.entries[textHash]
-	if !exists {
-		sc.mu.Unlock()
+	// LRU.Get returns false for both missing and expired entries, which is
+	// exactly the branch that returns the Gemini sentinel below. With sliding
+	// TTL enabled in getOrCreateGroupCache, a successful Get also refreshes
+	// the entry's age so hot signatures stay alive across repeated reads.
+	entry, ok := sc.entries.Get(textHash)
+	if !ok {
 		if groupKey == "gemini" {
 			return "skip_thought_signature_validator", nil
 		}
 		return "", nil
 	}
-	if now.Sub(entry.Timestamp) > SignatureCacheTTL {
-		delete(sc.entries, textHash)
-		sc.mu.Unlock()
-		if groupKey == "gemini" {
-			return "skip_thought_signature_validator", nil
-		}
-		return "", nil
-	}
-
-	// Refresh TTL on access (sliding expiration).
-	entry.Timestamp = now
-	sc.entries[textHash] = entry
-	sc.mu.Unlock()
-
 	return entry.Signature, nil
 }
 
 // ClearSignatureCache clears signature cache for a specific model group or all groups.
 func ClearSignatureCache(modelName string) {
 	if modelName == "" {
+		// Two-phase clear: collect keys during Range, then delete outside the
+		// callback. Deleting from a sync.Map inside its Range is undefined
+		// behavior.
+		var keys []any
 		signatureCache.Range(func(key, _ any) bool {
-			signatureCache.Delete(key)
+			keys = append(keys, key)
 			return true
 		})
+		for _, key := range keys {
+			signatureCache.Delete(key)
+		}
 		return
 	}
 	groupKey := GetModelGroup(modelName)
@@ -267,11 +286,8 @@ func DeleteCachedSignatureRequired(ctx context.Context, modelName, text string) 
 		return nil
 	}
 	sc := val.(*groupCache)
-	sc.mu.Lock()
-	delete(sc.entries, textHash)
-	isEmpty := len(sc.entries) == 0
-	sc.mu.Unlock()
-	if isEmpty {
+	sc.entries.Delete(textHash)
+	if sc.entries.Len() == 0 {
 		signatureCache.Delete(groupKey)
 	}
 	return nil
@@ -282,13 +298,23 @@ func HasValidSignature(modelName, signature string) bool {
 	return (signature != "" && len(signature) >= MinValidSignatureLen) || (signature == "skip_thought_signature_validator" && GetModelGroup(modelName) == "gemini")
 }
 
+// GetModelGroup maps a model name to a signature-cache bucket.
+// Brand tokens are matched on path/separator boundaries to avoid substring
+// false positives such as "engpt-helper" matching "gpt".
 func GetModelGroup(modelName string) string {
-	if strings.Contains(modelName, "gpt") {
-		return "gpt"
-	} else if strings.Contains(modelName, "claude") {
-		return "claude"
-	} else if strings.Contains(modelName, "gemini") {
-		return "gemini"
+	lower := strings.ToLower(strings.TrimSpace(modelName))
+	parts := strings.FieldsFunc(lower, func(r rune) bool {
+		return r == '/' || r == '-' || r == '_' || r == '.' || r == ' '
+	})
+	for _, p := range parts {
+		switch {
+		case strings.HasPrefix(p, "gpt"):
+			return "gpt"
+		case strings.HasPrefix(p, "claude"):
+			return "claude"
+		case strings.HasPrefix(p, "gemini"):
+			return "gemini"
+		}
 	}
 	return modelName
 }

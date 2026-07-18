@@ -7,6 +7,7 @@
 package interactions
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -89,6 +90,23 @@ func TestInteractionsApply_TranslationMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInteractionsApply_InvalidBudgetReturnsError verifies an explicit invalid
+// budget (below -1) is rejected with a ThinkingError rather than silently passed through.
+func TestInteractionsApply_InvalidBudgetReturnsError(t *testing.T) {
+	applier := NewApplier()
+	out, err := applier.Apply([]byte(`{}`), thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: -5}, interactionsModel())
+	if err == nil {
+		t.Fatalf("expected ThinkingError for invalid budget, got nil (out=%s)", out)
+	}
+	var te *thinking.ThinkingError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *thinking.ThinkingError, got %T: %v", err, err)
+	}
+	if te.Code != thinking.ErrBudgetOutOfRange {
+		t.Fatalf("expected ErrBudgetOutOfRange, got %q", te.Code)
 	}
 }
 

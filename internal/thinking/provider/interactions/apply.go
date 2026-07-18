@@ -22,6 +22,12 @@ func init() {
 	thinking.RegisterProvider("interactions", NewApplier())
 }
 
+// SupportsNativeDisabled reports whether the native Interactions API honors an
+// explicit disable marker for ModeNone. Interactions disables thinking by setting
+// thinking_summaries="none" (and clearing levels), not via a disabled marker, so it
+// is not fully disabled-capable.
+func (a *Applier) SupportsNativeDisabled() bool { return false }
+
 // Apply writes thinking configuration using native Interactions generation_config fields.
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
 	if config.Mode != thinking.ModeBudget && config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto {
@@ -36,7 +42,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	case thinking.ModeLevel:
 		return applyInteractionsLevel(result, body, string(config.Level), modelInfo, "auto"), nil
 	case thinking.ModeBudget:
-		return applyInteractionsBudget(result, body, config.Budget, modelInfo, "auto"), nil
+		return applyInteractionsBudget(result, body, config.Budget, modelInfo, "auto")
 	case thinking.ModeAuto:
 		return setInteractionsThinkingSummaries(result, body, "auto"), nil
 	case thinking.ModeNone:
@@ -46,18 +52,18 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	}
 }
 
-func applyInteractionsBudget(result, original []byte, budget int, modelInfo *registry.ModelInfo, summariesFallback string) []byte {
+func applyInteractionsBudget(result, original []byte, budget int, modelInfo *registry.ModelInfo, summariesFallback string) ([]byte, error) {
 	level, ok := thinking.ConvertBudgetToLevel(budget)
 	if !ok {
-		return result
+		return result, thinking.NewThinkingError(thinking.ErrBudgetOutOfRange, "invalid budget for interactions thinking conversion")
 	}
 	switch level {
 	case string(thinking.LevelNone):
-		return setInteractionsThinkingSummaries(result, original, "none")
+		return setInteractionsThinkingSummaries(result, original, "none"), nil
 	case string(thinking.LevelAuto):
-		return setInteractionsThinkingSummaries(result, original, "auto")
+		return setInteractionsThinkingSummaries(result, original, "auto"), nil
 	default:
-		return applyInteractionsLevel(result, original, level, modelInfo, summariesFallback)
+		return applyInteractionsLevel(result, original, level, modelInfo, summariesFallback), nil
 	}
 }
 
@@ -74,7 +80,9 @@ func applyInteractionsNone(result, original []byte, config thinking.ThinkingConf
 	if config.Level != "" {
 		result = applyInteractionsLevel(result, original, string(config.Level), modelInfo, "none")
 	} else if config.Budget > 0 {
-		result = applyInteractionsBudget(result, original, config.Budget, modelInfo, "none")
+		// ModeNone with a positive budget: budget is always >= 1 here, so the
+		// conversion to a level cannot fail.
+		result, _ = applyInteractionsBudget(result, original, config.Budget, modelInfo, "none")
 	}
 	result, _ = sjson.SetBytes(result, "generation_config.thinking_summaries", "none")
 	return result

@@ -3,9 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
@@ -35,10 +33,14 @@ type antigravityReasoningReplayEntry struct {
 	Timestamp time.Time
 }
 
-var (
-	antigravityReasoningReplayMu      sync.Mutex
-	antigravityReasoningReplayEntries = make(map[string]antigravityReasoningReplayEntry)
-)
+var antigravityReasoningReplayCache = NewLRUCache[string, antigravityReasoningReplayEntry](AntigravityReasoningReplayCacheMaxEntries, AntigravityReasoningReplayCacheTTL, nil)
+
+func init() {
+	// Sliding TTL: every Get refreshes the entry age, matching the
+	// previous "oldest last-touched" eviction behavior.
+	antigravityReasoningReplayCache.SetSliding(true)
+	registerCacheCleanup(purgeExpiredAntigravityReasoningReplayCache)
+}
 
 type antigravityReasoningReplayKVClient interface {
 	KVGet(ctx context.Context, key string) ([]byte, bool, error)
@@ -93,16 +95,10 @@ func CacheAntigravityReasoningReplayItemsBestEffort(ctx context.Context, modelNa
 	}
 
 	cacheCleanupOnce.Do(startCacheCleanup)
-	now := time.Now()
-	antigravityReasoningReplayMu.Lock()
-	defer antigravityReasoningReplayMu.Unlock()
-	antigravityReasoningReplayEntries[key] = antigravityReasoningReplayEntry{
+	antigravityReasoningReplayCache.Set(key, antigravityReasoningReplayEntry{
 		Items:     normalized,
-		Timestamp: now,
-	}
-	if len(antigravityReasoningReplayEntries) > AntigravityReasoningReplayCacheMaxEntries {
-		evictOldestAntigravityReasoningReplayEntries(AntigravityReasoningReplayCacheEvictBatchSize)
-	}
+		Timestamp: time.Now(),
+	})
 	return true
 }
 
@@ -150,19 +146,10 @@ func GetAntigravityReasoningReplayItemsRequired(ctx context.Context, modelName, 
 	}
 
 	cacheCleanupOnce.Do(startCacheCleanup)
-	now := time.Now()
-	antigravityReasoningReplayMu.Lock()
-	defer antigravityReasoningReplayMu.Unlock()
-	entry, ok := antigravityReasoningReplayEntries[key]
+	entry, ok := antigravityReasoningReplayCache.Get(key)
 	if !ok {
 		return nil, false, nil
 	}
-	if now.Sub(entry.Timestamp) > AntigravityReasoningReplayCacheTTL {
-		delete(antigravityReasoningReplayEntries, key)
-		return nil, false, nil
-	}
-	entry.Timestamp = now
-	antigravityReasoningReplayEntries[key] = entry
 	return cloneAntigravityReasoningReplayItems(entry.Items), true, nil
 }
 
@@ -188,17 +175,13 @@ func DeleteAntigravityReasoningReplayItemRequired(ctx context.Context, modelName
 		_, errDel := client.KVDel(ctx, antigravityReasoningReplayKVKey(modelName, sessionKey))
 		return errDel
 	}
-	antigravityReasoningReplayMu.Lock()
-	delete(antigravityReasoningReplayEntries, key)
-	antigravityReasoningReplayMu.Unlock()
+	antigravityReasoningReplayCache.Delete(key)
 	return nil
 }
 
 // ClearAntigravityReasoningReplayCache clears all Antigravity reasoning replay state.
 func ClearAntigravityReasoningReplayCache() {
-	antigravityReasoningReplayMu.Lock()
-	antigravityReasoningReplayEntries = make(map[string]antigravityReasoningReplayEntry)
-	antigravityReasoningReplayMu.Unlock()
+	antigravityReasoningReplayCache.Clear()
 }
 
 func antigravityReasoningReplayCacheKey(modelName, sessionKey string) string {
@@ -313,35 +296,6 @@ func cloneAntigravityReasoningReplayItems(items [][]byte) [][]byte {
 	return cloned
 }
 
-func evictOldestAntigravityReasoningReplayEntries(count int) {
-	if count <= 0 || len(antigravityReasoningReplayEntries) == 0 {
-		return
-	}
-	type candidate struct {
-		key       string
-		timestamp time.Time
-	}
-	candidates := make([]candidate, 0, len(antigravityReasoningReplayEntries))
-	for key, entry := range antigravityReasoningReplayEntries {
-		candidates = append(candidates, candidate{key: key, timestamp: entry.Timestamp})
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].timestamp.Before(candidates[j].timestamp)
-	})
-	if count > len(candidates) {
-		count = len(candidates)
-	}
-	for i := 0; i < count; i++ {
-		delete(antigravityReasoningReplayEntries, candidates[i].key)
-	}
-}
-
 func purgeExpiredAntigravityReasoningReplayCache(now time.Time) {
-	antigravityReasoningReplayMu.Lock()
-	for key, entry := range antigravityReasoningReplayEntries {
-		if now.Sub(entry.Timestamp) > AntigravityReasoningReplayCacheTTL {
-			delete(antigravityReasoningReplayEntries, key)
-		}
-	}
-	antigravityReasoningReplayMu.Unlock()
+	antigravityReasoningReplayCache.PurgeExpired(now)
 }

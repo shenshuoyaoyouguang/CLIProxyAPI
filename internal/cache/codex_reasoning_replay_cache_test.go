@@ -357,10 +357,8 @@ func TestCodexReasoningReplayCacheBatchEvictsWhenFull(t *testing.T) {
 		}
 	}
 
-	codexReasoningReplayMu.Lock()
-	gotLen := len(codexReasoningReplayEntries)
-	codexReasoningReplayMu.Unlock()
-	if gotLen >= CodexReasoningReplayCacheMaxEntries {
-		t.Fatalf("cache entries = %d, want batch eviction below max %d", gotLen, CodexReasoningReplayCacheMaxEntries)
+	gotLen := codexReasoningReplayCache.Len()
+	if gotLen != CodexReasoningReplayCacheMaxEntries {
+		t.Fatalf("cache entries = %d, want exactly max %d (LRU evicts one per overflow)", gotLen, CodexReasoningReplayCacheMaxEntries)
 	}
 }

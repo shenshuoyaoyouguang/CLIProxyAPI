@@ -77,6 +77,27 @@ type ThinkingConfig struct {
 	Level ThinkingLevel
 }
 
+// NewBudgetConfig creates a ModeBudget config with the given budget.
+// Use for explicit numeric token budgets.
+func NewBudgetConfig(budget int) ThinkingConfig {
+	return ThinkingConfig{Mode: ModeBudget, Budget: budget, Level: ""}
+}
+
+// NewLevelConfig creates a ModeLevel config with the given level.
+func NewLevelConfig(level ThinkingLevel) ThinkingConfig {
+	return ThinkingConfig{Mode: ModeLevel, Level: level, Budget: 0}
+}
+
+// NewModeNoneConfig creates a ModeNone (disabled) config.
+func NewModeNoneConfig() ThinkingConfig {
+	return ThinkingConfig{Mode: ModeNone, Budget: 0, Level: ""}
+}
+
+// NewModeAutoConfig creates a ModeAuto (dynamic) config.
+func NewModeAutoConfig() ThinkingConfig {
+	return ThinkingConfig{Mode: ModeAuto, Budget: -1, Level: ""}
+}
+
 // SuffixResult represents the result of parsing a model name for thinking suffix.
 //
 // A thinking suffix is specified in the format model-name(value), where value
@@ -116,4 +137,12 @@ type ProviderApplier interface {
 	//   - Modified request body JSON
 	//   - ThinkingError if the configuration is invalid or unsupported
 	Apply(body []byte, config ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error)
+
+	// SupportsNativeDisabled reports whether the provider honors an explicit
+	// disable marker (e.g. thinking.type="disabled") for ModeNone instead of
+	// clamping to the lowest supported level. When true, a ModeNone request must
+	// stay fully disabled (Budget=0, Level="") rather than silently re-enabling
+	// thinking. This is the single source of truth for disabled-capable providers;
+	// validate.isDisabledCapableProvider consults it instead of a hardcoded list.
+	SupportsNativeDisabled() bool
 }

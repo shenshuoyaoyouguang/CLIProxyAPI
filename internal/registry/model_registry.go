@@ -144,6 +144,13 @@ type ModelRegistry struct {
 	mutex *sync.RWMutex
 	// availableModelsCache stores per-handler snapshots for GetAvailableModels.
 	availableModelsCache map[string]availableModelsCacheEntry
+	// availableModelsRebuild dedupes concurrent cache rebuilds per handlerType
+	// so only one goroutine builds (under an RLock) while others wait, instead
+	// of every miss contending for the write lock.
+	availableModelsRebuild map[string]*rebuildToken
+	// knownHandlerTypes tracks every handlerType that has ever been requested or
+	// rebuilt, so invalidation can trigger a background prefetch for all of them.
+	knownHandlerTypes map[string]struct{}
 	// hook is an optional callback sink for model registration changes
 	hook ModelRegistryHook
 }
@@ -156,27 +163,56 @@ var registryOnce sync.Once
 func GetGlobalRegistry() *ModelRegistry {
 	registryOnce.Do(func() {
 		globalRegistry = &ModelRegistry{
-			models:               make(map[string]*ModelRegistration),
-			clientModels:         make(map[string][]string),
-			clientModelInfos:     make(map[string]map[string]*ModelInfo),
-			clientProviders:      make(map[string]string),
-			availableModelsCache: make(map[string]availableModelsCacheEntry),
-			mutex:                &sync.RWMutex{},
+			models:                 make(map[string]*ModelRegistration),
+			clientModels:           make(map[string][]string),
+			clientModelInfos:       make(map[string]map[string]*ModelInfo),
+			clientProviders:        make(map[string]string),
+			availableModelsCache:   make(map[string]availableModelsCacheEntry),
+			availableModelsRebuild: make(map[string]*rebuildToken),
+			knownHandlerTypes:      make(map[string]struct{}),
+			mutex:                  &sync.RWMutex{},
 		}
 	})
 	return globalRegistry
 }
+
+// rebuildToken signals completion of an in-flight cache rebuild for one
+// handlerType. Waiters block on done until the building goroutine closes it.
+type rebuildToken struct {
+	done chan struct{}
+}
+
 func (r *ModelRegistry) ensureAvailableModelsCacheLocked() {
 	if r.availableModelsCache == nil {
 		r.availableModelsCache = make(map[string]availableModelsCacheEntry)
 	}
+	if r.availableModelsRebuild == nil {
+		r.availableModelsRebuild = make(map[string]*rebuildToken)
+	}
+	if r.knownHandlerTypes == nil {
+		r.knownHandlerTypes = make(map[string]struct{})
+	}
 }
 
+// invalidateAvailableModelsCacheLocked clears the per-handler snapshots and
+// triggers a background prefetch for every known handlerType. The next
+// GetAvailableModels call therefore hits the cache (read path never blocks on
+// a write lock). knownHandlerTypes survives the clear, so prefetch knows what
+// to rebuild; if nothing was ever requested, the prefetch is a no-op and the
+// cache is rebuilt lazily on the next read.
 func (r *ModelRegistry) invalidateAvailableModelsCacheLocked() {
 	if len(r.availableModelsCache) == 0 {
 		return
 	}
 	clear(r.availableModelsCache)
+	known := make([]string, 0, len(r.knownHandlerTypes))
+	for ht := range r.knownHandlerTypes {
+		known = append(known, ht)
+	}
+	if len(known) == 0 {
+		return
+	}
+	go r.prefetchHandlerTypes(known)
 }
 
 // LookupModelInfo searches dynamic registry (provider-specific > global) then static definitions.
@@ -231,6 +267,18 @@ func (r *ModelRegistry) SetHook(hook ModelRegistryHook) {
 const defaultModelRegistryHookTimeout = 5 * time.Second
 const modelQuotaExceededWindow = 5 * time.Minute
 
+// quotaStillActive reports whether a quota-exceeded timestamp is still
+// within the recovery window (i.e. the client remains throttled).
+func quotaStillActive(quotaTime *time.Time, now time.Time) bool {
+	return quotaTime != nil && now.Sub(*quotaTime) < modelQuotaExceededWindow
+}
+
+// quotaExpired reports whether a quota-exceeded timestamp has aged out
+// of the recovery window and should be cleared.
+func quotaExpired(quotaTime *time.Time, now time.Time) bool {
+	return quotaTime != nil && now.Sub(*quotaTime) >= modelQuotaExceededWindow
+}
+
 func (r *ModelRegistry) triggerModelsRegistered(provider, clientID string, models []*ModelInfo) {
 	hook := r.hook
 	if hook == nil {
@@ -271,16 +319,50 @@ func (r *ModelRegistry) triggerModelsUnregistered(provider, clientID string) {
 //   - clientID: Unique identifier for the client
 //   - clientProvider: Provider name (e.g., "gemini", "claude", "openai")
 //   - models: List of models that this client can provide
+//
+// RegisterClient registers a client's models, reconciling add/remove counts
+// and provider changes. Callers do not need to hold any lock; this method
+// guards its own state with r.mutex.
 func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models []*ModelInfo) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.ensureAvailableModelsCacheLocked()
 
 	provider := strings.ToLower(clientProvider)
-	uniqueModelIDs := make([]string, 0, len(models))
-	rawModelIDs := make([]string, 0, len(models))
-	newModels := make(map[string]*ModelInfo, len(models))
-	newCounts := make(map[string]int, len(models))
+	uniqueModelIDs, rawModelIDs, newModels, newCounts := r.prepareClientModelMapsLocked(models)
+
+	if len(uniqueModelIDs) == 0 {
+		// No models supplied; unregister existing client state if present.
+		r.handleEmptyModelsLocked(clientID)
+		misc.LogCredentialSeparator()
+		return
+	}
+
+	now := time.Now()
+	oldModels, hadExisting := r.clientModels[clientID]
+	oldProvider := r.clientProviders[clientID]
+	providerChanged := oldProvider != provider
+
+	if !hadExisting {
+		// Pure addition path.
+		r.registerClientPureAddLocked(clientID, provider, clientProvider, models, rawModelIDs, newModels, now)
+		misc.LogCredentialSeparator()
+		return
+	}
+
+	r.registerClientReconcileLocked(clientID, provider, clientProvider, models, uniqueModelIDs, rawModelIDs, newModels, newCounts, oldModels, oldProvider, providerChanged, now)
+	misc.LogCredentialSeparator()
+}
+
+// prepareClientModelMapsLocked builds the deduplicated model maps from the
+// client's reported models. It returns the unique model ID list (deduped), the
+// raw (non-deduped) model ID list, the unique model map, and per-ID counts.
+// Caller must hold r.mutex.
+func (r *ModelRegistry) prepareClientModelMapsLocked(models []*ModelInfo) (uniqueModelIDs, rawModelIDs []string, newModels map[string]*ModelInfo, newCounts map[string]int) {
+	uniqueModelIDs = make([]string, 0, len(models))
+	rawModelIDs = make([]string, 0, len(models))
+	newModels = make(map[string]*ModelInfo, len(models))
+	newCounts = make(map[string]int, len(models))
 	for _, model := range models {
 		if model == nil || model.ID == "" {
 			continue
@@ -293,95 +375,85 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 		newModels[model.ID] = model
 		uniqueModelIDs = append(uniqueModelIDs, model.ID)
 	}
+	return uniqueModelIDs, rawModelIDs, newModels, newCounts
+}
 
-	if len(uniqueModelIDs) == 0 {
-		// No models supplied; unregister existing client state if present.
-		r.unregisterClientInternal(clientID)
-		delete(r.clientModels, clientID)
-		delete(r.clientModelInfos, clientID)
+// handleEmptyModelsLocked clears a client's registered state when it reports no
+// models. Caller must hold r.mutex.
+func (r *ModelRegistry) handleEmptyModelsLocked(clientID string) {
+	r.unregisterClientInternal(clientID)
+	delete(r.clientModels, clientID)
+	delete(r.clientModelInfos, clientID)
+	delete(r.clientProviders, clientID)
+	r.invalidateAvailableModelsCacheLocked()
+}
+
+// registerClientPureAddLocked registers a brand-new client and all of its
+// models. Caller must hold r.mutex.
+func (r *ModelRegistry) registerClientPureAddLocked(clientID, provider, clientProvider string, models []*ModelInfo, rawModelIDs []string, newModels map[string]*ModelInfo, now time.Time) {
+	for _, modelID := range rawModelIDs {
+		model := newModels[modelID]
+		r.addModelRegistration(modelID, provider, model, now)
+	}
+	r.clientModels[clientID] = append([]string(nil), rawModelIDs...)
+	// Store client's own model infos
+	clientInfos := make(map[string]*ModelInfo, len(newModels))
+	for id, m := range newModels {
+		clientInfos[id] = cloneModelInfo(m)
+	}
+	r.clientModelInfos[clientID] = clientInfos
+	if provider != "" {
+		r.clientProviders[clientID] = provider
+	} else {
 		delete(r.clientProviders, clientID)
-		r.invalidateAvailableModelsCacheLocked()
-		misc.LogCredentialSeparator()
-		return
 	}
+	r.invalidateAvailableModelsCacheLocked()
+	r.triggerModelsRegistered(provider, clientID, models)
+	log.Debugf("Registered client %s from provider %s with %d models", clientID, clientProvider, len(rawModelIDs))
+}
 
-	now := time.Now()
-
-	oldModels, hadExisting := r.clientModels[clientID]
-	oldProvider := r.clientProviders[clientID]
-	providerChanged := oldProvider != provider
-	if !hadExisting {
-		// Pure addition path.
-		for _, modelID := range rawModelIDs {
-			model := newModels[modelID]
-			r.addModelRegistration(modelID, provider, model, now)
-		}
-		r.clientModels[clientID] = append([]string(nil), rawModelIDs...)
-		// Store client's own model infos
-		clientInfos := make(map[string]*ModelInfo, len(newModels))
-		for id, m := range newModels {
-			clientInfos[id] = cloneModelInfo(m)
-		}
-		r.clientModelInfos[clientID] = clientInfos
-		if provider != "" {
-			r.clientProviders[clientID] = provider
-		} else {
-			delete(r.clientProviders, clientID)
-		}
-		r.invalidateAvailableModelsCacheLocked()
-		r.triggerModelsRegistered(provider, clientID, models)
-		log.Debugf("Registered client %s from provider %s with %d models", clientID, clientProvider, len(rawModelIDs))
-		misc.LogCredentialSeparator()
-		return
-	}
-
-	oldCounts := make(map[string]int, len(oldModels))
-	for _, id := range oldModels {
-		oldCounts[id]++
-	}
-
-	added := make([]string, 0)
+// computeAddRemoveLocked derives the model IDs added and removed for a client
+// reconcile by comparing the previously registered counts with the new counts.
+// Caller must hold r.mutex.
+func (r *ModelRegistry) computeAddRemoveLocked(uniqueModelIDs []string, oldCounts, newCounts map[string]int) (added, removed []string) {
+	added = make([]string, 0)
 	for _, id := range uniqueModelIDs {
-		if oldCounts[id] == 0 {
+		if newCounts[id] != 0 && oldCounts[id] == 0 {
 			added = append(added, id)
 		}
 	}
-
-	removed := make([]string, 0)
+	removed = make([]string, 0)
 	for id := range oldCounts {
 		if newCounts[id] == 0 {
 			removed = append(removed, id)
 		}
 	}
+	return added, removed
+}
+
+// registerClientReconcileLocked reconciles an existing client's model set,
+// applying provider-change counts, removals, additions, metadata updates, and
+// client bookkeeping. Caller must hold r.mutex.
+func (r *ModelRegistry) registerClientReconcileLocked(
+	clientID, provider, clientProvider string,
+	models []*ModelInfo,
+	uniqueModelIDs, rawModelIDs []string,
+	newModels map[string]*ModelInfo,
+	newCounts map[string]int,
+	oldModels []string,
+	oldProvider string,
+	providerChanged bool,
+	now time.Time,
+) {
+	oldCounts := make(map[string]int, len(oldModels))
+	for _, id := range oldModels {
+		oldCounts[id]++
+	}
+
+	added, removed := r.computeAddRemoveLocked(uniqueModelIDs, oldCounts, newCounts)
 
 	// Handle provider change for overlapping models before modifications.
-	if providerChanged && oldProvider != "" {
-		for id, newCount := range newCounts {
-			if newCount == 0 {
-				continue
-			}
-			oldCount := oldCounts[id]
-			if oldCount == 0 {
-				continue
-			}
-			toRemove := newCount
-			if oldCount < toRemove {
-				toRemove = oldCount
-			}
-			if reg, ok := r.models[id]; ok && reg.Providers != nil {
-				if count, okProv := reg.Providers[oldProvider]; okProv {
-					if count <= toRemove {
-						delete(reg.Providers, oldProvider)
-						if reg.InfoByProvider != nil {
-							delete(reg.InfoByProvider, oldProvider)
-						}
-					} else {
-						reg.Providers[oldProvider] = count - toRemove
-					}
-				}
-			}
-		}
-	}
+	r.applyProviderChangeCountsLocked(oldProvider, provider, oldCounts, newCounts)
 
 	// Apply removals first to keep counters accurate.
 	for _, id := range removed {
@@ -483,7 +555,45 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 	}
 
 	log.Debugf("Reconciled client %s (provider %s) models: +%d, -%d", clientID, provider, len(added), len(removed))
-	misc.LogCredentialSeparator()
+}
+
+// applyProviderChangeCountsLocked adjusts model provider counts when a client's
+// provider changes, removing the old provider's share of overlapping models.
+// It is a no-op when there is no provider change or when oldProvider is empty.
+// Caller must hold r.mutex.
+func (r *ModelRegistry) applyProviderChangeCountsLocked(oldProvider, newProvider string, oldCounts, newCounts map[string]int) {
+	if oldProvider == "" || oldProvider == newProvider {
+		return
+	}
+	for id, newCount := range newCounts {
+		if newCount == 0 {
+			continue
+		}
+		oldCount := oldCounts[id]
+		if oldCount == 0 {
+			continue
+		}
+		toRemove := newCount
+		if oldCount < toRemove {
+			toRemove = oldCount
+		}
+		reg, ok := r.models[id]
+		if !ok || reg.Providers == nil {
+			continue
+		}
+		count, okProv := reg.Providers[oldProvider]
+		if !okProv {
+			continue
+		}
+		if count <= toRemove {
+			delete(reg.Providers, oldProvider)
+			if reg.InfoByProvider != nil {
+				delete(reg.InfoByProvider, oldProvider)
+			}
+		} else {
+			reg.Providers[oldProvider] = count - toRemove
+		}
+	}
 }
 
 func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *ModelInfo, now time.Time) {
@@ -810,29 +920,141 @@ func (r *ModelRegistry) ClientSupportsModel(clientID, modelID string) bool {
 func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any {
 	now := time.Now()
 
+	// Fast path: read under an RLock so other readers are never blocked.
 	r.mutex.RLock()
 	if cache, ok := r.availableModelsCache[handlerType]; ok && (cache.expiresAt.IsZero() || now.Before(cache.expiresAt)) {
 		models := cloneModelMaps(cache.models)
 		r.mutex.RUnlock()
 		return models
 	}
+	// A rebuild is already in flight for this handlerType: wait for it, then
+	// re-read the freshly populated cache instead of contending for the lock.
+	token := r.availableModelsRebuild[handlerType]
+	r.mutex.RUnlock()
+
+	if token != nil {
+		<-token.done
+		return r.GetAvailableModels(handlerType)
+	}
+
+	// No cache and no in-flight build: take singleflight ownership of the
+	// rebuild under the write lock, then build outside it. The
+	// availableModelsRebuild map enforces "at most one token per handlerType"
+	// (see rebuildAndPublish invariant note); readers that arrive after we
+	// release the lock will observe this token and wait on `done` rather
+	// than spawning a competing rebuild.
+	r.mutex.Lock()
+	if cache, ok := r.availableModelsCache[handlerType]; ok && (cache.expiresAt.IsZero() || now.Before(cache.expiresAt)) {
+		r.mutex.Unlock()
+		return cloneModelMaps(cache.models)
+	}
+	if token := r.availableModelsRebuild[handlerType]; token != nil {
+		r.mutex.Unlock()
+		<-token.done
+		return r.GetAvailableModels(handlerType)
+	}
+	token = &rebuildToken{done: make(chan struct{})}
+	r.ensureAvailableModelsCacheLocked()
+	r.availableModelsRebuild[handlerType] = token
+	r.knownHandlerTypes[handlerType] = struct{}{}
+	r.mutex.Unlock()
+
+	return r.rebuildAndPublish(handlerType, token)
+}
+
+// rebuildAndPublish builds the model snapshot for a handlerType under an RLock
+// (so it never blocks readers) and publishes it under a short write lock. The
+// owner token is always closed so any waiter (or prefetch) is released. If a
+// newer builder has superseded this token, only the cache is updated and this
+// token is removed by its own owner when that builder runs; this builder still
+// closes its own `done` so its waiters are never stranded.
+//
+// Singleflight invariant: at most one *rebuildToken per handlerType exists in
+// r.availableModelsRebuild at any time. Both GetAvailableModels and
+// prefetchHandlerType enforce this by holding r.mutex (write lock) while
+// checking for an existing token before inserting a new one. Because of this
+// invariant, the `cur == token` branch below is the only path that fires in
+// practice; the else branch is defensive. If it ever fires (e.g. a future code
+// path replaces the in-flight token), closing `done` here releases any goroutine
+// blocked in GetAvailableModels on `<-token.done` instead of leaving it blocked
+// forever. We never close `cur.done` in the else branch because that token is
+// owned by the superseding builder, which will close it.
+func (r *ModelRegistry) rebuildAndPublish(handlerType string, token *rebuildToken) []map[string]any {
+	now := time.Now()
+	r.mutex.RLock()
+	models, expiresAt := r.buildAvailableModelsLocked(handlerType, now)
 	r.mutex.RUnlock()
 
 	r.mutex.Lock()
-	defer r.mutex.Unlock()
 	r.ensureAvailableModelsCacheLocked()
-
-	if cache, ok := r.availableModelsCache[handlerType]; ok && (cache.expiresAt.IsZero() || now.Before(cache.expiresAt)) {
-		return cloneModelMaps(cache.models)
-	}
-
-	models, expiresAt := r.buildAvailableModelsLocked(handlerType, now)
 	r.availableModelsCache[handlerType] = availableModelsCacheEntry{
 		models:    cloneModelMaps(models),
 		expiresAt: expiresAt,
 	}
+	if cur, ok := r.availableModelsRebuild[handlerType]; ok && cur == token {
+		delete(r.availableModelsRebuild, handlerType)
+	} else if ok {
+		// Defensive: a newer builder superseded this token. This violates the
+		// singleflight invariant and must not happen with the current callers.
+		// Log it for observability/metrics; the token remains in the map and will
+		// be closed by its own owner. Either way, we still close *our* token's
+		// done below so our waiters are released.
+		log.Warnf("rebuildAndPublish: superseded token for handlerType %q detected; singleflight invariant broken", handlerType)
+	}
+	// Always release this token's waiters. This is what unblocks any goroutine
+	// blocked in GetAvailableModels on `<-token.done`. Closing our own token can
+	// never double-close because each token has exactly one owning rebuild call.
+	close(token.done)
+	r.mutex.Unlock()
 
 	return models
+}
+
+// prefetchHandlerTypes rebuilds every supplied handlerType in the background so
+// the read path hits the cache without ever taking the write lock.
+func (r *ModelRegistry) prefetchHandlerTypes(handlerTypes []string) {
+	for _, ht := range handlerTypes {
+		r.prefetchHandlerType(ht)
+	}
+}
+
+// prefetchHandlerType triggers a background rebuild for a single handlerType if
+// it is neither cached nor already in flight.
+func (r *ModelRegistry) prefetchHandlerType(handlerType string) {
+	r.mutex.RLock()
+	now := time.Now()
+	fresh := false
+	if cache, ok := r.availableModelsCache[handlerType]; ok && (cache.expiresAt.IsZero() || now.Before(cache.expiresAt)) {
+		fresh = true
+	}
+	inFlight := false
+	if _, ok := r.availableModelsRebuild[handlerType]; ok {
+		inFlight = true
+	}
+	r.mutex.RUnlock()
+	if fresh || inFlight {
+		return
+	}
+
+	r.mutex.Lock()
+	// Re-check after acquiring the write lock; another goroutine may have
+	// filled or claimed the rebuild in the meantime.
+	now = time.Now()
+	if cache, ok := r.availableModelsCache[handlerType]; ok && (cache.expiresAt.IsZero() || now.Before(cache.expiresAt)) {
+		r.mutex.Unlock()
+		return
+	}
+	if _, ok := r.availableModelsRebuild[handlerType]; ok {
+		r.mutex.Unlock()
+		return
+	}
+	token := &rebuildToken{done: make(chan struct{})}
+	r.ensureAvailableModelsCacheLocked()
+	r.availableModelsRebuild[handlerType] = token
+	r.knownHandlerTypes[handlerType] = struct{}{}
+	r.mutex.Unlock()
+
+	go r.rebuildAndPublish(handlerType, token)
 }
 
 func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.Time) ([]map[string]any, time.Time) {
@@ -1003,7 +1225,7 @@ func (r *ModelRegistry) GetAvailableModelsByProvider(provider string) []*ModelIn
 					if p, okProvider := r.clientProviders[clientID]; !okProvider || p != provider {
 						continue
 					}
-					if quotaTime != nil && now.Sub(*quotaTime) < modelQuotaExceededWindow {
+					if quotaStillActive(quotaTime, now) {
 						expiredClients++
 					}
 				}
@@ -1061,7 +1283,7 @@ func (r *ModelRegistry) GetModelCount(modelID string) int {
 		// Count clients that have exceeded quota but haven't recovered yet
 		expiredClients := 0
 		for _, quotaTime := range registration.QuotaExceededClients {
-			if quotaTime != nil && now.Sub(*quotaTime) < modelQuotaExceededWindow {
+			if quotaStillActive(quotaTime, now) {
 				expiredClients++
 			}
 		}
@@ -1098,23 +1320,10 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 		count int
 	}
 	providers := make([]providerCount, 0, len(registration.Providers))
-	// suspendedByProvider := make(map[string]int)
-	// if registration.SuspendedClients != nil {
-	// 	for clientID := range registration.SuspendedClients {
-	// 		if provider, ok := r.clientProviders[clientID]; ok && provider != "" {
-	// 			suspendedByProvider[provider]++
-	// 		}
-	// 	}
-	// }
 	for name, count := range registration.Providers {
 		if count <= 0 {
 			continue
 		}
-		// adjusted := count - suspendedByProvider[name]
-		// if adjusted <= 0 {
-		// 	continue
-		// }
-		// providers = append(providers, providerCount{name: name, count: adjusted})
 		providers = append(providers, providerCount{name: name, count: count})
 	}
 	if len(providers) == 0 {
@@ -1284,7 +1493,7 @@ func (r *ModelRegistry) CleanupExpiredQuotas() {
 
 	for modelID, registration := range r.models {
 		for clientID, quotaTime := range registration.QuotaExceededClients {
-			if quotaTime != nil && now.Sub(*quotaTime) >= modelQuotaExceededWindow {
+			if quotaExpired(quotaTime, now) {
 				delete(registration.QuotaExceededClients, clientID)
 				invalidated = true
 				log.Debugf("Cleaned up expired quota tracking for model %s, client %s", modelID, clientID)
@@ -1319,7 +1528,11 @@ func (r *ModelRegistry) GetFirstAvailableModel(handlerType string) (string, erro
 		// Extract created timestamps from map
 		createdI, okI := models[i]["created"].(int64)
 		createdJ, okJ := models[j]["created"].(int64)
-		if !okI || !okJ {
+		if okI != okJ {
+			// A model with a known created timestamp sorts before one without.
+			return okI
+		}
+		if !okI {
 			return false
 		}
 		return createdI > createdJ

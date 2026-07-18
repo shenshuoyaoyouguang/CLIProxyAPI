@@ -18,17 +18,21 @@ type pluginProviderApplier struct {
 
 var providerAppliersMu sync.RWMutex
 
-// nativeProviderAppliers maps built-in provider names to their implementations.
-var nativeProviderAppliers = map[string]ProviderApplier{
-	"gemini":      nil,
-	"claude":      nil,
-	"openai":      nil,
-	"codex":       nil,
-	"antigravity": nil,
-	"kimi":        nil,
-	"xai":         nil,
-	"deepseek":    nil,
+// nativeProviderNames is the allowlist of built-in provider names.
+// Their appliers are populated via RegisterProvider during init.
+var nativeProviderNames = map[string]bool{
+	"gemini":      true,
+	"claude":      true,
+	"openai":      true,
+	"codex":       true,
+	"antigravity": true,
+	"kimi":        true,
+	"xai":         true,
+	"deepseek":    true,
 }
+
+// nativeProviderAppliers maps built-in provider names to their registered appliers.
+var nativeProviderAppliers = map[string]ProviderApplier{}
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.
 var pluginProviderAppliers = map[string]pluginProviderApplier{}
@@ -42,8 +46,10 @@ func GetProviderApplier(provider string) ProviderApplier {
 	}
 	providerAppliersMu.RLock()
 	defer providerAppliersMu.RUnlock()
-	if nativeApplier, okNative := nativeProviderAppliers[provider]; okNative {
-		return nativeApplier
+	if nativeProviderNames[provider] {
+		if applier, ok := nativeProviderAppliers[provider]; ok {
+			return applier
+		}
 	}
 	return pluginProviderAppliers[provider].applier
 }
@@ -332,7 +338,9 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	// Get config: suffix priority over body
 	var config ThinkingConfig
 	if suffixResult.HasSuffix {
-		config = parseSuffixToConfig(suffixResult.RawSuffix, toFormat, modelID)
+		// Suffix parsing is provider-agnostic; pass fromFormat for log consistency
+		// with the body-extraction path's primary source format.
+		config = parseSuffixToConfig(suffixResult.RawSuffix, fromFormat, modelID)
 		log.WithFields(log.Fields{
 			"provider": toFormat,
 			"model":    modelID,
@@ -485,33 +493,32 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 	}
 
 	provider = strings.ToLower(strings.TrimSpace(provider))
-	config := extractThinkingConfig(body, provider)
-	if !hasThinkingConfig(config) {
-		switch provider {
-		case "openai-response":
-			config = extractCodexConfig(body)
-		case "openai":
-			config = extractCodexConfig(body)
-		}
-	}
-	return reasoningEffortFromConfig(config)
+	return reasoningEffortFromConfig(resolveThinkingConfigForProvider(body, provider))
 }
 
 // ExtractTranslatedReasoningEffort returns the final provider payload's thinking
 // setting as a canonical reasoning_effort label for usage logging.
 func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
+	return reasoningEffortFromConfig(resolveThinkingConfigForProvider(body, provider))
+}
+
+// resolveThinkingConfigForProvider extracts thinking settings for usage labeling.
+// OpenAI family accepts both Chat Completions (reasoning_effort) and Responses
+// (reasoning.effort) shapes; try both when the primary extractor finds nothing.
+func resolveThinkingConfigForProvider(body []byte, provider string) ThinkingConfig {
 	config := extractThinkingConfig(body, provider)
-	if !hasThinkingConfig(config) {
-		switch provider {
-		case "openai", "openai-response":
-			config = extractCodexConfig(body)
-			if !hasThinkingConfig(config) {
-				config = extractOpenAIConfig(body)
-			}
+	if hasThinkingConfig(config) {
+		return config
+	}
+	switch provider {
+	case "openai", "openai-response":
+		config = extractCodexConfig(body)
+		if !hasThinkingConfig(config) {
+			config = extractOpenAIConfig(body)
 		}
 	}
-	return reasoningEffortFromConfig(config)
+	return config
 }
 
 func reasoningEffortFromSuffix(suffix SuffixResult) string {
@@ -543,6 +550,20 @@ func reasoningEffortFromConfig(config ThinkingConfig) string {
 	}
 }
 
+// configFromLevelName maps a thinking level string
+// ("none"/"auto"/level name) to a canonical ThinkingConfig.
+// Matching is case-insensitive with leading/trailing whitespace trimmed.
+func configFromLevelName(value string) ThinkingConfig {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "none":
+		return ThinkingConfig{Mode: ModeNone, Budget: 0}
+	case "auto":
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+	default:
+		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	}
+}
+
 // extractClaudeConfig extracts thinking configuration from Claude format request body.
 //
 // Claude API format:
@@ -566,14 +587,7 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 			if value == "" {
 				return ThinkingConfig{}
 			}
-			switch value {
-			case "none":
-				return ThinkingConfig{Mode: ModeNone, Budget: 0}
-			case "auto":
-				return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-			default:
-				return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
-			}
+			return configFromLevelName(value)
 		}
 		return ThinkingConfig{}
 	}
@@ -622,15 +636,7 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 		level = gjson.GetBytes(body, prefix+".thinking_level")
 	}
 	if level.Exists() {
-		value := level.String()
-		switch value {
-		case "none":
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		case "auto":
-			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-		default:
-			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
-		}
+		return configFromLevelName(level.String())
 	}
 
 	// Check thinkingBudget (Gemini 2.5 format)
@@ -668,14 +674,7 @@ func extractInteractionsConfig(body []byte) ThinkingConfig {
 			continue
 		}
 		value := strings.ToLower(strings.TrimSpace(level.String()))
-		switch value {
-		case "none":
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		case "auto":
-			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-		default:
-			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
-		}
+		return configFromLevelName(value)
 	}
 
 	for _, path := range []string{

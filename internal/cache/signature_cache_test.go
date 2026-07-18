@@ -413,6 +413,34 @@ func TestCacheSignature_ExpirationLogic(t *testing.T) {
 	_ = time.Now() // Acknowledge we're not testing time passage
 }
 
+// TestSignatureCache_UsesSlidingTTL verifies that the signature cache's inner
+// LRU has sliding TTL enabled, so frequent reads keep hot signatures alive.
+// This pins the getOrCreateGroupCache configuration and prevents regressions
+// that would revert to absolute TTL (which caused thundering-herd
+// re-validation of frequently accessed signatures).
+func TestSignatureCache_UsesSlidingTTL(t *testing.T) {
+	ClearSignatureCache("")
+
+	text := "sliding-ttl-text"
+	sig := "validSig1234567890123456789012345678901234567890123456"
+	CacheSignature(testModelName, text, sig)
+
+	groupKey := GetModelGroup(testModelName)
+	val, ok := signatureCache.Load(groupKey)
+	if !ok {
+		t.Fatalf("signatureCache entry for group %q not found", groupKey)
+	}
+	sc := val.(*groupCache)
+	if !sc.entries.sliding {
+		t.Fatalf("signature cache LRU must have sliding TTL enabled to keep hot entries alive")
+	}
+
+	// Sanity check: the entry is retrievable.
+	if got := GetCachedSignature(testModelName, text); got != sig {
+		t.Fatalf("GetCachedSignature() = %q, want %q", got, sig)
+	}
+}
+
 func TestSignatureModeSetters_LogAtInfoLevel(t *testing.T) {
 	logger := log.StandardLogger()
 	previousOutput := logger.Out
@@ -497,5 +525,28 @@ func TestSignatureBypassStrictMode_LogsAtDebugLevel(t *testing.T) {
 	}
 	if !strings.Contains(output, "basic mode (R/E + 0x12)") {
 		t.Fatalf("expected debug output for basic bypass mode, got: %q", output)
+	}
+}
+
+func TestGetModelGroup_BoundaryMatch(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"gpt-5.2", "gpt"},
+		{"openai/gpt-4o", "gpt"},
+		{"claude-sonnet-4-5", "claude"},
+		{"gemini-3-pro-preview", "gemini"},
+		{"my-claude-proxy", "claude"},
+		{"legacy-gpt-bridge", "gpt"},
+		// Substring inside a token should not match brand groups.
+		{"engpt-helper", "engpt-helper"},
+		{"superclaudex", "superclaudex"},
+		{"custom-model", "custom-model"},
+	}
+	for _, tc := range cases {
+		if got := GetModelGroup(tc.name); got != tc.want {
+			t.Errorf("GetModelGroup(%q) = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

@@ -192,3 +192,35 @@ func TestDeepSeekApply_UserDefinedDisabledStripsReasoningEffort(t *testing.T) {
 		t.Errorf("expected thinking.type=disabled, payload: %s", out)
 	}
 }
+
+// TestDeepSeekApply_ModeNoneDisabledSemantics is a regression test asserting that an
+// explicit ModeNone config on a real DeepSeek model always emits thinking.type="disabled"
+// and removes the legacy reasoning_effort field. This pins the disabled semantic so the
+// upstream never sees a re-enabled effort.
+func TestDeepSeekApply_ModeNoneDisabledSemantics(t *testing.T) {
+	applier := NewApplier()
+	model := deepseekModel() // has discrete Levels, is in isDisabledCapableProvider
+
+	cases := []struct {
+		name   string
+		config thinking.ThinkingConfig
+	}{
+		{name: "budget_zero", config: thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}},
+		// Even a clamped positive budget keeps ModeNone fully disabled for DeepSeek.
+		{name: "budget_clamped_positive", config: thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 4096}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := applier.Apply([]byte(`{"reasoning_effort":"high"}`), tc.config, model)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := gjson.GetBytes(out, "thinking.type").String(); got != "disabled" {
+				t.Errorf("expected thinking.type=disabled, got %q (payload: %s)", got, out)
+			}
+			if gjson.GetBytes(out, "reasoning_effort").Exists() {
+				t.Errorf("reasoning_effort must be removed, payload: %s", out)
+			}
+		})
+	}
+}

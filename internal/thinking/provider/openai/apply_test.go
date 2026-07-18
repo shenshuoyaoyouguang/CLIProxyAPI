@@ -6,6 +6,7 @@
 package openai
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -102,6 +103,24 @@ func TestOpenAIApply_NilThinkingPassthrough(t *testing.T) {
 	}
 	if string(out) != string(body) {
 		t.Fatalf("expected passthrough, got %s", out)
+	}
+}
+
+// TestOpenAIApply_UserDefinedInvalidBudgetReturnsError verifies an explicit invalid
+// budget (below -1) for a user-defined model is rejected with a ThinkingError.
+func TestOpenAIApply_UserDefinedInvalidBudgetReturnsError(t *testing.T) {
+	a := NewApplier()
+	model := &registry.ModelInfo{ID: "custom-model", Type: "openai", UserDefined: true}
+	out, err := a.Apply([]byte(`{}`), thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: -5}, model)
+	if err == nil {
+		t.Fatalf("expected ThinkingError for invalid budget, got nil (out=%s)", out)
+	}
+	var te *thinking.ThinkingError
+	if !errors.As(err, &te) {
+		t.Fatalf("expected *thinking.ThinkingError, got %T: %v", err, err)
+	}
+	if te.Code != thinking.ErrBudgetOutOfRange {
+		t.Fatalf("expected ErrBudgetOutOfRange, got %q", te.Code)
 	}
 }
 

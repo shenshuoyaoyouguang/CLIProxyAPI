@@ -3,9 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
@@ -34,10 +32,14 @@ type xaiReasoningReplayEntry struct {
 	Timestamp time.Time
 }
 
-var (
-	xaiReasoningReplayMu      sync.Mutex
-	xaiReasoningReplayEntries = make(map[string]xaiReasoningReplayEntry)
-)
+var xaiReasoningReplayCache = NewLRUCache[string, xaiReasoningReplayEntry](XAIReasoningReplayCacheMaxEntries, XAIReasoningReplayCacheTTL, nil)
+
+func init() {
+	// Sliding TTL: every Get refreshes the entry age, matching the
+	// previous "oldest last-touched" eviction behavior.
+	xaiReasoningReplayCache.SetSliding(true)
+	registerCacheCleanup(purgeExpiredXAIReasoningReplayCache)
+}
 
 type xaiReasoningReplayKVClient interface {
 	KVGet(ctx context.Context, key string) ([]byte, bool, error)
@@ -118,16 +120,10 @@ func StoreXAIReasoningReplayItems(ctx context.Context, modelName, sessionKey str
 	}
 
 	cacheCleanupOnce.Do(startCacheCleanup)
-	now := time.Now()
-	xaiReasoningReplayMu.Lock()
-	defer xaiReasoningReplayMu.Unlock()
-	xaiReasoningReplayEntries[key] = xaiReasoningReplayEntry{
+	xaiReasoningReplayCache.Set(key, xaiReasoningReplayEntry{
 		Items:     normalized,
-		Timestamp: now,
-	}
-	if len(xaiReasoningReplayEntries) > XAIReasoningReplayCacheMaxEntries {
-		evictOldestXAIReasoningReplayEntriesLocked(XAIReasoningReplayCacheEvictBatchSize)
-	}
+		Timestamp: time.Now(),
+	})
 	return XAIReasoningReplayStored
 }
 
@@ -175,19 +171,10 @@ func GetXAIReasoningReplayItemsRequired(ctx context.Context, modelName, sessionK
 	}
 
 	cacheCleanupOnce.Do(startCacheCleanup)
-	now := time.Now()
-	xaiReasoningReplayMu.Lock()
-	defer xaiReasoningReplayMu.Unlock()
-	entry, ok := xaiReasoningReplayEntries[key]
+	entry, ok := xaiReasoningReplayCache.Get(key)
 	if !ok {
 		return nil, false, nil
 	}
-	if now.Sub(entry.Timestamp) > XAIReasoningReplayCacheTTL {
-		delete(xaiReasoningReplayEntries, key)
-		return nil, false, nil
-	}
-	entry.Timestamp = now
-	xaiReasoningReplayEntries[key] = entry
 	return cloneXAIReasoningReplayItems(entry.Items), true, nil
 }
 
@@ -213,17 +200,13 @@ func DeleteXAIReasoningReplayItemRequired(ctx context.Context, modelName, sessio
 		_, errDel := client.KVDel(ctx, xaiReasoningReplayKVKey(modelName, sessionKey))
 		return errDel
 	}
-	xaiReasoningReplayMu.Lock()
-	delete(xaiReasoningReplayEntries, key)
-	xaiReasoningReplayMu.Unlock()
+	xaiReasoningReplayCache.Delete(key)
 	return nil
 }
 
 // ClearXAIReasoningReplayCache clears all xAI reasoning replay state.
 func ClearXAIReasoningReplayCache() {
-	xaiReasoningReplayMu.Lock()
-	xaiReasoningReplayEntries = make(map[string]xaiReasoningReplayEntry)
-	xaiReasoningReplayMu.Unlock()
+	xaiReasoningReplayCache.Clear()
 }
 
 func xaiReasoningReplayCacheKey(modelName, sessionKey string) string {
@@ -380,35 +363,6 @@ func cloneXAIReasoningReplayItems(items [][]byte) [][]byte {
 	return cloned
 }
 
-func evictOldestXAIReasoningReplayEntriesLocked(count int) {
-	if count <= 0 || len(xaiReasoningReplayEntries) == 0 {
-		return
-	}
-	type candidate struct {
-		key       string
-		timestamp time.Time
-	}
-	candidates := make([]candidate, 0, len(xaiReasoningReplayEntries))
-	for key, entry := range xaiReasoningReplayEntries {
-		candidates = append(candidates, candidate{key: key, timestamp: entry.Timestamp})
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].timestamp.Before(candidates[j].timestamp)
-	})
-	if count > len(candidates) {
-		count = len(candidates)
-	}
-	for i := 0; i < count; i++ {
-		delete(xaiReasoningReplayEntries, candidates[i].key)
-	}
-}
-
 func purgeExpiredXAIReasoningReplayCache(now time.Time) {
-	xaiReasoningReplayMu.Lock()
-	for key, entry := range xaiReasoningReplayEntries {
-		if now.Sub(entry.Timestamp) > XAIReasoningReplayCacheTTL {
-			delete(xaiReasoningReplayEntries, key)
-		}
-	}
-	xaiReasoningReplayMu.Unlock()
+	xaiReasoningReplayCache.PurgeExpired(now)
 }
