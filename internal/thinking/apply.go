@@ -18,17 +18,20 @@ type pluginProviderApplier struct {
 
 var providerAppliersMu sync.RWMutex
 
-// nativeProviderNames is the allowlist of built-in provider names.
+// nativeProviderNames is the allowlist of known built-in provider names.
 // Their appliers are populated via RegisterProvider during init.
+// GetProviderApplier also accepts any name present in nativeProviderAppliers so
+// a missing allowlist entry cannot silently drop a registered applier.
 var nativeProviderNames = map[string]bool{
-	"gemini":      true,
-	"claude":      true,
-	"openai":      true,
-	"codex":       true,
-	"antigravity": true,
-	"kimi":        true,
-	"xai":         true,
-	"deepseek":    true,
+	"gemini":       true,
+	"claude":       true,
+	"openai":       true,
+	"codex":        true,
+	"antigravity":  true,
+	"kimi":         true,
+	"xai":          true,
+	"deepseek":     true,
+	"interactions": true,
 }
 
 // nativeProviderAppliers maps built-in provider names to their registered appliers.
@@ -39,6 +42,8 @@ var pluginProviderAppliers = map[string]pluginProviderApplier{}
 
 // GetProviderApplier returns the ProviderApplier for the given provider name.
 // Returns nil if the provider is not registered.
+// Lookup order: native map (any RegisterProvider result), then plugin map.
+// The allowlist alone must never hide a successfully registered native applier.
 func GetProviderApplier(provider string) ProviderApplier {
 	provider = normalizedProviderName(provider)
 	if provider == "" {
@@ -46,10 +51,8 @@ func GetProviderApplier(provider string) ProviderApplier {
 	}
 	providerAppliersMu.RLock()
 	defer providerAppliersMu.RUnlock()
-	if nativeProviderNames[provider] {
-		if applier, ok := nativeProviderAppliers[provider]; ok {
-			return applier
-		}
+	if applier, ok := nativeProviderAppliers[provider]; ok && applier != nil {
+		return applier
 	}
 	return pluginProviderAppliers[provider].applier
 }
@@ -57,11 +60,12 @@ func GetProviderApplier(provider string) ProviderApplier {
 // RegisterProvider registers a provider applier by name.
 func RegisterProvider(name string, applier ProviderApplier) {
 	name = normalizedProviderName(name)
-	if name == "" {
+	if name == "" || applier == nil {
 		return
 	}
 	providerAppliersMu.Lock()
 	defer providerAppliersMu.Unlock()
+	nativeProviderNames[name] = true
 	nativeProviderAppliers[name] = applier
 }
 

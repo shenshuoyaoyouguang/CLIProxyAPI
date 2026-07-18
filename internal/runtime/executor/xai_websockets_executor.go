@@ -403,14 +403,6 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
 	executionSessionID := executionSessionIDFromOptions(opts)
-	stateSessionID := xaiExecutionSessionID(req, opts)
-	if stateSessionID == "" {
-		stateSessionID = executionSessionID
-	}
-	idMapper := newXAIWebsocketRequestIDMapper(e.idStore, stateSessionID, req.Payload)
-	if xaiInputHasItemType(req.Payload, "compaction_trigger") {
-		return e.executeCompactionTriggerFromWebsocketContext(ctx, auth, req, opts, idMapper)
-	}
 
 	// Keep websocket on the official API base URL (or an explicit non-default
 	// base_url). Do not reuse xaiChatBaseURL: cli-chat-proxy only accepts HTTP
@@ -425,8 +417,16 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		return nil, err
 	}
 
-	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
-	defer reporter.TrackFailure(ctx, &err)
+	// Use the fully resolved session ID from prepareResponsesRequest (which
+	// includes execution session, client prompt_cache_key, and Claude Code
+	// session) for the WebSocket idMapper so multi-turn previous_response_id
+	// remapping and transcript state work consistently with HTTP path.
+	stateSessionID := prepared.sessionID
+	idMapper := newXAIWebsocketRequestIDMapper(e.idStore, stateSessionID, req.Payload)
+
+	if xaiInputHasItemType(req.Payload, "compaction_trigger") {
+		return e.executeCompactionTriggerFromWebsocketContext(ctx, auth, req, opts, idMapper)
+	}
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildXAIResponsesWebsocketURL(httpURL)
@@ -454,7 +454,8 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		}
 		prepared.body = idMapper.upstreamRequestPayload(prepared.body)
 	}
-	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
+	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
 
 	wsHeaders := applyXAIWebsocketHeaders(http.Header{}, auth, token, prepared.sessionID)
 	wsReqBody := buildXAIWebsocketRequestBody(prepared.body)

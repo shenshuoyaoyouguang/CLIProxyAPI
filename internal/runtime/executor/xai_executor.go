@@ -953,7 +953,9 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body = normalizeCodexInstructions(body)
 	body = sanitizeXAIResponsesBody(body, baseModel)
 	body = normalizeXAIImageRefs(body)
-	body = ensureXAIServiceTier(body, opts)
+	if to != sdktranslator.FormatCodex {
+		body = ensureXAIServiceTier(body, opts)
+	}
 
 	sessionID, sessionSource, errSession := xaiResolveSessionID(ctx, req, opts, baseModel, body)
 	if errSession != nil {
@@ -1166,10 +1168,11 @@ func applyXAIChatHeaders(r *http.Request, auth *cliproxyauth.Auth, token string,
 
 // xaiResolveSessionID resolves the sticky conversation key used for
 // prompt_cache_key and x-grok-conv-id. Priority:
-//  1) trusted execution session metadata
-//  2) client prompt_cache_key on the raw request or prepared body
-//  3) Claude Code session-derived cache (any model when session is present)
-//  4) composer-only: generate a UUID so isolated conversations stay sticky
+//  1. trusted execution session metadata
+//  2. client prompt_cache_key on the raw request or prepared body
+//  3. Claude Code session-derived cache (any model when session is present)
+//  4. composer-only: generate a UUID so isolated conversations stay sticky
+//
 // Non-composer models without (1)-(3) stay without a key (stateless).
 func xaiResolveSessionID(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string, body []byte) (sessionID string, source string, err error) {
 	if value := xaiMetadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
@@ -1186,7 +1189,7 @@ func xaiResolveSessionID(ctx context.Context, req cliproxyexecutor.Request, opts
 	}
 	cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, baseModel, req.Payload, opts.Headers)
 	if errCache != nil {
-		return "", "", errCache
+		helps.LogWithRequestID(ctx).WithError(errCache).Debug("xai: ClaudeCodePromptCache error, falling through")
 	}
 	if ok {
 		return cached.ID, "claude_code", nil
@@ -1195,13 +1198,6 @@ func xaiResolveSessionID(ctx context.Context, req cliproxyexecutor.Request, opts
 		return uuid.NewString(), "composer_uuid", nil
 	}
 	return "", "none", nil
-}
-
-// xaiResolveComposerSessionID is retained for callers/tests that only need the
-// session identifier; source metadata is available via xaiResolveSessionID.
-func xaiResolveComposerSessionID(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string) (string, error) {
-	sessionID, _, err := xaiResolveSessionID(ctx, req, opts, baseModel, nil)
-	return sessionID, err
 }
 
 func xaiExecutionSessionID(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
@@ -1217,7 +1213,6 @@ func xaiExecutionSessionID(req cliproxyexecutor.Request, opts cliproxyexecutor.O
 	return ""
 }
 
-// ensureXAIServiceTier keeps a body-level service_tier when present; otherwise
 // injects a non-auto tier from request metadata so clients that only surface
 // the field via handlers metadata still reach xAI.
 func ensureXAIServiceTier(body []byte, opts cliproxyexecutor.Options) []byte {
