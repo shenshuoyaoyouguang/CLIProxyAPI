@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/ratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
@@ -112,6 +113,9 @@ type Service struct {
 	homePluginSyncMu    sync.Mutex
 	homePluginSyncKey   string
 	homePluginSyncFetch func(context.Context, sdkpluginstore.PluginSyncRequest) (sdkpluginstore.PluginSyncResponse, error)
+
+	// DeepSeek gateway hook for concurrency governance
+	deepSeekGatewayHook *ratelimit.DeepSeekGatewayHook
 }
 
 const (
@@ -1062,7 +1066,11 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 				}
 			}
 		}
-		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg))
+		openAIExec := executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg)
+		if s.deepSeekGatewayHook != nil {
+			openAIExec = openAIExec.WithDeepSeekGatewayHook(s.deepSeekGatewayHook)
+		}
+		s.coreManager.RegisterExecutor(openAIExec)
 		return
 	}
 	switch strings.ToLower(a.Provider) {
@@ -1103,7 +1111,11 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 				}
 			}
 		}
-		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(providerKey, s.cfg))
+		openAIExec := executor.NewOpenAICompatExecutor(providerKey, s.cfg)
+		if s.deepSeekGatewayHook != nil {
+			openAIExec = openAIExec.WithDeepSeekGatewayHook(s.deepSeekGatewayHook)
+		}
+		s.coreManager.RegisterExecutor(openAIExec)
 	}
 }
 
@@ -1335,6 +1347,9 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 		s.coreManager.SetConfig(newCfg)
 		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
 	}
+	// Rebuild DeepSeek gateway from the new config before force-replacing executors
+	// so rebound OpenAI-compat executors pick up the updated hook (or nil if disabled).
+	s.applyDeepSeekGateway(newCfg)
 	ctx := coreauth.WithSkipPersist(context.Background())
 	s.syncPluginRuntimeConfig(ctx)
 	var auths []*coreauth.Auth
@@ -1357,6 +1372,43 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 	s.syncPluginModelRuntime(ctx)
 }
 
+// applyDeepSeekGateway (re)builds the DeepSeek gateway hook from cfg, wires it into
+// management endpoints, and force-rebinds OpenAI-compat executors so they see the
+// current hook. Safe to call with Enabled=false (clears hook + management manager).
+func (s *Service) applyDeepSeekGateway(cfg *config.Config) {
+	if s == nil {
+		return
+	}
+	if cfg != nil {
+		cfg.DeepSeekGateway.NormalizeDeepSeekGateway()
+	}
+
+	var hook *ratelimit.DeepSeekGatewayHook
+	var mgr *ratelimit.DeepSeekLimiterManager
+	if cfg != nil && cfg.DeepSeekGateway.Enabled {
+		mgr = ratelimit.NewDeepSeekLimiterManager(ratelimit.DeepSeekLimiterConfig{
+			GlobalMaxConcurrency:    cfg.DeepSeekGateway.GlobalMaxConcurrency,
+			PerUserIDMaxConcurrency: cfg.DeepSeekGateway.PerUserIDMaxConcurrency,
+		})
+		strategy := ratelimit.ParseUserIDStrategy(cfg.DeepSeekGateway.UserIDStrategy)
+		userIDResolver := ratelimit.NewUserIDResolver(
+			strategy,
+			cfg.DeepSeekGateway.UserIDHeaderName,
+			cfg.DeepSeekGateway.UserIDFixedValue,
+			cfg.DeepSeekGateway.UserIDPrefix,
+		)
+		for credID, userID := range cfg.DeepSeekGateway.CredentialMappings {
+			userIDResolver.SetCredentialMapping(credID, userID)
+		}
+		hook = ratelimit.NewDeepSeekGatewayHook(cfg.DeepSeekGateway, mgr, userIDResolver)
+	}
+	s.deepSeekGatewayHook = hook
+	if s.server != nil {
+		s.server.SetDeepSeekLimiterManager(mgr)
+	}
+
+	// Caller force-rebinds OpenAI-compat executors after this so they attach the hook.
+}
 func (s *Service) reloadConfigFromWatcher() bool {
 	if s == nil || s.watcher == nil {
 		return false
@@ -1692,6 +1744,19 @@ func (s *Service) Run(ctx context.Context) error {
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.syncPluginModelRuntime(ctx)
+	}
+
+	// Initialize DeepSeek gateway governance (hook + management wiring + rebind).
+	// Must run after api.NewServer so management routes can receive the limiter manager,
+	// and before traffic-facing rebinds so OpenAI-compat executors get the hook.
+	s.applyDeepSeekGateway(s.cfg)
+	// Force-rebind executors after the hook exists (home baseline may have registered earlier).
+	if s.coreManager != nil {
+		s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+			includeBaseline:   homeEnabled,
+			forceReplaceAuths: true,
+			auths:             s.coreManager.List(),
+		})
 	}
 
 	if s.authManager == nil {

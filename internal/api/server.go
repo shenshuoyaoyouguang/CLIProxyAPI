@@ -33,6 +33,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/ratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -411,6 +412,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	return s
 }
 
+// SetDeepSeekLimiterManager wires the runtime DeepSeek limiter into management endpoints.
+func (s *Server) SetDeepSeekLimiterManager(mgr *ratelimit.DeepSeekLimiterManager) {
+	if s == nil || s.mgmt == nil {
+		return
+	}
+	s.mgmt.SetDeepSeekLimiterManager(mgr)
+}
 func (s *Server) homeHeartbeatMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s == nil || s.cfg == nil || !s.cfg.Home.Enabled {
@@ -930,6 +938,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/vertex-api-key", s.mgmt.PutVertexCompatKeys)
 		mgmt.PATCH("/vertex-api-key", s.mgmt.PatchVertexCompatKey)
 		mgmt.DELETE("/vertex-api-key", s.mgmt.DeleteVertexCompatKey)
+
+		// DeepSeek Gateway Limiter routes
+		mgmt.GET("/deepseek/limiter/stats", s.mgmt.GetDeepSeekLimiterStats)
+		mgmt.GET("/deepseek/limiter/shard", s.mgmt.GetDeepSeekLimiterShard)
+		mgmt.POST("/deepseek/limiter/tune", s.mgmt.TuneDeepSeekLimiter)
 
 		mgmt.GET("/oauth-excluded-models", s.mgmt.GetOAuthExcludedModels)
 		mgmt.PUT("/oauth-excluded-models", s.mgmt.PutOAuthExcludedModels)

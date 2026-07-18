@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/ratelimit"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -60,6 +61,9 @@ type Handler struct {
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
 	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+
+	// DeepSeek Gateway Limiter
+	deepSeekLimiterManager *ratelimit.DeepSeekLimiterManager
 }
 
 type configReloadSnapshot struct {
@@ -157,6 +161,16 @@ func (h *Handler) SetConfigReloadHook(hook func(context.Context, *config.Config)
 	}
 	h.mu.Lock()
 	h.configReloadHook = hook
+	h.mu.Unlock()
+}
+
+// SetDeepSeekLimiterManager sets the DeepSeek limiter manager for management endpoints.
+func (h *Handler) SetDeepSeekLimiterManager(mgr *ratelimit.DeepSeekLimiterManager) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.deepSeekLimiterManager = mgr
 	h.mu.Unlock()
 }
 
@@ -464,6 +478,25 @@ func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
 	h.persistLocked(c)
 }
 
+// updateStringField binds a string value, then persists under h.mu.
+func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
+	var body struct {
+		Value *string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
+	set(*body.Value)
+	h.persistLocked(c)
+}
+
 // updateIntFieldClamped binds an int value, clamps negatives to fallback,
 // then persists. Each caller supplies its own fallback to preserve
 // independent semantics.
@@ -489,20 +522,75 @@ func (h *Handler) updateIntFieldClamped(c *gin.Context, fallback int, set func(i
 	h.persistLocked(c)
 }
 
-func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
-	var body struct {
-		Value *string `json:"value"`
+// GetDeepSeekLimiterStats returns stats for all DeepSeek limiter shards.
+func (h *Handler) GetDeepSeekLimiterStats(c *gin.Context) {
+	h.mu.Lock()
+	mgr := h.deepSeekLimiterManager
+	h.mu.Unlock()
+	if mgr == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "deepseek limiter not configured"})
+		return
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	stats := mgr.AllStats()
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":       true,
+		"global_sem":    mgr.GlobalSemaphoreCap(),
+		"shards":        stats,
+		"total_shards":  len(stats),
+		"total_active":  totalActive(stats),
+		"total_waiting": totalWaiting(stats),
+		"total_429":     total429(stats),
+	})
+}
+
+// GetDeepSeekLimiterShard returns stats for a specific user_id shard.
+func (h *Handler) GetDeepSeekLimiterShard(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id query param required"})
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.cfg == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+	mgr := h.deepSeekLimiterManager
+	h.mu.Unlock()
+	if mgr == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "deepseek limiter not configured"})
 		return
 	}
-	set(*body.Value)
-	h.persistLocked(c)
+	shardStats, ok := mgr.GetShardStats(userID)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "shard not found"})
+		return
+	}
+	c.JSON(http.StatusOK, shardStats)
+}
+
+// TuneDeepSeekLimiter dynamically adjusts concurrency limits.
+func (h *Handler) TuneDeepSeekLimiter(c *gin.Context) {
+	var req struct {
+		UserID    string `json:"user_id"`
+		NewMax    int    `json:"new_max"`
+		GlobalMax int    `json:"global_max"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json: " + err.Error()})
+		return
+	}
+	h.mu.Lock()
+	mgr := h.deepSeekLimiterManager
+	h.mu.Unlock()
+	if mgr == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "deepseek limiter not configured"})
+		return
+	}
+	if req.UserID != "" {
+		if !mgr.SetShardConcurrency(req.UserID, req.NewMax) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "shard not found"})
+			return
+		}
+	}
+	if req.GlobalMax > 0 {
+		mgr.SetGlobalConcurrency(req.GlobalMax)
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
