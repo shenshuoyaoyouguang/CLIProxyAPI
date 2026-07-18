@@ -2277,6 +2277,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	}
 	m.queueRefreshUnschedule(id)
 	m.invalidateSessionAffinity(id)
+	m.invalidateRoundTripper(existing)
 
 	if provider != "" {
 		if exec, ok := m.Executor(provider); ok && exec != nil {
@@ -6079,9 +6080,28 @@ func (m *Manager) roundTripperFor(auth *Auth) http.RoundTripper {
 	return p.RoundTripperFor(auth)
 }
 
+// invalidateRoundTripper drops any cached transport for a removed auth when the
+// registered provider supports invalidation.
+func (m *Manager) invalidateRoundTripper(auth *Auth) {
+	if m == nil || auth == nil {
+		return
+	}
+	m.mu.RLock()
+	p := m.rtProvider
+	m.mu.RUnlock()
+	if invalidator, ok := p.(RoundTripperInvalidator); ok {
+		invalidator.InvalidateAuth(auth)
+	}
+}
+
 // RoundTripperProvider defines a minimal provider of per-auth HTTP transports.
 type RoundTripperProvider interface {
 	RoundTripperFor(auth *Auth) http.RoundTripper
+}
+
+// RoundTripperInvalidator is implemented by providers that cache per-auth transports.
+type RoundTripperInvalidator interface {
+	InvalidateAuth(auth *Auth)
 }
 
 // RequestPreparer is an optional interface that provider executors can implement
