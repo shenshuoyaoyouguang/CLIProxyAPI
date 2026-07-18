@@ -170,6 +170,9 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// DeepSeekGateway defines gateway-level DeepSeek API governance configuration.
+	DeepSeekGateway DeepSeekGatewayConfig `yaml:"deepseek-gateway" json:"deepseek-gateway"`
 }
 
 // PluginsConfig holds dynamic plugin system settings.
@@ -334,6 +337,108 @@ type QuotaExceeded struct {
 	// When all free-tier auths are exhausted (429/503), the conductor retries with
 	// an auth that has available Google One AI credits.
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+}
+
+// DeepSeekGatewayConfig defines gateway-level DeepSeek API governance configuration.
+// Zero values are normalized by NormalizeDeepSeekGateway after YAML load.
+// Enabled defaults to false when omitted (opt-in); other fields get runtime defaults
+// only when Enabled is true (or when values are non-zero / explicitly set).
+type DeepSeekGatewayConfig struct {
+	// Enabled toggles the gateway governance on/off (default false / opt-in).
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// GlobalMaxConcurrency is the total concurrent request limit across all users.
+	// Default when enabled: 200. Set 0 only if you intentionally disable the global cap.
+	GlobalMaxConcurrency int `yaml:"global_max_concurrency" json:"global_max_concurrency"`
+
+	// PerUserIDMaxConcurrency is the concurrent request limit per user (DeepSeek allows ~48).
+	// Default when enabled: 40.
+	PerUserIDMaxConcurrency int `yaml:"per_user_id_max_concurrency" json:"per_user_id_max_concurrency"`
+
+	// QueueSize is reserved for future bounded-queue support (currently unused).
+	QueueSize int `yaml:"queue_size" json:"queue_size"`
+
+	// QueueTimeout is reserved for future queue wait timeouts (currently unused).
+	QueueTimeout string `yaml:"queue_timeout" json:"queue_timeout"`
+
+	// RetryMaxAttempts is the total number of attempts including the first try (default 3).
+	RetryMaxAttempts int `yaml:"retry_max_attempts" json:"retry_max_attempts"`
+
+	// RetryBaseDelay is the base delay between retries (exponential backoff).
+	RetryBaseDelay string `yaml:"retry_base_delay" json:"retry_base_delay"`
+
+	// RetryMaxDelay is the maximum delay between retries.
+	RetryMaxDelay string `yaml:"retry_max_delay" json:"retry_max_delay"`
+
+	// RespectRetryAfter determines whether to honor the Retry-After header from DeepSeek.
+	// When Enabled is true and this field was omitted, NormalizeDeepSeekGateway sets true.
+	RespectRetryAfter bool `yaml:"respect_retry_after" json:"respect_retry_after"`
+
+	// UserIDStrategy defines how the OpenAI-compatible "user" field is assigned.
+	// Options: "per_credential" (default), "auto_hash", "header", "fixed".
+	UserIDStrategy string `yaml:"user_id_strategy" json:"user_id_strategy"`
+
+	// UserIDHeaderName is the HTTP header to read user from when strategy is "header".
+	UserIDHeaderName string `yaml:"user_id_header_name" json:"user_id_header_name"`
+
+	// UserIDFixedValue is the fixed user value when strategy is "fixed".
+	UserIDFixedValue string `yaml:"user_id_fixed_value" json:"user_id_fixed_value"`
+
+	// UserIDPrefix is the prefix for auto-generated user values.
+	UserIDPrefix string `yaml:"user_id_prefix" json:"user_id_prefix"`
+
+	// AutoTuneEnabled is reserved for future auto-tuning (currently unused).
+	AutoTuneEnabled bool `yaml:"auto_tune_enabled" json:"auto_tune_enabled"`
+
+	// AutoTuneMinConcurrency is reserved for future auto-tuning (currently unused).
+	AutoTuneMinConcurrency int `yaml:"auto_tune_min_concurrency" json:"auto_tune_min_concurrency"`
+
+	// AutoTuneMaxConcurrency is reserved for future auto-tuning (currently unused).
+	AutoTuneMaxConcurrency int `yaml:"auto_tune_max_concurrency" json:"auto_tune_max_concurrency"`
+
+	// MetricsEnabled enables Prometheus metrics when the gateway is enabled.
+	MetricsEnabled bool `yaml:"metrics_enabled" json:"metrics_enabled"`
+
+	// MetricsInterval is reserved for future push intervals (currently unused).
+	MetricsInterval string `yaml:"metrics_interval" json:"metrics_interval"`
+
+	// CredentialMappings allows manual mapping of credential_id to user value.
+	CredentialMappings map[string]string `yaml:"credential_mappings" json:"credential_mappings"`
+}
+
+// NormalizeDeepSeekGateway applies runtime defaults when the gateway is enabled.
+// Enabled itself defaults to false (opt-in). Integer and string zeros get
+// documented defaults so partial YAML (only `enabled: true`) is safe.
+func (c *DeepSeekGatewayConfig) NormalizeDeepSeekGateway() {
+	if c == nil || !c.Enabled {
+		return
+	}
+	if c.GlobalMaxConcurrency <= 0 {
+		c.GlobalMaxConcurrency = 200
+	}
+	if c.PerUserIDMaxConcurrency <= 0 {
+		c.PerUserIDMaxConcurrency = 40
+	}
+	if c.RetryMaxAttempts <= 0 {
+		c.RetryMaxAttempts = 3
+	}
+	if strings.TrimSpace(c.RetryBaseDelay) == "" {
+		c.RetryBaseDelay = "500ms"
+	}
+	if strings.TrimSpace(c.RetryMaxDelay) == "" {
+		c.RetryMaxDelay = "30s"
+	}
+	if strings.TrimSpace(c.UserIDStrategy) == "" {
+		c.UserIDStrategy = "per_credential"
+	}
+	if strings.TrimSpace(c.UserIDHeaderName) == "" {
+		c.UserIDHeaderName = "X-DeepSeek-User-ID"
+	}
+	if strings.TrimSpace(c.UserIDPrefix) == "" {
+		c.UserIDPrefix = "cliproxy"
+	}
+	// RespectRetryAfter / MetricsEnabled are pre-set true before yaml.Unmarshal
+	// so omitted keys keep true and explicit false in YAML still wins.
 }
 
 // RoutingConfig configures how credentials are selected for requests.
@@ -762,6 +867,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	// DeepSeek gateway bool defaults so omitted YAML keys keep true.
+	cfg.DeepSeekGateway.RespectRetryAfter = true
+	cfg.DeepSeekGateway.MetricsEnabled = true
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -814,6 +922,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.MaxRetryCredentials < 0 {
 		cfg.MaxRetryCredentials = 0
 	}
+
+	cfg.DeepSeekGateway.NormalizeDeepSeekGateway()
 
 	cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {
