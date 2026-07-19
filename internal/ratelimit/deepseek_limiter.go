@@ -172,6 +172,7 @@ type ShardStats struct {
 // DeepSeekLimiterManager manages global + per-user concurrency.
 type DeepSeekLimiterManager struct {
 	config       DeepSeekLimiterConfig
+	configMu     sync.RWMutex
 	shards       sync.Map // userID -> *DeepSeekShard
 	metrics      *DeepSeekGatewayMetrics
 	globalMax    int
@@ -210,6 +211,27 @@ func (m *DeepSeekLimiterManager) metricsOrNil() *DeepSeekGatewayMetrics {
 	return m.metrics
 }
 
+// SetLimits updates the manager configuration and applies the new caps to
+// existing shards without dropping in-flight accounting.
+func (m *DeepSeekLimiterManager) SetLimits(config DeepSeekLimiterConfig) {
+	if m == nil {
+		return
+	}
+	m.configMu.Lock()
+	m.config = config
+	m.configMu.Unlock()
+
+	if config.GlobalMaxConcurrency > 0 {
+		m.SetGlobalConcurrency(config.GlobalMaxConcurrency)
+	}
+	if maxConcurrency := config.PerUserIDMaxConcurrency; maxConcurrency > 0 {
+		m.shards.Range(func(_, value interface{}) bool {
+			value.(*DeepSeekShard).SetMaxConcurrency(maxConcurrency)
+			return true
+		})
+	}
+}
+
 // GetShard returns (or creates) the shard for userID.
 func (m *DeepSeekLimiterManager) GetShard(userID string) *DeepSeekShard {
 	if userID == "" {
@@ -218,7 +240,9 @@ func (m *DeepSeekLimiterManager) GetShard(userID string) *DeepSeekShard {
 	if val, ok := m.shards.Load(userID); ok {
 		return val.(*DeepSeekShard)
 	}
+	m.configMu.RLock()
 	maxConcurrency := m.config.PerUserIDMaxConcurrency
+	m.configMu.RUnlock()
 	if maxConcurrency <= 0 {
 		maxConcurrency = 40
 	}

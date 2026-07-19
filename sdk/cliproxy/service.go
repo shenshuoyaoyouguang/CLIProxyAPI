@@ -1386,10 +1386,16 @@ func (s *Service) applyDeepSeekGateway(cfg *config.Config) {
 	var hook *ratelimit.DeepSeekGatewayHook
 	var mgr *ratelimit.DeepSeekLimiterManager
 	if cfg != nil && cfg.DeepSeekGateway.Enabled {
-		mgr = ratelimit.NewDeepSeekLimiterManager(ratelimit.DeepSeekLimiterConfig{
+		limits := ratelimit.DeepSeekLimiterConfig{
 			GlobalMaxConcurrency:    cfg.DeepSeekGateway.GlobalMaxConcurrency,
 			PerUserIDMaxConcurrency: cfg.DeepSeekGateway.PerUserIDMaxConcurrency,
-		})
+		}
+		if current := s.deepSeekGatewayHook; current != nil && current.Enabled() && current.LimiterManager() != nil {
+			mgr = current.LimiterManager()
+			mgr.SetLimits(limits)
+		} else {
+			mgr = ratelimit.NewDeepSeekLimiterManager(limits)
+		}
 		strategy := ratelimit.ParseUserIDStrategy(cfg.DeepSeekGateway.UserIDStrategy)
 		userIDResolver := ratelimit.NewUserIDResolver(
 			strategy,

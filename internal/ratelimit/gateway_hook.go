@@ -118,9 +118,9 @@ func NewDeepSeekGatewayHook(
 	var metrics *DeepSeekGatewayMetrics
 	if cfg.MetricsEnabled {
 		metrics = newDeepSeekGatewayMetrics()
-		if limiterMgr != nil {
-			limiterMgr.SetMetrics(metrics)
-		}
+	}
+	if limiterMgr != nil {
+		limiterMgr.SetMetrics(metrics)
 	}
 
 	return &DeepSeekGatewayHook{
