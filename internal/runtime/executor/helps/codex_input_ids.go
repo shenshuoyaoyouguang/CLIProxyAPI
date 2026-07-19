@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
+	"strings"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -11,9 +12,10 @@ import (
 
 const codexInputItemIDLimit = 64
 
-// SanitizeCodexInputItemIDs deterministically shortens overlong Responses input
-// item IDs and any co-located call_id values that share the same overlong
-// string, so tool-call chains remain consistent after truncation.
+// SanitizeCodexInputItemIDs removes encrypted reasoning items whose IDs exceed
+// the Codex limit and deterministically shortens other overlong input item IDs
+// and any co-located call_id values that share the same overlong string, so
+// tool-call chains remain consistent after truncation.
 func SanitizeCodexInputItemIDs(body []byte) []byte {
 	input := gjson.GetBytes(body, "input")
 	if !input.IsArray() {
@@ -23,18 +25,56 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 	items := input.Array()
 	occupied := make(map[string]struct{}, len(items)*2)
 	for _, item := range items {
+		if shouldDropCodexEncryptedReasoningItem(item) {
+			continue
+		}
 		collectOccupiedCodexID(occupied, item.Get("id"))
 		collectOccupiedCodexID(occupied, item.Get("call_id"))
 	}
 
 	mapped := make(map[string]string, len(items))
-	updated := body
-	for index := range items {
-		prefix := "input." + strconv.Itoa(index)
-		updated = rewriteCodexIDField(updated, items[index].Get("id"), prefix+".id", occupied, mapped)
-		updated = rewriteCodexIDField(updated, items[index].Get("call_id"), prefix+".call_id", occupied, mapped)
+	rebuilt := make([]string, 0, len(items))
+	changed := false
+	for _, item := range items {
+		if shouldDropCodexEncryptedReasoningItem(item) {
+			changed = true
+			continue
+		}
+
+		raw := item.Raw
+		nextRaw, idChanged := rewriteCodexIDInRaw(raw, "id", occupied, mapped)
+		if idChanged {
+			raw = nextRaw
+			changed = true
+		}
+		nextRaw, callChanged := rewriteCodexIDInRaw(raw, "call_id", occupied, mapped)
+		if callChanged {
+			raw = nextRaw
+			changed = true
+		}
+		rebuilt = append(rebuilt, raw)
+	}
+	if !changed {
+		return body
+	}
+
+	updated, errSet := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(rebuilt, ",")+"]"))
+	if errSet != nil {
+		return body
 	}
 	return updated
+}
+
+func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {
+	if item.Get("type").String() != "reasoning" {
+		return false
+	}
+	itemID := item.Get("id")
+	if itemID.Type != gjson.String || len([]rune(itemID.String())) <= codexInputItemIDLimit {
+		return false
+	}
+	encryptedContent := item.Get("encrypted_content")
+	return encryptedContent.Type == gjson.String && encryptedContent.String() != ""
 }
 
 func collectOccupiedCodexID(occupied map[string]struct{}, value gjson.Result) {
@@ -47,13 +87,14 @@ func collectOccupiedCodexID(occupied map[string]struct{}, value gjson.Result) {
 	}
 }
 
-func rewriteCodexIDField(body []byte, value gjson.Result, path string, occupied map[string]struct{}, mapped map[string]string) []byte {
+func rewriteCodexIDInRaw(raw string, field string, occupied map[string]struct{}, mapped map[string]string) (string, bool) {
+	value := gjson.Get(raw, field)
 	if value.Type != gjson.String {
-		return body
+		return raw, false
 	}
 	id := value.String()
 	if len([]rune(id)) <= codexInputItemIDLimit {
-		return body
+		return raw, false
 	}
 
 	shortened, ok := mapped[id]
@@ -69,11 +110,11 @@ func rewriteCodexIDField(body []byte, value gjson.Result, path string, occupied 
 		occupied[shortened] = struct{}{}
 	}
 
-	next, errSet := sjson.SetBytes(body, path, shortened)
+	next, errSet := sjson.Set(raw, field, shortened)
 	if errSet != nil {
-		return body
+		return raw, false
 	}
-	return next
+	return next, true
 }
 
 func shortenCodexInputItemID(id string) string {
