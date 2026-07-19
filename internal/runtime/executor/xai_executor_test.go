@@ -3306,6 +3306,60 @@ func TestXAIExecutorClaudeCodeSessionPinsNonComposerPromptCacheKey(t *testing.T)
 	}
 }
 
+func TestXAIResolveSessionIDComposerStickyWhenCallerAndFingerprintPresent(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("X-Grok-Conv-Id", "conv-stable-1")
+	opts := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Headers:      headers,
+	}
+	req := cliproxyexecutor.Request{
+		Model:   "grok-composer-2",
+		Payload: []byte(`{"model":"grok-composer-2","input":[{"type":"message","role":"user","content":"hi"}]}`),
+	}
+	ctx := testContextWithAPIKey("caller-composer-key")
+	first, source1, err := xaiResolveSessionID(ctx, req, opts, "grok-composer-2", req.Payload)
+	if err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	second, source2, err := xaiResolveSessionID(ctx, req, opts, "grok-composer-2", req.Payload)
+	if err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if source1 != "composer_sticky" || source2 != "composer_sticky" {
+		t.Fatalf("sources = %q/%q, want composer_sticky", source1, source2)
+	}
+	if first == "" || first != second {
+		t.Fatalf("sticky session ids differ or empty: %q vs %q", first, second)
+	}
+	if !strings.HasPrefix(first, "composer:") {
+		t.Fatalf("session id = %q, want composer: prefix", first)
+	}
+}
+
+func TestXAIResolveSessionIDComposerFallsBackToUUIDWithoutFingerprint(t *testing.T) {
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse}
+	req := cliproxyexecutor.Request{
+		Model:   "grok-composer-2",
+		Payload: []byte(`{"model":"grok-composer-2","input":[{"type":"message","role":"user","content":"hi"}]}`),
+	}
+	ctx := testContextWithAPIKey("caller-composer-key")
+	first, source1, err := xaiResolveSessionID(ctx, req, opts, "grok-composer-2", req.Payload)
+	if err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	second, source2, err := xaiResolveSessionID(ctx, req, opts, "grok-composer-2", req.Payload)
+	if err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if source1 != "composer_uuid" || source2 != "composer_uuid" {
+		t.Fatalf("sources = %q/%q, want composer_uuid without fingerprint", source1, source2)
+	}
+	if first == "" || second == "" || first == second {
+		t.Fatalf("without fingerprint expect distinct non-empty UUIDs, got %q / %q", first, second)
+	}
+}
+
 func TestEnsureXAIServiceTierInjectsPriorityFromMetadata(t *testing.T) {
 	body := []byte(`{"model":"grok-4.5","input":"hi"}`)
 	opts := cliproxyexecutor.Options{
@@ -3314,6 +3368,74 @@ func TestEnsureXAIServiceTierInjectsPriorityFromMetadata(t *testing.T) {
 	got := ensureXAIServiceTier(body, opts)
 	if gjson.GetBytes(got, "service_tier").String() != "priority" {
 		t.Fatalf("service_tier = %q, want priority; body=%s", gjson.GetBytes(got, "service_tier").String(), got)
+	}
+}
+
+func TestPrepareResponsesRequestInjectsServiceTierOnPrimaryCodexPath(t *testing.T) {
+	exec := NewXAIExecutor(&config.Config{})
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":[{"type":"message","role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Metadata: map[string]any{
+			cliproxyexecutor.ServiceTierMetadataKey: "priority",
+		},
+	}, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	}
+	if prepared.to != sdktranslator.FormatCodex {
+		t.Fatalf("primary path to = %q, want codex", prepared.to)
+	}
+	if got := gjson.GetBytes(prepared.body, "service_tier").String(); got != "priority" {
+		t.Fatalf("primary path service_tier = %q, want priority; body=%s", got, prepared.body)
+	}
+}
+
+func TestXAIExecutorHTTPStreamTreatsResponseDoneAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_done","status":"in_progress"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.done\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.done","response":{"id":"resp_done","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID: "xai-http-done",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+			"api_key":  "test-key",
+		},
+	}
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":[{"type":"message","role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:         true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	var sawDone bool
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v (response.done must be terminal, not incomplete-stream)", chunk.Err)
+		}
+		if strings.Contains(string(chunk.Payload), "response.done") || gjson.GetBytes(bytes.TrimSpace(chunk.Payload), "type").String() == "response.done" {
+			sawDone = true
+		}
+	}
+	if !sawDone {
+		// Some translators may rewrite event names; absence of incomplete-stream error is the contract.
+		// Keep assertion soft on payload shape, hard on no error above.
+		t.Log("stream finished without explicit response.done payload after translation")
 	}
 }
 
@@ -3853,6 +3975,31 @@ func TestCacheXAIReasoningReplayFromCompletedClearsPreviousEntryWhenNoReplayable
 
 	if _, ok := internalcache.GetXAIReasoningReplayItems(modelName, sessionKey); ok {
 		t.Fatal("expected previous replay entry to be cleared after non-replayable completed output")
+	}
+}
+
+func TestCacheXAIReasoningReplaySkipsIncompleteTerminal(t *testing.T) {
+	internalcache.ClearXAIReasoningReplayCache()
+	t.Cleanup(internalcache.ClearXAIReasoningReplayCache)
+
+	modelName := "grok-4.5"
+	sessionKey := "caller:test:prompt-cache:incomplete-skip"
+	encryptedContent := testValidGrokEncryptedContentForSeed(31)
+	scope := xaiReasoningReplayScope{modelName: modelName, sessionKey: sessionKey}
+
+	incomplete := []byte(`{"type":"response.incomplete","response":{"id":"resp-inc","status":"incomplete","output":[{"type":"reasoning","summary":[],"encrypted_content":""},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}}`)
+	incomplete, _ = sjson.SetBytes(incomplete, "response.output.0.encrypted_content", encryptedContent)
+
+	cacheXAIReasoningReplayFromCompleted(context.Background(), scope, incomplete)
+	if _, ok := internalcache.GetXAIReasoningReplayItems(modelName, sessionKey); ok {
+		t.Fatal("incomplete terminal must not populate reasoning replay cache")
+	}
+
+	completed := []byte(`{"type":"response.completed","response":{"id":"resp-ok","status":"completed","output":[{"type":"reasoning","summary":[],"encrypted_content":""},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"full"}]}]}}`)
+	completed, _ = sjson.SetBytes(completed, "response.output.0.encrypted_content", encryptedContent)
+	cacheXAIReasoningReplayFromCompleted(context.Background(), scope, completed)
+	if _, ok := internalcache.GetXAIReasoningReplayItems(modelName, sessionKey); !ok {
+		t.Fatal("completed terminal must still populate reasoning replay cache")
 	}
 }
 

@@ -81,12 +81,30 @@ func (e *KimiExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 	return httpClient.Do(httpReq)
 }
 
+// withKimiClaudeBaseURL returns a shallow Auth copy whose Attributes include
+// the Kimi Claude coding base URL. The shared Auth from the pool is never
+// mutated, and nil/missing Attributes maps no longer panic.
+func withKimiClaudeBaseURL(auth *cliproxyauth.Auth) *cliproxyauth.Auth {
+	if auth == nil {
+		return &cliproxyauth.Auth{
+			Attributes: map[string]string{"base_url": kimiauth.KimiAPIBaseURL},
+		}
+	}
+	cloned := *auth
+	attrs := make(map[string]string, len(auth.Attributes)+1)
+	for k, v := range auth.Attributes {
+		attrs[k] = v
+	}
+	attrs["base_url"] = kimiauth.KimiAPIBaseURL
+	cloned.Attributes = attrs
+	return &cloned
+}
+
 // Execute performs a non-streaming chat completion request to Kimi.
 func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-		return e.ClaudeExecutor.Execute(ctx, auth, req, opts)
+		return e.ClaudeExecutor.Execute(ctx, withKimiClaudeBaseURL(auth), req, opts)
 	}
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 
@@ -195,8 +213,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-		return e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
+		return e.ClaudeExecutor.ExecuteStream(ctx, withKimiClaudeBaseURL(auth), req, opts)
 	}
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 
@@ -335,8 +352,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 // CountTokens estimates token count for Kimi requests.
 func (e *KimiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-	return e.ClaudeExecutor.CountTokens(ctx, auth, req, opts)
+	return e.ClaudeExecutor.CountTokens(ctx, withKimiClaudeBaseURL(auth), req, opts)
 }
 
 func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {

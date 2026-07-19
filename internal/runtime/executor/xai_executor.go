@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -725,6 +727,14 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						logXAIResponseServiceTier(ctx, eventData)
 						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
 						normalizedEventName = gjson.GetBytes(eventData, "type").String()
+					case "response.done":
+						// Align with websocket terminal handling: response.done is a
+						// successful stream terminator even without response.completed.
+						sawTerminal = true
+						if detail, ok := helps.ParseCodexUsage(eventData); ok {
+							reporter.Publish(ctx, detail)
+						}
+						logXAIResponseServiceTier(ctx, eventData)
 					}
 
 					if hasPendingEventLine {
@@ -953,9 +963,7 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body = normalizeCodexInstructions(body)
 	body = sanitizeXAIResponsesBody(body, baseModel)
 	body = normalizeXAIImageRefs(body)
-	if to != sdktranslator.FormatCodex {
-		body = ensureXAIServiceTier(body, opts)
-	}
+	body = ensureXAIServiceTier(body, opts)
 
 	sessionID, sessionSource, errSession := xaiResolveSessionID(ctx, req, opts, baseModel, body)
 	if errSession != nil {
@@ -1171,7 +1179,8 @@ func applyXAIChatHeaders(r *http.Request, auth *cliproxyauth.Auth, token string,
 //  1. trusted execution session metadata
 //  2. client prompt_cache_key on the raw request or prepared body
 //  3. Claude Code session-derived cache (any model when session is present)
-//  4. composer-only: generate a UUID so isolated conversations stay sticky
+//  4. composer-only: stable sticky key from caller API key + known session
+//     fingerprint when available; otherwise a per-request UUID for isolation.
 //
 // Non-composer models without (1)-(3) stay without a key (stateless).
 func xaiResolveSessionID(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, baseModel string, body []byte) (sessionID string, source string, err error) {
@@ -1195,9 +1204,47 @@ func xaiResolveSessionID(ctx context.Context, req cliproxyexecutor.Request, opts
 		return cached.ID, "claude_code", nil
 	}
 	if xaiRequiresIsolatedConversation(baseModel) {
+		if sticky := xaiComposerStickySessionID(ctx, opts.Headers); sticky != "" {
+			return sticky, "composer_sticky", nil
+		}
 		return uuid.NewString(), "composer_uuid", nil
 	}
 	return "", "none", nil
+}
+
+// xaiComposerStickySessionID builds a multi-turn sticky key for composer models
+// when both a downstream caller API key and a known conversation fingerprint exist.
+// Without both, callers fall back to a per-request UUID (isolated single-shot).
+func xaiComposerStickySessionID(ctx context.Context, headers http.Header) string {
+	apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx))
+	if apiKey == "" {
+		return ""
+	}
+	fingerprint := xaiComposerSessionFingerprint(headers)
+	if fingerprint == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(apiKey + "\n" + fingerprint))
+	return "composer:" + hex.EncodeToString(sum[:16])
+}
+
+func xaiComposerSessionFingerprint(headers http.Header) string {
+	if headers == nil {
+		return ""
+	}
+	for _, name := range []string{
+		"X-Grok-Conv-Id",
+		"x-grok-conv-id",
+		"X-Conversation-Id",
+		"Conversation-Id",
+		"X-Session-Id",
+		"Session-Id",
+	} {
+		if value := strings.TrimSpace(headers.Get(name)); value != "" {
+			return strings.ToLower(name) + ":" + value
+		}
+	}
+	return ""
 }
 
 func xaiExecutionSessionID(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {

@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -838,4 +839,171 @@ func TestOpenAICompatExecutorStreamSkipsKeepAliveUntilDataLine(t *testing.T) {
 	if gjson.Get(got.String(), "choices.0.delta.content").String() != "hello" {
 		t.Fatalf("stream payload = %s", got.String())
 	}
+}
+
+func TestOpenAICompatHttpRequestAcquiresDeepSeekGatewaySlot(t *testing.T) {
+	hook := newTestDeepSeekGatewayHook(t, 1, 1)
+	release, err := hook.AcquireSlot(context.Background(), "cred:ds-auth")
+	if err != nil {
+		t.Fatalf("seed AcquireSlot: %v", err)
+	}
+	defer release()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`ok`))
+	}))
+	defer server.Close()
+
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	ctx = context.WithValue(ctx, "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: target})
+
+	exec := NewOpenAICompatExecutor("deepseek", &config.Config{}).WithDeepSeekGatewayHook(hook)
+	auth := &cliproxyauth.Auth{
+		ID: "ds-auth",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com",
+			"api_key":  "k",
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.deepseek.com/v1/chat/completions", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	_, err = exec.HttpRequest(ctx, auth, req)
+	if err == nil {
+		t.Fatal("HttpRequest should block on gateway slot and fail when context expires")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context") {
+		t.Fatalf("HttpRequest error = %v, want context deadline/cancel from AcquireSlot", err)
+	}
+}
+
+func TestOpenAICompatHttpRequestHoldsDeepSeekGatewaySlotUntilBodyClosed(t *testing.T) {
+	hook := newTestDeepSeekGatewayHook(t, 1, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`ok`))
+	}))
+	defer server.Close()
+
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+
+	auth := &cliproxyauth.Auth{
+		ID: "ds-auth-hold",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com",
+			"api_key":  "k",
+		},
+	}
+	makeRequest := func(ctx context.Context) (*http.Response, error) {
+		ctx = context.WithValue(ctx, "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: target})
+		exec := NewOpenAICompatExecutor("deepseek", &config.Config{}).WithDeepSeekGatewayHook(hook)
+		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.deepseek.com/v1/chat/completions", strings.NewReader(`{}`))
+		if errReq != nil {
+			return nil, errReq
+		}
+		return exec.HttpRequest(ctx, auth, req)
+	}
+
+	// First request acquires the slot; it must stay held until Body.Close.
+	resp1, err := makeRequest(context.Background())
+	if err != nil {
+		t.Fatalf("first HttpRequest: %v", err)
+	}
+
+	// Second request: slot still held by the open body → must time out on AcquireSlot.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel2()
+	if _, errSecond := makeRequest(ctx2); errSecond == nil {
+		_ = resp1.Body.Close()
+		t.Fatal("second HttpRequest should block while first response body is open")
+	}
+
+	// Close the first body to release the slot.
+	if errClose := resp1.Body.Close(); errClose != nil {
+		t.Fatalf("close first body: %v", errClose)
+	}
+
+	// Third request: slot free again → must succeed.
+	resp3, err := makeRequest(context.Background())
+	if err != nil {
+		t.Fatalf("third HttpRequest after body closed: %v", err)
+	}
+	_ = resp3.Body.Close()
+}
+
+func TestOpenAICompatExecuteImagesAcquiresDeepSeekGatewaySlot(t *testing.T) {
+	hook := newTestDeepSeekGatewayHook(t, 1, 1)
+	release, err := hook.AcquireSlot(context.Background(), "cred:ds-auth-img")
+	if err != nil {
+		t.Fatalf("seed AcquireSlot: %v", err)
+	}
+	defer release()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	ctx = context.WithValue(ctx, "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: target})
+
+	exec := NewOpenAICompatExecutor("deepseek", &config.Config{}).WithDeepSeekGatewayHook(hook)
+	auth := &cliproxyauth.Auth{
+		ID: "ds-auth-img",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com",
+			"api_key":  "k",
+		},
+	}
+	_, err = exec.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "deepseek-image",
+		Payload: []byte(`{"model":"deepseek-image","prompt":"a cat"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString(openAICompatImageHandlerType),
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/images/generations",
+		},
+	})
+	if err == nil {
+		t.Fatal("Execute images should block on gateway slot and fail when context expires")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context") {
+		t.Fatalf("Execute images error = %v, want context deadline/cancel from AcquireSlot", err)
+	}
+}
+
+func newTestDeepSeekGatewayHook(t *testing.T, globalMax, perUserMax int) *ratelimit.DeepSeekGatewayHook {
+	t.Helper()
+	mgr := ratelimit.NewDeepSeekLimiterManager(ratelimit.DeepSeekLimiterConfig{
+		GlobalMaxConcurrency:    globalMax,
+		PerUserIDMaxConcurrency: perUserMax,
+	})
+	resolver := ratelimit.NewUserIDResolver(ratelimit.StrategyPerCredential, "", "", "cred")
+	hook := ratelimit.NewDeepSeekGatewayHook(config.DeepSeekGatewayConfig{
+		Enabled:                 true,
+		GlobalMaxConcurrency:    globalMax,
+		PerUserIDMaxConcurrency: perUserMax,
+		RetryMaxAttempts:        1,
+		UserIDStrategy:          "per_credential",
+	}, mgr, resolver)
+	if !hook.Enabled() {
+		t.Fatal("hook should be enabled")
+	}
+	return hook
 }

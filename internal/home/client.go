@@ -1088,6 +1088,9 @@ func newPluginSyncCommandClient(ctx context.Context, template *redis.Options) *r
 		}
 		return newPluginSyncCancelableConn(ctx, conn), nil
 	}
+	// Intentional post-connect timeout exception (see AGENTS.md): plugin-sync
+	// command responses can be large and may hang if the peer stalls; cancelable
+	// dial alone cannot bound an idle read after the connection is up.
 	options.ReadTimeout = homePluginSyncOperationTimeout
 	options.MaxRetries = -1
 	return redis.NewClient(options)

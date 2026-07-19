@@ -70,6 +70,27 @@ func assertClaudeFingerprint(t *testing.T, headers http.Header, userAgent, pkgVe
 	}
 }
 
+func TestApplyClaudeHeaders_EmptyHeadersInheritsGinClientHeaders(t *testing.T) {
+	// Empty non-nil Options.Headers is a common zero-map footgun; treat like nil.
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginReq := httptest.NewRequest(http.MethodPost, "http://localhost/v1/messages", nil)
+	ginReq.Header.Set("Anthropic-Beta", "client-beta-from-gin")
+	ginCtx.Request = ginReq
+
+	req := httptest.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
+	req = req.WithContext(context.WithValue(req.Context(), "gin", ginCtx))
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "k"}}
+	empty := make(http.Header)
+	if err := applyClaudeHeaders(req, auth, "k", false, nil, &config.Config{}, empty); err != nil {
+		t.Fatalf("applyClaudeHeaders: %v", err)
+	}
+	if got := req.Header.Get("Anthropic-Beta"); !strings.Contains(got, "client-beta-from-gin") {
+		t.Fatalf("Anthropic-Beta = %q, want inherit client-beta-from-gin from gin when Headers empty", got)
+	}
+}
+
 func TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint(t *testing.T) {
 	resetClaudeDeviceProfileCache()
 	stabilize := true

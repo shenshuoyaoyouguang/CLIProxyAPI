@@ -155,6 +155,19 @@ func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor { return &ClaudeExecu
 
 func (e *ClaudeExecutor) Identifier() string { return "claude" }
 
+// thinkingProviderKey is the provider key passed to thinking.ApplyThinking for
+// registry lookups. When ClaudeExecutor is embedded (e.g. Kimi), requestLogProvider
+// carries the real provider name so thinking is not mis-attributed as "claude".
+func (e *ClaudeExecutor) thinkingProviderKey() string {
+	if e == nil {
+		return "claude"
+	}
+	if provider := strings.TrimSpace(e.requestLogProvider); provider != "" {
+		return provider
+	}
+	return e.Identifier()
+}
+
 func (e *ClaudeExecutor) upstreamRequestLogProvider() string {
 	if provider := strings.TrimSpace(e.requestLogProvider); provider != "" {
 		return provider
@@ -291,7 +304,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, stream)
 	body, _ = sjson.SetBytes(body, "model", upstreamModel)
 
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.thinkingProviderKey())
 	if err != nil {
 		return resp, err
 	}
@@ -486,7 +499,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 	body, _ = sjson.SetBytes(body, "model", upstreamModel)
 
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.thinkingProviderKey())
 	if err != nil {
 		return nil, err
 	}
@@ -1148,7 +1161,7 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	}
 	r.Header.Set("Content-Type", "application/json")
 
-	if incomingHeaders == nil {
+	if incomingHeaders == nil || len(incomingHeaders) == 0 {
 		if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 			incomingHeaders = ginCtx.Request.Header
 		}

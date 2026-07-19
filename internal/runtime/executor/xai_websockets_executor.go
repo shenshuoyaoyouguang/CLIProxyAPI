@@ -198,6 +198,29 @@ func (s *xaiWebsocketIDState) clearTranscriptInput() {
 	s.mu.Unlock()
 }
 
+// clearForTargetChange resets transcript and previous_response_id map when
+// auth/URL changes so remapped IDs from the previous upstream are not reused.
+func (s *xaiWebsocketIDState) clearForTargetChange() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.transcriptInput = nil
+	s.downstreamToUpstream = make(map[string]string)
+	s.sequence = 0
+	s.mu.Unlock()
+}
+
+// xaiWebsocketStateSessionID selects the key for previous_response_id / transcript
+// state. Prefer the execution session so CloseExecutionSession drops the same entry
+// used by idMapper. Fall back to the prepared session when no execution session is set.
+func xaiWebsocketStateSessionID(executionSessionID, preparedSessionID string) string {
+	if id := strings.TrimSpace(executionSessionID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(preparedSessionID)
+}
+
 func (s *xaiWebsocketIDState) recordTranscriptTurn(requestPayload []byte, completedPayload []byte) {
 	if s == nil || len(requestPayload) == 0 || len(completedPayload) == 0 {
 		return
@@ -431,7 +454,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	// includes execution session, client prompt_cache_key, and Claude Code
 	// session) for the WebSocket idMapper so multi-turn previous_response_id
 	// remapping and transcript state work consistently with HTTP path.
-	stateSessionID := prepared.sessionID
+	stateSessionID := xaiWebsocketStateSessionID(executionSessionID, prepared.sessionID)
 	idMapper := newXAIWebsocketRequestIDMapper(e.idStore, stateSessionID, req.Payload)
 
 	if xaiInputHasItemType(req.Payload, "compaction_trigger") {
@@ -462,7 +485,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		if websocketSessionTargetChanged(sess, authID, wsURL) {
 			idMapper.upstreamPreviousID = ""
 			idMapper.skipTranscriptReplay = true
-			idMapper.state.clearTranscriptInput()
+			idMapper.state.clearForTargetChange()
 		}
 		prepared.body = idMapper.upstreamRequestPayload(prepared.body)
 	}
@@ -690,7 +713,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					payload = xaiPatchCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
 					payload = xaiNormalizeReasoningSummaryData(payload)
 					cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, payload)
-					if !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
+					if xaiShouldCommitCompletedTurnState(payload) && !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
 						idMapper.state.recordTranscriptTurn(wsReqBody, payload)
 						recordedTranscript = true
 					}
@@ -699,7 +722,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					if detail, ok := helps.ParseCodexUsage(payload); ok {
 						reporter.Publish(ctx, detail)
 					}
-					if !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
+					if xaiShouldCommitCompletedTurnState(payload) && !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
 						idMapper.state.recordTranscriptTurn(wsReqBody, payload)
 						recordedTranscript = true
 					}

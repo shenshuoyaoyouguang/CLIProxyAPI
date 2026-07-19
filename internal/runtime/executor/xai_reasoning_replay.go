@@ -261,6 +261,10 @@ func cacheXAIReasoningReplayFromCompleted(ctx context.Context, scope xaiReasonin
 	if !scope.valid() {
 		return
 	}
+	// Incomplete Responses terminals must not poison multi-turn reasoning replay.
+	if !xaiShouldCommitCompletedTurnState(completedData) {
+		return
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -291,6 +295,23 @@ func cacheXAIReasoningReplayFromCompleted(ctx context.Context, scope xaiReasonin
 	default:
 		// Invalid args: nothing to store or clear.
 	}
+}
+
+// xaiShouldCommitCompletedTurnState reports whether a terminal Responses event
+// should update durable turn state (reasoning replay cache, WS transcript).
+// response.incomplete is a legal client-visible terminal but must not commit
+// truncated reasoning into multi-turn state.
+func xaiShouldCommitCompletedTurnState(terminalPayload []byte) bool {
+	eventType := strings.TrimSpace(gjson.GetBytes(terminalPayload, "type").String())
+	if eventType == "response.incomplete" {
+		return false
+	}
+	status := strings.TrimSpace(gjson.GetBytes(terminalPayload, "response.status").String())
+	if strings.EqualFold(status, "incomplete") {
+		return false
+	}
+	// response.completed / response.done / payloads without type used by unit seeds.
+	return true
 }
 
 func clearXAIReasoningReplayAfterCompaction(ctx context.Context, scope xaiReasoningReplayScope) {

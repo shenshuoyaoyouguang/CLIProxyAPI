@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -192,6 +193,87 @@ func TestXAIWebsocketsExecuteStreamStopsOnResponseIncomplete(t *testing.T) {
 	}
 	if !gotIncomplete {
 		t.Fatal("stream closed without response.incomplete chunk")
+	}
+}
+
+func TestXAIWebsocketIDStateClearForTargetChangeDropsPreviousResponseMap(t *testing.T) {
+	state := &xaiWebsocketIDState{
+		downstreamToUpstream: map[string]string{
+			"resp-down": "resp-up",
+			"resp-up":   "resp-up",
+		},
+		transcriptInput: []json.RawMessage{[]byte(`{"type":"message","role":"user","content":"hi"}`)},
+		sequence:        3,
+	}
+
+	state.clearForTargetChange()
+
+	if got := state.upstreamIDForDownstream("resp-down"); got != "resp-down" {
+		t.Fatalf("after target change upstreamIDForDownstream = %q, want identity mapping", got)
+	}
+	if snap := state.snapshotTranscriptInput(); len(snap) != 0 && string(snap) != "[]" && string(snap) != "null" {
+		// snapshot with empty transcript should be nil/empty
+		if snap != nil && len(gjson.ParseBytes(snap).Array()) != 0 {
+			t.Fatalf("transcript should be cleared, got %s", snap)
+		}
+	}
+	if state.sequence != 0 {
+		t.Fatalf("sequence = %d, want 0 after target change", state.sequence)
+	}
+}
+
+func TestXAIWebsocketIDStateIsKeyedByExecutionSessionID(t *testing.T) {
+	store := &xaiWebsocketIDStateStore{sessions: make(map[string]*xaiWebsocketIDState)}
+	executionSessionID := "execution-session-key"
+	preparedSessionID := "prompt-cache-or-resolved-key"
+
+	// Lifecycle close uses execution session id; idMapper state must share that key.
+	mapper := newXAIWebsocketRequestIDMapper(store, xaiWebsocketStateSessionID(executionSessionID, preparedSessionID), []byte(`{"previous_response_id":"resp-down"}`))
+	if mapper == nil || mapper.state == nil {
+		t.Fatal("expected mapper state")
+	}
+	mapper.state.mapDownstreamToUpstream("resp-down", "resp-up")
+
+	if store.sessions[executionSessionID] == nil {
+		t.Fatalf("id state missing under execution session key %q; keys=%v", executionSessionID, sessionKeys(store))
+	}
+	if store.sessions[preparedSessionID] != nil {
+		t.Fatalf("id state should not be keyed only by prepared session id %q", preparedSessionID)
+	}
+
+	deleteXAIWebsocketIDState(store, executionSessionID)
+	if store.sessions[executionSessionID] != nil {
+		t.Fatal("delete by execution session id should remove id state")
+	}
+}
+
+func sessionKeys(store *xaiWebsocketIDStateStore) []string {
+	if store == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(store.sessions))
+	for k := range store.sessions {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func TestXAIWebsocketIDStateDoesNotRecordTranscriptForIncomplete(t *testing.T) {
+	state := &xaiWebsocketIDState{}
+	reqBody := []byte(`{"input":[{"type":"message","role":"user","content":"hi"}]}`)
+
+	incomplete := []byte(`{"type":"response.incomplete","response":{"status":"incomplete","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}}`)
+	if xaiShouldCommitCompletedTurnState(incomplete) {
+		t.Fatal("incomplete must not commit completed-turn state")
+	}
+
+	completed := []byte(`{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}}`)
+	if !xaiShouldCommitCompletedTurnState(completed) {
+		t.Fatal("completed must commit completed-turn state")
+	}
+	state.recordTranscriptTurn(reqBody, completed)
+	if snap := state.snapshotTranscriptInput(); len(snap) == 0 {
+		t.Fatal("completed turn should record transcript when committed")
 	}
 }
 

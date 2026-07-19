@@ -215,8 +215,9 @@ func responsesInputItemToInteractions(item gjson.Result, functionNamesByCallID m
 		step, _ = sjson.SetBytes(step, "type", stepType)
 		if part, ok := responsesContentPartToInteractions(item); ok {
 			step, _ = sjson.SetRawBytes(step, "content.-1", part)
+			return step
 		}
-		return step
+		return nil
 	default:
 		if content := item.Get("content"); content.Exists() {
 			step := []byte(`{"type":"user_input","content":[]}`)
@@ -244,10 +245,11 @@ func appendResponsesContentToInteractions(step []byte, content gjson.Result) []b
 			contentItems = append(contentItems, part)
 		}
 	}
-	if len(contentItems) > 0 {
-		step = translatorcommon.SetRawArrayItems(step, "content", contentItems)
+	if len(contentItems) == 0 {
+		// No convertible parts: drop empty user_input/model_output shells.
+		return nil
 	}
-	return step
+	return translatorcommon.SetRawArrayItems(step, "content", contentItems)
 }
 
 func responsesContentPartToInteractions(part gjson.Result) ([]byte, bool) {

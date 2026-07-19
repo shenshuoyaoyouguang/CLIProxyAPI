@@ -81,7 +81,7 @@ func TestCodexWebsocketsExecuteRestoresClaudeAgentReasoningReplay(t *testing.T) 
 	encryptedContent := validCodexReasoningEncryptedContentForTestSeed(31)
 	cacheCodexReasoningReplayFromCompleted(codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
-		sessionKey: "claude:ws-replay-session:agent:agent-a",
+		sessionKey: codexReplayIsolatedSessionKey("claude:ws-replay-session:agent:agent-a"),
 	}, []byte(`{"response":{"output":[`+
 		`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+encryptedContent+`"},`+
 		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"previous answer"}]}`+
@@ -126,7 +126,7 @@ func TestCodexWebsocketsExecuteRestoresClaudeAgentReasoningReplay(t *testing.T) 
 	headers.Set("X-Claude-Code-Agent-Id", "agent-a")
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude"), Headers: headers}
 
-	if _, errExecute := exec.Execute(context.Background(), auth, req, opts); errExecute != nil {
+	if _, errExecute := exec.Execute(codexReplayCallerContext(), auth, req, opts); errExecute != nil {
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -89,7 +90,51 @@ func (e *OpenAICompatExecutor) HttpRequest(ctx context.Context, auth *cliproxyau
 		return nil, err
 	}
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	return httpClient.Do(httpReq)
+
+	baseURL, _ := e.resolveCredentials(auth)
+	if req.URL != nil && strings.TrimSpace(baseURL) == "" {
+		baseURL = req.URL.Scheme + "://" + req.URL.Host
+	}
+	useGateway := e.gatewayHook != nil && e.gatewayHook.Enabled() && ratelimit.IsDeepSeekURL(baseURL)
+	if !useGateway {
+		return httpClient.Do(httpReq)
+	}
+	userID := e.gatewayHook.ResolveUserID(ctx, httpReq.Header, auth)
+	release, acquireErr := e.gatewayHook.AcquireSlot(ctx, userID)
+	if acquireErr != nil {
+		return nil, acquireErr
+	}
+	resp, err := e.gatewayHook.ExecuteWithRetry(ctx, userID, func(reqCtx context.Context) (*http.Response, error) {
+		cloned := httpReq.Clone(reqCtx)
+		return httpClient.Do(cloned)
+	})
+	if resp == nil || resp.Body == nil {
+		// No consumable body: release immediately to avoid a slot leak.
+		release()
+		return resp, err
+	}
+	// Hold the gateway slot until the caller closes the response body so concurrent
+	// DeepSeek connections remain bounded for HttpRequest (SSE/streaming included).
+	// Matches executeImages (defer release after body read) and executeImagesStream
+	// (release after body close in the stream goroutine).
+	resp.Body = &deepSeekGatewayReleasingBody{ReadCloser: resp.Body, release: release}
+	return resp, err
+}
+
+// deepSeekGatewayReleasingBody wraps http.Response.Body so the DeepSeek gateway
+// slot is released when the caller closes the body. ReleaseFunc is once-only.
+type deepSeekGatewayReleasingBody struct {
+	io.ReadCloser
+	release     ratelimit.ReleaseFunc
+	releaseOnce sync.Once
+}
+
+func (c *deepSeekGatewayReleasingBody) Close() error {
+	err := c.ReadCloser.Close()
+	if c.release != nil {
+		c.releaseOnce.Do(c.release)
+	}
+	return err
 }
 
 func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
@@ -305,9 +350,37 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
+
+	doOnce := func(reqCtx context.Context) (*http.Response, error) {
+		reqDo, errNew := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
+		if errNew != nil {
+			return nil, errNew
+		}
+		reqDo.Header = httpReq.Header.Clone()
+		return httpClient.Do(reqDo)
+	}
+
+	useGateway := e.gatewayHook != nil && e.gatewayHook.Enabled() && ratelimit.IsDeepSeekURL(baseURL)
+	var httpResp *http.Response
+	var execErr error
+	if useGateway {
+		userID := e.gatewayHook.ResolveUserID(ctx, opts.Headers, auth)
+		release, acquireErr := e.gatewayHook.AcquireSlot(ctx, userID)
+		if acquireErr != nil {
+			err = acquireErr
+			return resp, err
+		}
+		defer release()
+		httpResp, execErr = e.gatewayHook.ExecuteWithRetry(ctx, userID, doOnce)
+	} else {
+		httpResp, execErr = doOnce(ctx)
+	}
+	if execErr != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, execErr)
+		return resp, execErr
+	}
+	if httpResp == nil {
+		err = statusErr{code: http.StatusBadGateway, msg: "empty upstream response"}
 		return resp, err
 	}
 	defer func() {
@@ -626,14 +699,50 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
+	doOnce := func(reqCtx context.Context) (*http.Response, error) {
+		reqDo, errNew := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
+		if errNew != nil {
+			return nil, errNew
+		}
+		reqDo.Header = httpReq.Header.Clone()
+		return httpClient.Do(reqDo)
+	}
+
+	useGateway := e.gatewayHook != nil && e.gatewayHook.Enabled() && ratelimit.IsDeepSeekURL(baseURL)
+	var releaseSlot ratelimit.ReleaseFunc
+	var httpResp *http.Response
+	var execErr error
+	if useGateway {
+		userID := e.gatewayHook.ResolveUserID(ctx, opts.Headers, auth)
+		var acquireErr error
+		releaseSlot, acquireErr = e.gatewayHook.AcquireSlot(ctx, userID)
+		if acquireErr != nil {
+			return nil, acquireErr
+		}
+		httpResp, execErr = e.gatewayHook.ExecuteWithRetry(ctx, userID, doOnce)
+	} else {
+		httpResp, execErr = doOnce(ctx)
+	}
+	if execErr != nil {
+		if releaseSlot != nil {
+			releaseSlot()
+		}
+		helps.RecordAPIResponseError(ctx, e.cfg, execErr)
+		return nil, execErr
+	}
+	if httpResp == nil {
+		if releaseSlot != nil {
+			releaseSlot()
+		}
+		err = statusErr{code: http.StatusBadGateway, msg: "empty upstream response"}
 		return nil, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		if releaseSlot != nil {
+			releaseSlot()
+		}
 		body, errRead := io.ReadAll(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("openai compat executor: close response body error: %v", errClose)
@@ -653,6 +762,9 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("openai compat executor: close response body error: %v", errClose)
+			}
+			if releaseSlot != nil {
+				releaseSlot()
 			}
 			reporter.EnsurePublished(ctx)
 		}()

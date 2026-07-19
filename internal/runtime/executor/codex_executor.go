@@ -363,9 +363,17 @@ func codexClaudeCodeReplaySessionKey(ctx context.Context, payload []byte, header
 	return sessionKey
 }
 
+// codexReasoningReplayIsolateSessionKey namespaces client-controlled session keys
+// by the downstream CPA API key so two callers cannot share encrypted reasoning
+// by reusing Claude Code session / window / session headers.
+// Trusted execution session keys keep their existing form. Client-controlled
+// sessions without a caller API key are disabled rather than shared globally.
 func codexReasoningReplayIsolateSessionKey(ctx context.Context, sessionKey string) string {
 	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" || strings.HasPrefix(sessionKey, "caller:") {
+	if sessionKey == "" {
+		return ""
+	}
+	if strings.HasPrefix(sessionKey, "caller:") || strings.HasPrefix(sessionKey, "execution:") {
 		return sessionKey
 	}
 	apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx))
@@ -373,7 +381,7 @@ func codexReasoningReplayIsolateSessionKey(ctx context.Context, sessionKey strin
 		apiKey = codexReasoningReplayAuthorizationFromContext(ctx)
 	}
 	if apiKey == "" {
-		return sessionKey
+		return ""
 	}
 	sum := sha256.Sum256([]byte(apiKey))
 	return "caller:" + hex.EncodeToString(sum[:8]) + ":" + sessionKey
