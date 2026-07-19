@@ -110,7 +110,7 @@ func TestCodexExecutorReasoningReplayCacheStoresFinalDoneAndInjectsNextClaudeReq
 	}
 }
 
-func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossClientKeys(t *testing.T) {
+func TestCodexExecutorReasoningReplayCacheIsolatesSameSessionAcrossClientKeys(t *testing.T) {
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
@@ -127,17 +127,20 @@ func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossClientKeys(t *t
 	if !firstScope.valid() {
 		t.Fatalf("first replay scope is invalid: %#v", firstScope)
 	}
+	if !strings.HasPrefix(firstScope.sessionKey, "caller:") {
+		t.Fatalf("first replay scope is not caller-scoped: %#v", firstScope)
+	}
 	cacheCodexReasoningReplayFromCompleted(firstScope, []byte(`{"response":{"output":[{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+encryptedContent+`"}]}}`))
 
 	secondBody, secondScope := applyCodexReasoningReplayCache(codexReplaySessionOnlyContext("client-key-b"), from, req, opts, body)
-	if secondScope != firstScope {
-		t.Fatalf("replay scope should ignore client API key for the same session: first=%#v second=%#v", firstScope, secondScope)
+	if secondScope == firstScope {
+		t.Fatalf("replay scope should be caller-scoped: first=%#v second=%#v", firstScope, secondScope)
 	}
-	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
-		t.Fatalf("input.0.type = %q, want same-session replay; body=%s", got, string(secondBody))
+	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "message" {
+		t.Fatalf("input.0.type = %q, want original user message without replay; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != encryptedContent {
-		t.Fatalf("injected encrypted_content = %q, want cached value", got)
+	if got := gjson.GetBytes(secondBody, "input.0.encrypted_content"); got.Exists() {
+		t.Fatalf("unexpected replay encrypted_content = %q; body=%s", got.String(), string(secondBody))
 	}
 }
 

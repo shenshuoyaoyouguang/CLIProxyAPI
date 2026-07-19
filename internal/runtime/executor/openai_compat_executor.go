@@ -149,7 +149,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 			return resp, acquireErr
 		}
 		defer release()
-		translated = injectOpenAICompatUserValue(translated, userID)
+		translated = forceOpenAICompatUserValue(translated, userID)
 	} else {
 		translated = injectOpenAICompatUser(translated, auth, baseURL, req.Model)
 	}
@@ -377,7 +377,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	// are captured even when the upstream is an OpenAI-compatible provider.
 	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
 
-	// DeepSeek Gateway Hook: acquire slot for the full stream lifetime and inject top-level "user".
+	// DeepSeek Gateway Hook: acquire slot for request admission/retry and inject top-level "user".
 	userID := ""
 	useGateway := e.gatewayHook != nil && e.gatewayHook.Enabled() && ratelimit.IsDeepSeekURL(baseURL)
 	var releaseSlot ratelimit.ReleaseFunc
@@ -388,8 +388,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if acquireErr != nil {
 			return nil, acquireErr
 		}
-		// Held until the stream goroutine finishes (not when ExecuteStream returns).
-		translated = injectOpenAICompatUserValue(translated, userID)
+		translated = forceOpenAICompatUserValue(translated, userID)
 	} else {
 		translated = injectOpenAICompatUser(translated, auth, baseURL, req.Model)
 	}
@@ -481,6 +480,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		}
 		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
 		return nil, err
+	}
+	if releaseSlot != nil {
+		releaseSlot()
+		releaseSlot = nil
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
@@ -927,6 +930,17 @@ func injectOpenAICompatUserValue(payload []byte, userID string) []byte {
 		return payload
 	}
 	if existing := strings.TrimSpace(gjson.GetBytes(payload, "user").String()); existing != "" {
+		return payload
+	}
+	updated, errSet := sjson.SetBytes(payload, "user", userID)
+	if errSet != nil {
+		return payload
+	}
+	return updated
+}
+
+func forceOpenAICompatUserValue(payload []byte, userID string) []byte {
+	if len(payload) == 0 || strings.TrimSpace(userID) == "" {
 		return payload
 	}
 	updated, errSet := sjson.SetBytes(payload, "user", userID)

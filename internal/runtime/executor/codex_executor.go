@@ -341,9 +341,11 @@ func codexReasoningReplayScopeFromRequest(ctx context.Context, from sdktranslato
 		modelName = thinking.ParseSuffix(req.Model).ModelName
 	}
 	inputItems := gjson.GetBytes(body, "input").Array()
+	sessionKey := codexReasoningReplaySessionKey(ctx, from, req, opts, body)
+	sessionKey = codexReasoningReplayIsolateSessionKey(ctx, sessionKey)
 	return codexReasoningReplayScope{
 		modelName:          modelName,
-		sessionKey:         codexReasoningReplaySessionKey(ctx, from, req, opts, body),
+		sessionKey:         sessionKey,
 		requestFingerprint: codexReplayInputPrefixFingerprint(inputItems, len(inputItems)),
 	}
 }
@@ -359,6 +361,40 @@ func sourceFormatEqual(from, want sdktranslator.Format) bool {
 func codexClaudeCodeReplaySessionKey(ctx context.Context, payload []byte, headers http.Header) string {
 	sessionKey, _ := helps.ClaudeCodeExecutionScope(ctx, payload, headers)
 	return sessionKey
+}
+
+func codexReasoningReplayIsolateSessionKey(ctx context.Context, sessionKey string) string {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" || strings.HasPrefix(sessionKey, "caller:") {
+		return sessionKey
+	}
+	apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx))
+	if apiKey == "" {
+		apiKey = codexReasoningReplayAuthorizationFromContext(ctx)
+	}
+	if apiKey == "" {
+		return sessionKey
+	}
+	sum := sha256.Sum256([]byte(apiKey))
+	return "caller:" + hex.EncodeToString(sum[:8]) + ":" + sessionKey
+}
+
+func codexReasoningReplayAuthorizationFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return ""
+	}
+	value := strings.TrimSpace(ginCtx.Request.Header.Get("Authorization"))
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(value), "bearer ") {
+		return strings.TrimSpace(value[len("bearer "):])
+	}
+	return value
 }
 
 func codexReasoningReplaySessionKey(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) string {

@@ -298,6 +298,65 @@ func TestCodexWebsocketsExecuteStreamResponsesLiteForcesParallelToolCallsFalse(t
 	}
 }
 
+func TestCodexWebsocketsExecuteStreamUnlocksSessionOnHandshakeStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{name: "upgrade_required", status: http.StatusUpgradeRequired},
+		{name: "status_error", status: http.StatusTooManyRequests},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(`{"error":{"message":"websocket rejected"}}`))
+					return
+				}
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"error":{"message":"fallback rejected"}}`))
+			}))
+			defer server.Close()
+
+			exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+			exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+			auth := &cliproxyauth.Auth{
+				ID:       "codex-auth-" + tc.name,
+				Provider: "codex",
+				Attributes: map[string]string{
+					"api_key":  "sk-test",
+					"base_url": server.URL,
+				},
+			}
+			sessionID := "codex-handshake-" + tc.name
+			req := cliproxyexecutor.Request{
+				Model:   "gpt-5-codex",
+				Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}]}`),
+			}
+			opts := cliproxyexecutor.Options{
+				SourceFormat: sdktranslator.FromString("openai-response"),
+				Metadata: map[string]any{
+					cliproxyexecutor.ExecutionSessionMetadataKey: sessionID,
+				},
+			}
+
+			if _, err := exec.ExecuteStream(context.Background(), auth, req, opts); err == nil {
+				t.Fatal("ExecuteStream() error = nil, want handshake/fallback error")
+			}
+
+			sess := exec.getOrCreateSession(sessionID)
+			if sess == nil {
+				t.Fatal("session was not created")
+			}
+			if !sess.reqMu.TryLock() {
+				t.Fatal("session request mutex remained locked after handshake status error")
+			}
+			sess.reqMu.Unlock()
+		})
+	}
+}
+
 func TestCodexWebsocketsExecutePreservesPreviousResponseIDUpstream(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	capturedPayload := make(chan []byte, 1)

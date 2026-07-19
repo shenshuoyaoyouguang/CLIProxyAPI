@@ -71,6 +71,7 @@ type xaiWebsocketRequestIDMapper struct {
 	upstreamPreviousID   string
 	upstreamResponseID   string
 	downstreamResponseID string
+	skipTranscriptReplay bool
 }
 
 func NewXAIWebsocketsExecutor(cfg *config.Config) *XAIWebsocketsExecutor {
@@ -188,6 +189,15 @@ func (s *xaiWebsocketIDState) prependTranscriptInput(payload []byte) []byte {
 	return out
 }
 
+func (s *xaiWebsocketIDState) clearTranscriptInput() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.transcriptInput = nil
+	s.mu.Unlock()
+}
+
 func (s *xaiWebsocketIDState) recordTranscriptTurn(requestPayload []byte, completedPayload []byte) {
 	if s == nil || len(requestPayload) == 0 || len(completedPayload) == 0 {
 		return
@@ -260,7 +270,7 @@ func (m *xaiWebsocketRequestIDMapper) upstreamRequestPayload(payload []byte) []b
 	if m.upstreamPreviousID == "" {
 		out, errDelete := sjson.DeleteBytes(payload, "previous_response_id")
 		if errDelete == nil {
-			if m.downstreamPreviousID != "" && m.state != nil {
+			if m.downstreamPreviousID != "" && m.state != nil && !m.skipTranscriptReplay {
 				out = m.state.prependTranscriptInput(out)
 			}
 			return out
@@ -451,6 +461,8 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	if idMapper != nil {
 		if websocketSessionTargetChanged(sess, authID, wsURL) {
 			idMapper.upstreamPreviousID = ""
+			idMapper.skipTranscriptReplay = true
+			idMapper.state.clearTranscriptInput()
 		}
 		prepared.body = idMapper.upstreamRequestPayload(prepared.body)
 	}
@@ -659,7 +671,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					continue
 				}
 				eventType := gjson.GetBytes(payload, "type").String()
-				isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+				isTerminalEvent := xaiWebsocketTerminalEvent(eventType)
 				warmupCompletedPayload := []byte(nil)
 				switch eventType {
 				case "response.created":
@@ -669,7 +681,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 				case "response.output_item.done":
 					xaiCollectOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
-				case "response.completed":
+				case "response.completed", "response.incomplete":
 					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
 					if detail, ok := helps.ParseCodexUsage(payload); ok {
 						reporter.Publish(ctx, detail)
@@ -742,7 +754,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 					return
 				}
-				if eventType == "response.completed" || eventType == "response.done" {
+				if xaiWebsocketTerminalEvent(eventType) {
 					return
 				}
 			}
@@ -820,6 +832,15 @@ func buildXAIWebsocketCompactionPayload(payload []byte, transcriptInput []byte) 
 func xaiWebsocketGenerateFalse(payload []byte) bool {
 	generate := gjson.GetBytes(payload, "generate")
 	return generate.Exists() && !generate.Bool()
+}
+
+func xaiWebsocketTerminalEvent(eventType string) bool {
+	switch eventType {
+	case "response.completed", "response.incomplete", "response.done", "error":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildXAIWebsocketWarmupCompletedPayload(createdPayload []byte) []byte {

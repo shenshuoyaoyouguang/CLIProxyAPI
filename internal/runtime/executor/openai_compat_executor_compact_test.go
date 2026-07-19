@@ -9,15 +9,29 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/ratelimit"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+type openAICompatRewriteRoundTripper struct {
+	target *url.URL
+}
+
+func (rt openAICompatRewriteRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.URL.Scheme = rt.target.Scheme
+	req.URL.Host = rt.target.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
 
 func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	var gotPath string
@@ -195,6 +209,108 @@ func TestOpenAICompatExecutorDeepSeekPreservesClientUser(t *testing.T) {
 	}
 	if got := gjson.GetBytes(gotBody, "user").String(); got != "client-user" {
 		t.Fatalf("user = %q, want client-user; body=%s", got, gotBody)
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekGatewayOverridesClientUser(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	targetURL, errParse := url.Parse(server.URL)
+	if errParse != nil {
+		t.Fatalf("parse server URL: %v", errParse)
+	}
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: targetURL})
+	mgr := ratelimit.NewDeepSeekLimiterManager(ratelimit.DeepSeekLimiterConfig{
+		GlobalMaxConcurrency:    1,
+		PerUserIDMaxConcurrency: 1,
+	})
+	hook := ratelimit.NewDeepSeekGatewayHook(config.DeepSeekGatewayConfig{Enabled: true}, mgr, ratelimit.NewUserIDResolver(ratelimit.StrategyFixed, "", "gateway-user", ""))
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{}).WithDeepSeekGatewayHook(hook)
+	auth := &cliproxyauth.Auth{
+		ID: "deepseek-auth-gateway",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com/v1",
+			"api_key":  "test",
+		},
+	}
+	payload := []byte(`{"model":"deepseek-r1","user":"client-user","messages":[{"role":"user","content":"hi"}]}`)
+	if _, errExecute := executor.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "deepseek-r1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	}); errExecute != nil {
+		t.Fatalf("Execute error: %v", errExecute)
+	}
+	if got := gjson.GetBytes(gotBody, "user").String(); got != "gateway-user" {
+		t.Fatalf("user = %q, want gateway-user; body=%s", got, gotBody)
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekGatewayStreamReleasesSlotAfterUpstreamAccepts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	targetURL, errParse := url.Parse(server.URL)
+	if errParse != nil {
+		t.Fatalf("parse server URL: %v", errParse)
+	}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: targetURL}))
+	defer cancel()
+
+	mgr := ratelimit.NewDeepSeekLimiterManager(ratelimit.DeepSeekLimiterConfig{
+		GlobalMaxConcurrency:    1,
+		PerUserIDMaxConcurrency: 1,
+	})
+	hook := ratelimit.NewDeepSeekGatewayHook(config.DeepSeekGatewayConfig{Enabled: true}, mgr, ratelimit.NewUserIDResolver(ratelimit.StrategyFixed, "", "gateway-user", ""))
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{}).WithDeepSeekGatewayHook(hook)
+	auth := &cliproxyauth.Auth{
+		ID: "deepseek-auth-gateway-stream",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com/v1",
+			"api_key":  "test",
+		},
+	}
+	payload := []byte(`{"model":"deepseek-r1","messages":[{"role":"user","content":"hi"}]}`)
+	result, errExecute := executor.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "deepseek-r1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       true,
+	})
+	if errExecute != nil {
+		t.Fatalf("ExecuteStream error: %v", errExecute)
+	}
+	if result == nil || result.Chunks == nil {
+		t.Fatalf("ExecuteStream returned nil result")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		stats, ok := mgr.GetShardStats("gateway-user")
+		if ok && stats.Active == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("gateway slot active after upstream accepted stream: stats=%+v ok=%v", stats, ok)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
