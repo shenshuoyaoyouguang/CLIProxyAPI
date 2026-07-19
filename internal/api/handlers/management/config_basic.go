@@ -171,6 +171,20 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		return
 	}
 	h.mu.Lock()
+	// Restore redacted secrets before persisting. The management JSON GET
+	// endpoint returns masked api-keys/proxy-urls/headers so a stolen
+	// management session cannot bulk-export credentials; if that masked
+	// snapshot is round-tripped back through PUT /config.yaml we must undo
+	// the masking against the live config under the lock or every provider
+	// auth on disk gets corrupted. Restoration is structural-preserve and
+	// only substitutes values whose redaction matches the live secret.
+	restored, errRestore := restoreRedactedSecrets(body, h.cfg)
+	if errRestore != nil {
+		h.mu.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "redaction_restore_failed", "message": errRestore.Error()})
+		return
+	}
+	body = restored
 	if WriteConfig(h.configFilePath, body) != nil {
 		h.mu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})

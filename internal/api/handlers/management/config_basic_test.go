@@ -2,8 +2,10 @@ package management
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -252,4 +254,141 @@ func TestGetConfig_ConcurrentMutationDoesNotRace(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// TestPutConfigYAML_RestoresRedactedSecrets is the end-to-end regression test
+// for the bug where GET /v0/management/config redacts api-keys and a
+// subsequent PUT /v0/management/config.yaml persists the redacted values to
+// disk, breaking every provider auth. The test sets up a handler with real
+// secrets, PUTs a YAML body containing only redacted placeholders, and
+// verifies that the on-disk file ends up with the original secret values
+// (not the placeholders).
+func TestPutConfigYAML_RestoresRedactedSecrets(t *testing.T) {
+	t.Parallel()
+
+	const (
+		claudeSecret = "sk-claude-secret-1234"
+		openaiKey    = "sk-openai-compat-aaaa"
+		clientAPIKey = "client-api-key-abcdef"
+	)
+	dir := t.TempDir()
+	configPath := dir + string(os.PathSeparator) + "config.yaml"
+	initialBody := strings.Join([]string{
+		"claude-api-key:",
+		"  - api-key: " + claudeSecret,
+		"    base-url: https://claude.example.com",
+		"openai-compatibility:",
+		"  - name: alpha",
+		"    base-url: https://alpha.example/v1",
+		"    api-key-entries:",
+		"      - api-key: " + openaiKey,
+		"api-keys:",
+		"  - " + clientAPIKey,
+		"",
+	}, "\n")
+	if errWrite := os.WriteFile(configPath, []byte(initialBody), 0o600); errWrite != nil {
+		t.Fatalf("seed config: %v", errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(configPath)
+	if errLoad != nil {
+		t.Fatalf("load seed config: %v", errLoad)
+	}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	_, _ = captureConfigReload(h)
+
+	// PUT body has every secret replaced by its redaction (exactly what the
+	// management UI would send back after a GET).
+	putBody := strings.Join([]string{
+		"claude-api-key:",
+		"  - api-key: " + redactSecretValue(claudeSecret),
+		"    base-url: https://claude.example.com",
+		"openai-compatibility:",
+		"  - name: alpha",
+		"    base-url: https://alpha.example/v1",
+		"    api-key-entries:",
+		"      - api-key: " + redactSecretValue(openaiKey),
+		"api-keys:",
+		"  - " + redactSecretValue(clientAPIKey),
+		"",
+	}, "\n")
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/config.yaml", strings.NewReader(putBody))
+	ctx.Request.Header.Set("Content-Type", "application/yaml")
+	h.PutConfigYAML(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PutConfigYAML status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	// Verify the on-disk file contains the REAL secrets, not the redacted
+	// placeholders.
+	persisted, errRead := os.ReadFile(configPath)
+	if errRead != nil {
+		t.Fatalf("read persisted config: %v", errRead)
+	}
+	persistedStr := string(persisted)
+	for _, secret := range []string{claudeSecret, openaiKey, clientAPIKey} {
+		if !strings.Contains(persistedStr, secret) {
+			t.Fatalf("persisted config missing secret %q:\n%s", secret, persistedStr)
+		}
+		if strings.Contains(persistedStr, redactSecretValue(secret)) {
+			t.Fatalf("persisted config still has redacted placeholder for %q:\n%s", secret, persistedStr)
+		}
+	}
+	// Verify the in-memory handler config has the real secrets.
+	if got := h.cfg.ClaudeKey[0].APIKey; got != claudeSecret {
+		t.Fatalf("in-memory ClaudeKey[0].APIKey = %q, want %q", got, claudeSecret)
+	}
+	if got := h.cfg.OpenAICompatibility[0].APIKeyEntries[0].APIKey; got != openaiKey {
+		t.Fatalf("in-memory OpenAICompatibility[0].APIKeyEntries[0].APIKey = %q, want %q", got, openaiKey)
+	}
+	if got := h.cfg.APIKeys[0]; got != clientAPIKey {
+		t.Fatalf("in-memory APIKeys[0] = %q, want %q", got, clientAPIKey)
+	}
+}
+
+// TestPutConfigYAML_PreservesNewSecretsInPutBody verifies that when the
+// operator PUTs a body with brand-new (non-redacted) secrets, the restoration
+// logic does NOT clobber them with old values from the live config.
+func TestPutConfigYAML_PreservesNewSecretsInPutBody(t *testing.T) {
+	t.Parallel()
+
+	const (
+		oldSecret = "sk-old-secret-value-1234"
+		newSecret = "sk-brand-new-real-key-9876"
+	)
+	dir := t.TempDir()
+	configPath := dir + string(os.PathSeparator) + "config.yaml"
+	initialBody := fmt.Sprintf("claude-api-key:\n  - api-key: %s\n", oldSecret)
+	if errWrite := os.WriteFile(configPath, []byte(initialBody), 0o600); errWrite != nil {
+		t.Fatalf("seed config: %v", errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(configPath)
+	if errLoad != nil {
+		t.Fatalf("load seed config: %v", errLoad)
+	}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	_, _ = captureConfigReload(h)
+
+	putBody := fmt.Sprintf("claude-api-key:\n  - api-key: %s\n", newSecret)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/config.yaml", strings.NewReader(putBody))
+	ctx.Request.Header.Set("Content-Type", "application/yaml")
+	h.PutConfigYAML(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PutConfigYAML status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	persisted, errRead := os.ReadFile(configPath)
+	if errRead != nil {
+		t.Fatalf("read persisted config: %v", errRead)
+	}
+	persistedStr := string(persisted)
+	if !strings.Contains(persistedStr, newSecret) {
+		t.Fatalf("new secret should be persisted:\n%s", persistedStr)
+	}
+	if strings.Contains(persistedStr, oldSecret) {
+		t.Fatalf("old secret should NOT replace the new one:\n%s", persistedStr)
+	}
 }
