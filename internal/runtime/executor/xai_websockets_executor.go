@@ -468,6 +468,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	}
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
+	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 
 	wsHeaders := applyXAIWebsocketHeaders(http.Header{}, auth, token, prepared.sessionID)
 	wsReqBody := buildXAIWebsocketRequestBody(prepared.body)
