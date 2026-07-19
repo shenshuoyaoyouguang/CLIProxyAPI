@@ -413,6 +413,31 @@ func TestRedisProtocol_SUBSCRIBE_ErrorsReceivesErrorEvents(t *testing.T) {
 	}
 }
 
+func TestReadRedisSubscriptionCommandsRefreshesDeadlineBeforeEachRead(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("*1\r\n$4\r\nPING\r\n"))
+	commands := make(chan redisSubscriptionCommand, 2)
+	done := make(chan struct{})
+	refreshes := 0
+
+	readRedisSubscriptionCommands(reader, commands, done, func() {
+		refreshes++
+	})
+
+	command, ok := <-commands
+	if !ok {
+		t.Fatalf("commands channel closed before command")
+	}
+	if command.err != nil {
+		t.Fatalf("command error = %v", command.err)
+	}
+	if len(command.args) != 1 || command.args[0] != "PING" {
+		t.Fatalf("command args = %#v, want PING", command.args)
+	}
+	if refreshes < 2 {
+		t.Fatalf("deadline refreshes = %d, want at least 2", refreshes)
+	}
+}
+
 func TestRedisProtocol_AUTH_And_PopContracts(t *testing.T) {
 	const managementPassword = "test-management-password"
 

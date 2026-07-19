@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -105,6 +106,38 @@ func TestGetConfig_NilHandlerAndNilConfig(t *testing.T) {
 			t.Fatalf("nil cfg status = %d, want 200", rec.Code)
 		}
 	})
+}
+
+func TestPutConfigYAMLTriggersConfigReloadHook(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg:            &config.Config{Debug: false},
+		configFilePath: writeTestConfigFile(t),
+	}
+	reloads, reloadDone := captureConfigReload(h)
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/config.yaml", strings.NewReader("debug: true\n"))
+	ctx.Request.Header.Set("Content-Type", "application/yaml")
+
+	h.PutConfigYAML(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	cfgSnapshot := waitForAsyncReload(t, reloads)
+	waitForReloadDone(t, reloadDone)
+	if cfgSnapshot == h.cfg {
+		t.Fatalf("reload config = handler config %p, want independent snapshot", h.cfg)
+	}
+	if !cfgSnapshot.Debug {
+		t.Fatal("reload snapshot Debug = false, want true")
+	}
+	if h.cfg == nil || !h.cfg.Debug {
+		t.Fatal("handler config Debug = false, want true")
+	}
 }
 
 // TestGetConfig_ConcurrentMutationDoesNotRace runs GetConfig in parallel with

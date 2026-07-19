@@ -40,7 +40,7 @@ func (h *Handler) putStringList(c *gin.Context, set func([]string), after func()
 	h.persistLocked(c)
 }
 
-func (h *Handler) patchStringList(c *gin.Context, target *[]string, after func()) {
+func (h *Handler) patchStringList(c *gin.Context, target func() *[]string, after func()) {
 	var body struct {
 		Old   *string `json:"old"`
 		New   *string `json:"new"`
@@ -57,8 +57,13 @@ func (h *Handler) patchStringList(c *gin.Context, target *[]string, after func()
 		c.JSON(500, gin.H{"error": "config_unavailable"})
 		return
 	}
-	if body.Index != nil && body.Value != nil && *body.Index >= 0 && *body.Index < len(*target) {
-		(*target)[*body.Index] = *body.Value
+	targetList := target()
+	if targetList == nil {
+		c.JSON(500, gin.H{"error": "config_unavailable"})
+		return
+	}
+	if body.Index != nil && body.Value != nil && *body.Index >= 0 && *body.Index < len(*targetList) {
+		(*targetList)[*body.Index] = *body.Value
 		if after != nil {
 			after()
 		}
@@ -66,9 +71,9 @@ func (h *Handler) patchStringList(c *gin.Context, target *[]string, after func()
 		return
 	}
 	if body.Old != nil && body.New != nil {
-		for i := range *target {
-			if (*target)[i] == *body.Old {
-				(*target)[i] = *body.New
+		for i := range *targetList {
+			if (*targetList)[i] == *body.Old {
+				(*targetList)[i] = *body.New
 				if after != nil {
 					after()
 				}
@@ -76,7 +81,7 @@ func (h *Handler) patchStringList(c *gin.Context, target *[]string, after func()
 				return
 			}
 		}
-		*target = append(*target, *body.New)
+		*targetList = append(*targetList, *body.New)
 		if after != nil {
 			after()
 		}
@@ -86,18 +91,23 @@ func (h *Handler) patchStringList(c *gin.Context, target *[]string, after func()
 	c.JSON(400, gin.H{"error": "missing fields"})
 }
 
-func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after func()) {
+func (h *Handler) deleteFromStringList(c *gin.Context, target func() *[]string, after func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.cfg == nil {
 		c.JSON(500, gin.H{"error": "config_unavailable"})
 		return
 	}
+	targetList := target()
+	if targetList == nil {
+		c.JSON(500, gin.H{"error": "config_unavailable"})
+		return
+	}
 	if idxStr := c.Query("index"); idxStr != "" {
 		var idx int
 		_, err := fmt.Sscanf(idxStr, "%d", &idx)
-		if err == nil && idx >= 0 && idx < len(*target) {
-			*target = append((*target)[:idx], (*target)[idx+1:]...)
+		if err == nil && idx >= 0 && idx < len(*targetList) {
+			*targetList = append((*targetList)[:idx], (*targetList)[idx+1:]...)
 			if after != nil {
 				after()
 			}
@@ -106,13 +116,13 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 		}
 	}
 	if val := strings.TrimSpace(c.Query("value")); val != "" {
-		out := make([]string, 0, len(*target))
-		for _, v := range *target {
+		out := make([]string, 0, len(*targetList))
+		for _, v := range *targetList {
 			if strings.TrimSpace(v) != val {
 				out = append(out, v)
 			}
 		}
-		*target = out
+		*targetList = out
 		if after != nil {
 			after()
 		}
@@ -138,10 +148,10 @@ func (h *Handler) PutAPIKeys(c *gin.Context) {
 	}, nil)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
-	h.patchStringList(c, &h.cfg.APIKeys, func() {})
+	h.patchStringList(c, func() *[]string { return &h.cfg.APIKeys }, func() {})
 }
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
-	h.deleteFromStringList(c, &h.cfg.APIKeys, func() {})
+	h.deleteFromStringList(c, func() *[]string { return &h.cfg.APIKeys }, func() {})
 }
 
 // gemini-api-key: []GeminiKey

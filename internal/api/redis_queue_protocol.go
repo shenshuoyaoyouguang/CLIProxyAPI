@@ -190,7 +190,7 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 				unsubscribe()
 				return
 			}
-			s.streamRedisSubscription(reader, writer, channel, messages, unsubscribe)
+			s.streamRedisSubscription(reader, writer, channel, messages, unsubscribe, refreshDeadline)
 			return
 		case "LPOP", "RPOP":
 			count, hasCount, ok := parsePopCount(args)
@@ -265,7 +265,7 @@ func popRedisQueueItems(channel string, count int) ([][]byte, bool) {
 	}
 }
 
-func (s *Server) streamRedisSubscription(reader *bufio.Reader, writer *bufio.Writer, channel string, messages <-chan []byte, unsubscribe func()) {
+func (s *Server) streamRedisSubscription(reader *bufio.Reader, writer *bufio.Writer, channel string, messages <-chan []byte, unsubscribe func(), refreshDeadline func()) {
 	if unsubscribe == nil {
 		return
 	}
@@ -275,7 +275,7 @@ func (s *Server) streamRedisSubscription(reader *bufio.Reader, writer *bufio.Wri
 	defer close(done)
 
 	commands := make(chan redisSubscriptionCommand, 1)
-	go readRedisSubscriptionCommands(reader, commands, done)
+	go readRedisSubscriptionCommands(reader, commands, done, refreshDeadline)
 
 	for {
 		select {
@@ -307,10 +307,13 @@ func (s *Server) streamRedisSubscription(reader *bufio.Reader, writer *bufio.Wri
 	}
 }
 
-func readRedisSubscriptionCommands(reader *bufio.Reader, commands chan<- redisSubscriptionCommand, done <-chan struct{}) {
+func readRedisSubscriptionCommands(reader *bufio.Reader, commands chan<- redisSubscriptionCommand, done <-chan struct{}, refreshDeadline func()) {
 	defer close(commands)
 
 	for {
+		if refreshDeadline != nil {
+			refreshDeadline()
+		}
 		args, errRead := readRESPArray(reader)
 		if errRead != nil {
 			if !errors.Is(errRead, io.EOF) {
