@@ -195,7 +195,7 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 	// Ensure the request satisfies Claude constraints:
 	//  1) Determine effective max_tokens (request overrides model default)
 	//  2) If budget_tokens >= max_tokens, reduce budget_tokens to max_tokens-1
-	//  3) If the adjusted budget falls below the model minimum, leave the request unchanged
+	//  3) If the adjusted budget falls below the model minimum, remove thinking
 	//  4) If max_tokens came from model default, write it back into the request
 
 	effectiveMax, setDefaultMax := a.effectiveMaxTokens(body, modelInfo)
@@ -214,9 +214,10 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 		minBudget = modelInfo.Thinking.Min
 	}
 	if minBudget > 0 && adjustedBudget > 0 && adjustedBudget < minBudget {
-		// If enforcing the max_tokens constraint would push the budget below the model minimum,
-		// leave the request unchanged.
-		return body, budgetTokens
+		// If enforcing the max_tokens constraint would push the budget below the
+		// model minimum, remove thinking rather than sending an impossible budget.
+		body, _ = sjson.DeleteBytes(body, "thinking")
+		return body, 0
 	}
 
 	if adjustedBudget != budgetTokens {

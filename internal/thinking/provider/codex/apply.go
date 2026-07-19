@@ -51,8 +51,9 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		return body, nil
 	}
 
-	// Only handle ModeLevel and ModeNone; other modes pass through unchanged.
-	if config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone {
+	// ModeBudget is converted upstream for level-only models; residual budget
+	// mode is left unchanged. ModeLevel/ModeNone/ModeAuto are applied.
+	if config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto {
 		return body, nil
 	}
 

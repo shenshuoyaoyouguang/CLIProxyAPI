@@ -11,9 +11,9 @@ import (
 
 // TestApplyThinking_UserDefinedSuffixYieldsBudget verifies that a user-defined
 // model with a numeric thinking suffix (e.g. "model(8192)") produces a ModeBudget
-// config regardless of the fromFormat/toFormat values. The suffix parse direction
-// (fromFormat) must not affect the parsing result because parseSuffixToConfig is
-// provider-agnostic.
+// config regardless of the fromFormat/toFormat values. parseSuffixToConfig is
+// provider-agnostic; the wire result depends on the target applier (asserted in
+// apply_pipeline_e2e_test.go with blank-imported providers).
 func TestApplyThinking_UserDefinedSuffixYieldsBudget(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -27,15 +27,7 @@ func TestApplyThinking_UserDefinedSuffixYieldsBudget(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Unknown model => treated as user-defined, validation skipped.
 			model := "custom-model(8192)"
-			_, err := ApplyThinking([]byte(`{}`), model, tc.fromFormat, tc.toFormat, tc.toFormat)
-			// We only care that no error occurs and the suffix was parsed as a budget.
-			// Apply returns the original body on validation passthrough, so we cannot
-			// assert on the payload directly; instead assert the parse helper directly.
-			if err != nil {
-				t.Fatalf("ApplyThinking returned error: %v", err)
-			}
 			cfg := parseSuffixToConfig("8192", tc.fromFormat, model)
 			if cfg.Mode != ModeBudget {
 				t.Fatalf("suffix parse mode = %v, want ModeBudget", cfg.Mode)

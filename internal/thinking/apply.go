@@ -18,10 +18,10 @@ type pluginProviderApplier struct {
 
 var providerAppliersMu sync.RWMutex
 
-// nativeProviderNames is the allowlist of known built-in provider names.
-// Their appliers are populated via RegisterProvider during init.
-// GetProviderApplier also accepts any name present in nativeProviderAppliers so
-// a missing allowlist entry cannot silently drop a registered applier.
+// nativeProviderNames reserves built-in provider names so plugins cannot claim
+// them before (or without) RegisterProvider. Appliers live in
+// nativeProviderAppliers; GetProviderApplier looks there only. RegisterProvider
+// adds every successfully registered name here so dynamic natives stay reserved.
 var nativeProviderNames = map[string]bool{
 	"gemini":       true,
 	"claude":       true,
@@ -78,7 +78,11 @@ func RegisterPluginProvider(owner string, name string, priority int, applier Pro
 	}
 	providerAppliersMu.Lock()
 	defer providerAppliersMu.Unlock()
-	if _, native := nativeProviderAppliers[name]; native {
+	// nativeProviderNames covers both the static allowlist and any name that
+	// RegisterProvider has claimed (including dynamic natives). Checking only
+	// nativeProviderAppliers would allow plugins to steal allowlisted names
+	// before native init.
+	if nativeProviderNames[name] {
 		return false
 	}
 	current, exists := pluginProviderAppliers[name]
@@ -474,11 +478,9 @@ func extractDeepSeekConfig(body []byte) ThinkingConfig {
 	}
 
 	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
-		value := strings.ToLower(strings.TrimSpace(effort.String()))
-		if value == "none" {
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		}
-		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+		// Same none/auto/level mapping as thinking.effort so legacy OpenAI-compat
+		// fields produce identical ModeAuto clearing behavior for DeepSeek.
+		return configFromLevelName(effort.String())
 	}
 
 	return ThinkingConfig{}
@@ -557,14 +559,19 @@ func reasoningEffortFromConfig(config ThinkingConfig) string {
 // configFromLevelName maps a thinking level string
 // ("none"/"auto"/level name) to a canonical ThinkingConfig.
 // Matching is case-insensitive with leading/trailing whitespace trimmed.
+// Non-special levels are stored as lowercase trimmed ThinkingLevel so
+// provider appliers always emit canonical wire enums.
 func configFromLevelName(value string) ThinkingConfig {
-	switch strings.ToLower(strings.TrimSpace(value)) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
 	case "none":
 		return ThinkingConfig{Mode: ModeNone, Budget: 0}
 	case "auto":
 		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+	case "":
+		return ThinkingConfig{}
 	default:
-		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(normalized)}
 	}
 }
 
@@ -578,7 +585,8 @@ func configFromLevelName(value string) ThinkingConfig {
 // When type="enabled" without budget_tokens, returns ModeAuto to indicate
 // the user wants thinking enabled but didn't specify a budget.
 func extractClaudeConfig(body []byte) ThinkingConfig {
-	thinkingType := gjson.GetBytes(body, "thinking.type").String()
+	// Normalize type case so clients sending "Disabled"/"ENABLED" match DeepSeek/Kimi.
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
 	if thinkingType == "disabled" {
 		return ThinkingConfig{Mode: ModeNone, Budget: 0}
 	}
@@ -717,11 +725,7 @@ func extractInteractionsConfig(body []byte) ThinkingConfig {
 func extractOpenAIConfig(body []byte) ThinkingConfig {
 	// Check reasoning_effort (OpenAI Chat Completions format)
 	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
-		value := effort.String()
-		if value == "none" {
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		}
-		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+		return configFromLevelName(effort.String())
 	}
 
 	return ThinkingConfig{}
@@ -780,11 +784,7 @@ func extractKimiConfig(body []byte) ThinkingConfig {
 func extractCodexConfig(body []byte) ThinkingConfig {
 	// Check reasoning.effort (Codex / OpenAI Responses API format)
 	if effort := gjson.GetBytes(body, "reasoning.effort"); effort.Exists() {
-		value := effort.String()
-		if value == "none" {
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		}
-		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+		return configFromLevelName(effort.String())
 	}
 
 	return ThinkingConfig{}

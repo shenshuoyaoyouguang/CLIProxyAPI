@@ -26,6 +26,19 @@ func levelOnlyModel(levels []string, zeroAllowed bool) *registry.ModelInfo {
 	}
 }
 
+// dynamicAllowedModel is a registered level-only model that advertises DynamicAllowed
+// so ValidateConfig can leave ModeAuto for the applier to emit.
+func dynamicAllowedModel(levels []string) *registry.ModelInfo {
+	return &registry.ModelInfo{
+		ID:   "gpt-5.2-dynamic",
+		Type: "openai",
+		Thinking: &registry.ThinkingSupport{
+			Levels:         levels,
+			DynamicAllowed: true,
+		},
+	}
+}
+
 func TestOpenAIApply_TranslationMatrix(t *testing.T) {
 	a := NewApplier()
 
@@ -69,6 +82,16 @@ func TestOpenAIApply_TranslationMatrix(t *testing.T) {
 			config:        thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 8192},
 			model:         levelOnlyModel([]string{"low", "medium", "high"}, false),
 			wantUnchanged: true,
+		},
+		{
+			// ValidateConfig leaves ModeAuto only when DynamicAllowed; the
+			// registered applier must still write reasoning_effort=auto.
+			name:      "auto_emits_auto_effort",
+			body:      `{}`,
+			config:    thinking.ThinkingConfig{Mode: thinking.ModeAuto, Budget: -1},
+			model:     dynamicAllowedModel([]string{"low", "medium", "high", "auto"}),
+			wantPath:  "reasoning_effort",
+			wantValue: "auto",
 		},
 	}
 

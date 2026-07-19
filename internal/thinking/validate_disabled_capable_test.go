@@ -7,6 +7,7 @@ package thinking_test
 import (
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 
 	// Blank-import all provider packages so their init() registers appliers with
@@ -72,5 +73,33 @@ func TestProviderDisabledCapability(t *testing.T) {
 func TestUnknownProviderNotDisabledCapable(t *testing.T) {
 	if applier := thinking.GetProviderApplier("does-not-exist"); applier != nil {
 		t.Fatalf("expected nil applier for unknown provider, got %T", applier)
+	}
+}
+
+func TestValidateConfigKimiModeNoneFallsBackWhenZeroNotAllowed(t *testing.T) {
+	model := &registry.ModelInfo{
+		ID:   "kimi-no-zero",
+		Type: "kimi",
+		Thinking: &registry.ThinkingSupport{
+			ZeroAllowed: false,
+			Levels:      []string{"low", "high"},
+		},
+	}
+
+	got, err := thinking.ValidateConfig(
+		thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0},
+		model,
+		"kimi",
+		"kimi",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("ValidateConfig returned error: %v", err)
+	}
+	if got.Mode != thinking.ModeNone {
+		t.Fatalf("mode = %v, want ModeNone with fallback level", got.Mode)
+	}
+	if got.Level != thinking.LevelLow {
+		t.Fatalf("fallback level = %q, want %q", got.Level, thinking.LevelLow)
 	}
 }

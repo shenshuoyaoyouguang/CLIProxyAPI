@@ -82,6 +82,30 @@ func TestConvertBudgetToLevel(t *testing.T) {
 	}
 }
 
+// TestHasLevelTrimsTargetAndEntries verifies HasLevel matches case-insensitively
+// and trims whitespace on BOTH the target and each list entry (comment contract).
+func TestHasLevelTrimsTargetAndEntries(t *testing.T) {
+	levels := []string{" low ", "medium", "HIGH"}
+	cases := []struct {
+		name   string
+		target string
+		want   bool
+	}{
+		{"exact", "medium", true},
+		{"target_padded", " high ", true},
+		{"target_upper", "LOW", true},
+		{"missing", "xhigh", false},
+		{"empty_target", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := thinking.HasLevel(levels, tc.target); got != tc.want {
+				t.Fatalf("HasLevel(%q) = %v, want %v", tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestConvertRoundTripStability ensures Level->Budget->Level is stable for the
 // canonical levels (a level maps to a budget that maps back to the same level).
 // This guards against the two mapping tables drifting out of sync.

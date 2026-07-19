@@ -6,6 +6,7 @@
 package deepseek
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -158,6 +159,35 @@ func TestDeepSeekApply_NilThinkingPassthrough(t *testing.T) {
 	}
 	if string(out) != string(body) {
 		t.Fatalf("expected passthrough, got %s", out)
+	}
+}
+
+// TestDeepSeekApply_InvalidBudgetReturnsError aligns DeepSeek with OpenAI/Kimi:
+// ModeBudget that cannot convert to a level must return ErrBudgetOutOfRange for
+// both registered and user-defined models (no silent passthrough).
+func TestDeepSeekApply_InvalidBudgetReturnsError(t *testing.T) {
+	applier := NewApplier()
+	cases := []struct {
+		name  string
+		model *registry.ModelInfo
+	}{
+		{name: "registered", model: deepseekModel()},
+		{name: "user_defined", model: &registry.ModelInfo{ID: "custom-deepseek", Type: "deepseek", UserDefined: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := applier.Apply([]byte(`{}`), thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: -5}, tc.model)
+			if err == nil {
+				t.Fatalf("expected ThinkingError for invalid budget, got nil (out=%s)", out)
+			}
+			var te *thinking.ThinkingError
+			if !errors.As(err, &te) {
+				t.Fatalf("expected *thinking.ThinkingError, got %T: %v", err, err)
+			}
+			if te.Code != thinking.ErrBudgetOutOfRange {
+				t.Fatalf("expected ErrBudgetOutOfRange, got %q", te.Code)
+			}
+		})
 	}
 }
 

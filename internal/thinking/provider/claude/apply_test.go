@@ -197,6 +197,19 @@ func TestClaudeApply_BudgetCappedAtMaxTokensMinusGap(t *testing.T) {
 	}
 }
 
+func TestClaudeApply_BudgetBelowMinAfterMaxCapRemovesThinking(t *testing.T) {
+	applier := NewApplier()
+	model := budgetModel()
+
+	out, err := applier.Apply([]byte(`{"max_tokens":1000}`), thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: 16384}, model)
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if gjson.GetBytes(out, "thinking").Exists() {
+		t.Fatalf("thinking config should be removed when max_tokens cap pushes budget below min; payload: %s", out)
+	}
+}
+
 // TestClaudeApply_NilThinkingPassthrough verifies that a model without thinking
 // support is left untouched.
 func TestClaudeApply_NilThinkingPassthrough(t *testing.T) {

@@ -40,7 +40,7 @@ var levelToBudgetMap = map[string]int{
 //   - budget: The converted budget value
 //   - ok: true if level is valid, false otherwise
 func ConvertLevelToBudget(level string) (int, bool) {
-	budget, ok := levelToBudgetMap[strings.ToLower(level)]
+	budget, ok := levelToBudgetMap[strings.ToLower(strings.TrimSpace(level))]
 	return budget, ok
 }
 
@@ -100,8 +100,10 @@ func ConvertBudgetToLevel(budget int) (string, bool) {
 }
 
 // HasLevel reports whether the given target level exists in the levels slice.
-// Matching is case-insensitive with leading/trailing whitespace trimmed.
+// Matching is case-insensitive with leading/trailing whitespace trimmed on
+// both the target and each list entry.
 func HasLevel(levels []string, target string) bool {
+	target = strings.TrimSpace(target)
 	for _, level := range levels {
 		if strings.EqualFold(strings.TrimSpace(level), target) {
 			return true

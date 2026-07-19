@@ -81,7 +81,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		// Convert budget to level using threshold mapping.
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
 		if !ok {
-			return body, nil
+			return body, thinking.NewThinkingError(thinking.ErrBudgetOutOfRange, "invalid budget for deepseek thinking conversion")
 		}
 		effort = normalizeDeepSeekEffort(level)
 	case thinking.ModeAuto:
@@ -121,7 +121,7 @@ func applyCompatibleDeepSeek(body []byte, config thinking.ThinkingConfig) ([]byt
 		// Convert budget to level.
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
 		if !ok {
-			return body, nil
+			return body, thinking.NewThinkingError(thinking.ErrBudgetOutOfRange, "invalid budget for deepseek thinking conversion")
 		}
 		effort = normalizeDeepSeekEffort(level)
 	default:

@@ -46,9 +46,10 @@ func BuildCompatibleEffort(body []byte, config ThinkingConfig, field, budgetErrM
 	return result, nil
 }
 
-// buildRegisteredEffort translates a canonical ThinkingConfig into a provider
+// BuildRegisteredEffort translates a canonical ThinkingConfig into a provider
 // request body for registered models, consulting model capability (support).
-// It matches the original OpenAI/Codex Apply behavior.
+// ModeLevel writes the validated level; ModeAuto writes "auto" when DynamicAllowed
+// left ModeAuto intact; ModeNone falls back to none/lowest supported level.
 func BuildRegisteredEffort(body []byte, config ThinkingConfig, support *registry.ThinkingSupport, field string) ([]byte, error) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		body = []byte(`{}`)
@@ -56,6 +57,19 @@ func BuildRegisteredEffort(body []byte, config ThinkingConfig, support *registry
 
 	if config.Mode == ModeLevel {
 		result, _ := sjson.SetBytes(body, field, string(config.Level))
+		return result, nil
+	}
+
+	// Callers normally nil-check modelInfo.Thinking; guard here so the public
+	// helper cannot panic on ModeNone/budget fallback paths.
+	if support == nil {
+		return body, nil
+	}
+
+	// ModeAuto survives ValidateConfig only when DynamicAllowed is true. Emit the
+	// canonical "auto" effort so registered OpenAI/Codex/xAI models honor it.
+	if config.Mode == ModeAuto {
+		result, _ := sjson.SetBytes(body, field, string(LevelAuto))
 		return result, nil
 	}
 

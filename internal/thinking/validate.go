@@ -273,13 +273,16 @@ func (c *validateContext) validateBudgetRange() error {
 // lowest supported level when disabling is not possible.
 func (c *validateContext) finalizeModeNone() {
 	if c.config.Mode == ModeNone && isDisabledCapableProvider(c.toFormat) {
-		// Providers with an explicit disabled mode (claude/deepseek/kimi) keep
-		// thinking fully off. Keep Budget=0 and Level="" so the applier emits
-		// the native "disabled" marker instead of a clamped level that would
-		// otherwise re-enable thinking for models whose Levels list omits "none".
-		c.config.Budget = 0
-		c.config.Level = ""
-		return
+		canUseNativeDisabled := c.support == nil || c.support.ZeroAllowed || isLevelSupported(string(LevelNone), c.support.Levels)
+		if canUseNativeDisabled {
+			// Providers with an explicit disabled mode (claude/deepseek/kimi) keep
+			// thinking fully off. Keep Budget=0 and Level="" so the applier emits
+			// the native "disabled" marker instead of a clamped level that would
+			// otherwise re-enable thinking for models whose Levels list omits "none".
+			c.config.Budget = 0
+			c.config.Level = ""
+			return
+		}
 	}
 
 	switch c.config.Mode {
