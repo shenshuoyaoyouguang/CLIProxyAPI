@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -331,6 +332,104 @@ func TestHostApplyConfigRegistersPluginThinkingApplier(t *testing.T) {
 	if got := gjson.GetBytes(out, "plugin").String(); got != "plugin-thinking" {
 		t.Fatalf("plugin = %q, want plugin-thinking; body=%s", got, string(out))
 	}
+}
+
+func TestHostThinkingApplierReturnsPluginError(t *testing.T) {
+	loader := newTestSymbolLoader()
+	plugin := &testPlugin{
+		registerResult:    validTestPlugin("alpha"),
+		reconfigureResult: validTestPlugin("alpha"),
+	}
+	plugin.registerResult.Capabilities.ThinkingApplier = failingThinkingCapability{provider: "plugin-thinking-error"}
+	plugin.reconfigureResult.Capabilities.ThinkingApplier = failingThinkingCapability{provider: "plugin-thinking-error"}
+	loader.lookups["alpha"] = newTestSymbolLookup(plugin)
+	h := NewForTest(loader)
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     makePluginDir(t, "alpha"),
+			Configs: enabledPluginConfigs("alpha"),
+		},
+	}
+	t.Cleanup(func() {
+		h.ApplyConfig(context.Background(), &config.Config{
+			Plugins: config.PluginsConfig{
+				Enabled: false,
+				Dir:     cfg.Plugins.Dir,
+			},
+		})
+	})
+
+	h.ApplyConfig(context.Background(), cfg)
+
+	_, errApply := thinking.ApplyThinking([]byte(`{"model":"plugin-model"}`), "plugin-model(10240)", "openai", "plugin-thinking-error", "plugin-thinking-error")
+	if errApply == nil {
+		t.Fatalf("ApplyThinking() error = nil, want plugin error")
+	}
+	if !strings.Contains(errApply.Error(), "thinking applier failed") {
+		t.Fatalf("ApplyThinking() error = %v, want thinking applier context", errApply)
+	}
+}
+
+func TestHostThinkingApplierReturnsPanicAsError(t *testing.T) {
+	loader := newTestSymbolLoader()
+	plugin := &testPlugin{
+		registerResult:    validTestPlugin("alpha"),
+		reconfigureResult: validTestPlugin("alpha"),
+	}
+	plugin.registerResult.Capabilities.ThinkingApplier = panicThinkingCapability{provider: "plugin-thinking-panic"}
+	plugin.reconfigureResult.Capabilities.ThinkingApplier = panicThinkingCapability{provider: "plugin-thinking-panic"}
+	loader.lookups["alpha"] = newTestSymbolLookup(plugin)
+	h := NewForTest(loader)
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     makePluginDir(t, "alpha"),
+			Configs: enabledPluginConfigs("alpha"),
+		},
+	}
+	t.Cleanup(func() {
+		h.ApplyConfig(context.Background(), &config.Config{
+			Plugins: config.PluginsConfig{
+				Enabled: false,
+				Dir:     cfg.Plugins.Dir,
+			},
+		})
+	})
+
+	h.ApplyConfig(context.Background(), cfg)
+
+	_, errApply := thinking.ApplyThinking([]byte(`{"model":"plugin-model"}`), "plugin-model(10240)", "openai", "plugin-thinking-panic", "plugin-thinking-panic")
+	if errApply == nil {
+		t.Fatalf("ApplyThinking() error = nil, want panic error")
+	}
+	if !strings.Contains(errApply.Error(), "thinking applier panic") {
+		t.Fatalf("ApplyThinking() error = %v, want panic context", errApply)
+	}
+}
+
+type failingThinkingCapability struct {
+	provider string
+}
+
+func (c failingThinkingCapability) Identifier() string {
+	return c.provider
+}
+
+func (c failingThinkingCapability) ApplyThinking(ctx context.Context, req pluginapi.ThinkingApplyRequest) (pluginapi.PayloadResponse, error) {
+	return pluginapi.PayloadResponse{}, errors.New("plugin thinking failed")
+}
+
+type panicThinkingCapability struct {
+	provider string
+}
+
+func (c panicThinkingCapability) Identifier() string {
+	return c.provider
+}
+
+func (c panicThinkingCapability) ApplyThinking(ctx context.Context, req pluginapi.ThinkingApplyRequest) (pluginapi.PayloadResponse, error) {
+	panic("plugin thinking panic")
 }
 
 func TestHostApplyConfigRegistersInterceptorOnlyPlugin(t *testing.T) {

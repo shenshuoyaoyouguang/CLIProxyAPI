@@ -198,6 +198,39 @@ func TestDeleteCachedSignatureRequiredHomeExactKey(t *testing.T) {
 	}
 }
 
+func TestDeleteCachedSignatureRequiredPreservesConcurrentSetInSameGroup(t *testing.T) {
+	useFakeSignatureKVClient(t, nil, false, nil)
+	ClearSignatureCache("")
+
+	oldText := "old thinking text"
+	newText := "new thinking text"
+	oldSignature := "oldSignature123456789012345678901234567890123456789012"
+	newSignature := "newSignature123456789012345678901234567890123456789012"
+
+	CacheSignature(testModelName, oldText, oldSignature)
+	groupKey := GetModelGroup(testModelName)
+	val, ok := signatureCache.Load(groupKey)
+	if !ok {
+		t.Fatalf("signatureCache entry for group %q not found", groupKey)
+	}
+	sc := val.(*groupCache)
+
+	if errDel := DeleteCachedSignatureRequired(context.Background(), testModelName, oldText); errDel != nil {
+		t.Fatalf("DeleteCachedSignatureRequired() error = %v", errDel)
+	}
+
+	// Simulate a concurrent setter that loaded this group bucket before the
+	// delete path considered removing the outer sync.Map entry.
+	sc.entries.Set(hashText(newText), SignatureEntry{
+		Signature: newSignature,
+		Timestamp: time.Now(),
+	})
+
+	if got := GetCachedSignature(testModelName, newText); got != newSignature {
+		t.Fatalf("new signature after concurrent set = %q, want %q", got, newSignature)
+	}
+}
+
 func TestClearSignatureCacheHomeDoesNotPrefixDelete(t *testing.T) {
 	client := newFakeSignatureKVClient()
 	useFakeSignatureKVClient(t, client, true, nil)

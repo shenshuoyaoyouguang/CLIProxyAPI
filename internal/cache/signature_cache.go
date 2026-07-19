@@ -287,9 +287,8 @@ func DeleteCachedSignatureRequired(ctx context.Context, modelName, text string) 
 	}
 	sc := val.(*groupCache)
 	sc.entries.Delete(textHash)
-	if sc.entries.Len() == 0 {
-		signatureCache.Delete(groupKey)
-	}
+	// Empty buckets are left for periodic cleanup. Deleting the outer bucket here
+	// can drop a concurrent setter that loaded this group before the delete.
 	return nil
 }
 

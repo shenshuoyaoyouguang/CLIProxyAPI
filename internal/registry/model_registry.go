@@ -144,6 +144,9 @@ type ModelRegistry struct {
 	mutex *sync.RWMutex
 	// availableModelsCache stores per-handler snapshots for GetAvailableModels.
 	availableModelsCache map[string]availableModelsCacheEntry
+	// availableModelsGeneration increments on every invalidation so in-flight
+	// rebuilds can detect and drop stale snapshots.
+	availableModelsGeneration uint64
 	// availableModelsRebuild dedupes concurrent cache rebuilds per handlerType
 	// so only one goroutine builds (under an RLock) while others wait, instead
 	// of every miss contending for the write lock.
@@ -201,10 +204,10 @@ func (r *ModelRegistry) ensureAvailableModelsCacheLocked() {
 // to rebuild; if nothing was ever requested, the prefetch is a no-op and the
 // cache is rebuilt lazily on the next read.
 func (r *ModelRegistry) invalidateAvailableModelsCacheLocked() {
-	if len(r.availableModelsCache) == 0 {
-		return
+	r.availableModelsGeneration++
+	if len(r.availableModelsCache) != 0 {
+		clear(r.availableModelsCache)
 	}
-	clear(r.availableModelsCache)
 	known := make([]string, 0, len(r.knownHandlerTypes))
 	for ht := range r.knownHandlerTypes {
 		known = append(known, ht)
@@ -982,32 +985,48 @@ func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any 
 func (r *ModelRegistry) rebuildAndPublish(handlerType string, token *rebuildToken) []map[string]any {
 	now := time.Now()
 	r.mutex.RLock()
+	generation := r.availableModelsGeneration
 	models, expiresAt := r.buildAvailableModelsLocked(handlerType, now)
 	r.mutex.RUnlock()
 
-	r.mutex.Lock()
-	r.ensureAvailableModelsCacheLocked()
-	r.availableModelsCache[handlerType] = availableModelsCacheEntry{
-		models:    cloneModelMaps(models),
-		expiresAt: expiresAt,
+	published, owner := r.publishAvailableModelsSnapshot(handlerType, token, generation, models, expiresAt)
+	if published {
+		return models
 	}
+	if !owner {
+		return models
+	}
+	return r.GetAvailableModels(handlerType)
+}
+
+func (r *ModelRegistry) publishAvailableModelsSnapshot(handlerType string, token *rebuildToken, generation uint64, models []map[string]any, expiresAt time.Time) (published bool, owner bool) {
+	if r == nil {
+		return false, false
+	}
+	r.mutex.Lock()
+	if token != nil {
+		defer close(token.done)
+	}
+	defer r.mutex.Unlock()
+	r.ensureAvailableModelsCacheLocked()
 	if cur, ok := r.availableModelsRebuild[handlerType]; ok && cur == token {
 		delete(r.availableModelsRebuild, handlerType)
+		owner = true
 	} else if ok {
 		// Defensive: a newer builder superseded this token. This violates the
 		// singleflight invariant and must not happen with the current callers.
-		// Log it for observability/metrics; the token remains in the map and will
-		// be closed by its own owner. Either way, we still close *our* token's
-		// done below so our waiters are released.
+		// Log it for observability/metrics; the token remains owned by the
+		// superseding builder, which will close it.
 		log.Warnf("rebuildAndPublish: superseded token for handlerType %q detected; singleflight invariant broken", handlerType)
 	}
-	// Always release this token's waiters. This is what unblocks any goroutine
-	// blocked in GetAvailableModels on `<-token.done`. Closing our own token can
-	// never double-close because each token has exactly one owning rebuild call.
-	close(token.done)
-	r.mutex.Unlock()
-
-	return models
+	if owner && generation == r.availableModelsGeneration {
+		r.availableModelsCache[handlerType] = availableModelsCacheEntry{
+			models:    cloneModelMaps(models),
+			expiresAt: expiresAt,
+		}
+		return true, true
+	}
+	return false, owner
 }
 
 // prefetchHandlerTypes rebuilds every supplied handlerType in the background so

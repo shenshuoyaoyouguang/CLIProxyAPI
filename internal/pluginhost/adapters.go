@@ -1859,7 +1859,7 @@ func (a *thinkingAdapter) Apply(body []byte, config thinking.ThinkingConfig, mod
 		if recovered := recover(); recovered != nil {
 			a.host.fusePlugin(a.pluginID, "ThinkingApplier.ApplyThinking", recovered)
 			out = bytes.Clone(body)
-			err = nil
+			err = fmt.Errorf("plugin %s thinking applier panic: %v", a.pluginID, recovered)
 		}
 	}()
 	resp, errApply := a.applier.ApplyThinking(context.Background(), pluginapi.ThinkingApplyRequest{
@@ -1872,7 +1872,10 @@ func (a *thinkingAdapter) Apply(body []byte, config thinking.ThinkingConfig, mod
 		},
 		Body: bytes.Clone(body),
 	})
-	if errApply != nil || len(resp.Body) == 0 {
+	if errApply != nil {
+		return bytes.Clone(body), fmt.Errorf("plugin %s thinking applier failed: %w", a.pluginID, errApply)
+	}
+	if len(resp.Body) == 0 {
 		return bytes.Clone(body), nil
 	}
 	return bytes.Clone(resp.Body), nil

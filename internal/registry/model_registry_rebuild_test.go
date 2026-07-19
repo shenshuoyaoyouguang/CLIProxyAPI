@@ -122,3 +122,49 @@ func TestRebuildAndPublish_OwnerTokenClosesAndRemoves(t *testing.T) {
 		t.Fatal("owner token.done was not closed")
 	}
 }
+
+func TestPublishAvailableModelsSnapshotSkipsInvalidatedSnapshot(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("client-1", "openai", []*ModelInfo{{ID: "m1", OwnedBy: "team-a", DisplayName: "Model One"}})
+
+	r.mutex.RLock()
+	generation := r.availableModelsGeneration
+	models, expiresAt := r.buildAvailableModelsLocked("openai", time.Now())
+	r.mutex.RUnlock()
+
+	r.RegisterClient("client-1", "openai", []*ModelInfo{{ID: "m1", OwnedBy: "team-a", DisplayName: "Model One Updated"}})
+
+	token := &rebuildToken{done: make(chan struct{})}
+	r.mutex.Lock()
+	r.ensureAvailableModelsCacheLocked()
+	r.availableModelsRebuild["openai"] = token
+	r.mutex.Unlock()
+
+	published, owner := r.publishAvailableModelsSnapshot("openai", token, generation, models, expiresAt)
+	if published {
+		t.Fatal("stale snapshot should not be published after cache invalidation")
+	}
+	if !owner {
+		t.Fatal("matching owner token should be reported as owner")
+	}
+	select {
+	case <-token.done:
+	case <-time.After(time.Second):
+		t.Fatal("owner token.done was not closed")
+	}
+
+	r.mutex.RLock()
+	_, cached := r.availableModelsCache["openai"]
+	r.mutex.RUnlock()
+	if cached {
+		t.Fatal("availableModelsCache should not contain the invalidated snapshot")
+	}
+
+	fresh := r.GetAvailableModels("openai")
+	if len(fresh) != 1 {
+		t.Fatalf("fresh available models = %d, want 1", len(fresh))
+	}
+	if got := fresh[0]["display_name"]; got != "Model One Updated" {
+		t.Fatalf("fresh model display_name = %v, want Model One Updated", got)
+	}
+}
