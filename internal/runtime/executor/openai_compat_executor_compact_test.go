@@ -256,7 +256,7 @@ func TestOpenAICompatExecutorDeepSeekGatewayOverridesClientUser(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatExecutorDeepSeekGatewayStreamReleasesSlotAfterUpstreamAccepts(t *testing.T) {
+func TestOpenAICompatExecutorDeepSeekGatewayStreamHoldsSlotUntilStreamEnds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -302,17 +302,25 @@ func TestOpenAICompatExecutorDeepSeekGatewayStreamReleasesSlotAfterUpstreamAccep
 		t.Fatalf("ExecuteStream returned nil result")
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for {
-		stats, ok := mgr.GetShardStats("gateway-user")
-		if ok && stats.Active == 0 {
-			return
+	verifyStats := func(expectedActive int, msg string) {
+		deadline := time.Now().Add(time.Second)
+		for {
+			stats, ok := mgr.GetShardStats("gateway-user")
+			if ok && stats.Active == expectedActive {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: expected Active=%d, got stats=%+v ok=%v", msg, expectedActive, stats, ok)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("gateway slot active after upstream accepted stream: stats=%+v ok=%v", stats, ok)
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
+
+	verifyStats(1, "slot must remain held while stream is active")
+
+	cancel()
+
+	verifyStats(0, "slot must be released after stream ends")
 }
 
 func TestOpenAICompatExecutorNonDeepSeekSkipsUserInjection(t *testing.T) {

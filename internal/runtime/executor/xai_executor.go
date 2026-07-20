@@ -205,7 +205,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		switch gjson.GetBytes(eventData, "type").String() {
 		case "response.output_item.done":
 			xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-		case "response.completed", "response.incomplete":
+		case "response.completed", "response.incomplete", "response.done":
 			if detail, ok := helps.ParseCodexUsage(eventData); ok {
 				reporter.Publish(ctx, detail)
 			}
@@ -717,7 +717,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					switch normalizedEventName {
 					case "response.output_item.done":
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-					case "response.completed", "response.incomplete":
+					case "response.completed", "response.incomplete", "response.done":
 						sawTerminal = true
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
 							reporter.Publish(ctx, detail)
@@ -727,14 +727,6 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						logXAIResponseServiceTier(ctx, eventData)
 						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
 						normalizedEventName = gjson.GetBytes(eventData, "type").String()
-					case "response.done":
-						// Align with websocket terminal handling: response.done is a
-						// successful stream terminator even without response.completed.
-						sawTerminal = true
-						if detail, ok := helps.ParseCodexUsage(eventData); ok {
-							reporter.Publish(ctx, detail)
-						}
-						logXAIResponseServiceTier(ctx, eventData)
 					}
 
 					if hasPendingEventLine {

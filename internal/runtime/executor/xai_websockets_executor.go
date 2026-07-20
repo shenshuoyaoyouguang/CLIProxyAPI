@@ -705,7 +705,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 				case "response.output_item.done":
 					xaiCollectOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
-				case "response.completed", "response.incomplete":
+				case "response.completed", "response.incomplete", "response.done":
 					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
 					if detail, ok := helps.ParseCodexUsage(payload); ok {
 						reporter.Publish(ctx, detail)
@@ -713,15 +713,6 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					payload = xaiPatchCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
 					payload = xaiNormalizeReasoningSummaryData(payload)
 					cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, payload)
-					if xaiShouldCommitCompletedTurnState(payload) && !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
-						idMapper.state.recordTranscriptTurn(wsReqBody, payload)
-						recordedTranscript = true
-					}
-				case "response.done":
-					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
-					if detail, ok := helps.ParseCodexUsage(payload); ok {
-						reporter.Publish(ctx, detail)
-					}
 					if xaiShouldCommitCompletedTurnState(payload) && !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
 						idMapper.state.recordTranscriptTurn(wsReqBody, payload)
 						recordedTranscript = true

@@ -554,10 +554,6 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
 		return nil, err
 	}
-	if releaseSlot != nil {
-		releaseSlot()
-		releaseSlot = nil
-	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)

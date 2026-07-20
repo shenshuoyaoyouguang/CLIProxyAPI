@@ -4682,3 +4682,30 @@ func testValidGrokEncryptedContent() string {
 	}
 	return base64.RawStdEncoding.EncodeToString(buf[:256])
 }
+
+func TestXAIExecutorNonStreamAcceptsResponseDoneAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.done","response":{"id":"resp_nonstream_done","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID: "xai-nonstream-done",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+			"api_key":  "test-key",
+		},
+	}
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":[{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute() non-stream with response.done returned error: %v (response.done must be accepted as terminal, not 502)", err)
+	}
+}
