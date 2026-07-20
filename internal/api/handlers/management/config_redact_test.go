@@ -207,7 +207,7 @@ func TestRestoreRedactedSecrets_RestoresAllProviderAPIKeys(t *testing.T) {
 func TestRestoreRedactedSecrets_RestoresTopLevelAPIKeysAndProxyURL(t *testing.T) {
 	t.Parallel()
 	const (
-		clientKey    = "client-api-key-abcdef"
+		clientKey     = "client-api-key-abcdef"
 		proxyWithCred = "http://user:supersecretpass@global-proxy.example:3128"
 	)
 	current := &config.Config{
@@ -577,5 +577,134 @@ func TestRestoreRedactedSecrets_RoundTripsViaMarshalConfigForManagementJSON(t *t
 	out := runRestoreRedactedSecrets(t, body, current)
 	if !strings.Contains(string(out), secret) {
 		t.Fatalf("round-trip restore failed; redacted=%s, body=\n%s", redactedKey, string(out))
+	}
+}
+
+func TestRestoreSecretString_UniqueMatchAndAmbiguity(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-unique-secret-aaaa"
+	redacted := redactSecretValue(secret)
+	if got := restoreSecretString(redacted, secret, []string{secret}); got != secret {
+		t.Fatalf("unique match = %q, want %q", got, secret)
+	}
+	if got := restoreSecretString("sk-brand-new-key-zzzz", secret, []string{secret}); got != "sk-brand-new-key-zzzz" {
+		t.Fatalf("new secret must pass through; got %q", got)
+	}
+	// Two candidates share the same redaction shape for short secrets.
+	if got := restoreSecretString("***", "short-a", []string{"short-a", "short-b"}); got != "***" {
+		t.Fatalf("ambiguous short secrets must stay redacted; got %q", got)
+	}
+}
+
+func TestRestoreProxyURLString_UserinfoAndPlaceholder(t *testing.T) {
+	t.Parallel()
+	const full = "http://user:supersecretpass@proxy.example:8080"
+	redacted := redactProxyURL(full)
+	if got := restoreProxyURLString(redacted, full, []string{full}); got != full {
+		t.Fatalf("userinfo restore = %q, want %q", got, full)
+	}
+	// Opaque proxy falls back to redactSecretValue → "***" for short values.
+	const opaque = "shortprx"
+	if got := restoreProxyURLString("***", opaque, []string{opaque}); got != opaque {
+		t.Fatalf("placeholder opaque proxy = %q, want %q", got, opaque)
+	}
+	// Unrelated plain URL is left alone.
+	if got := restoreProxyURLString("http://other.example:1", full, []string{full}); got != "http://other.example:1" {
+		t.Fatalf("unrelated URL must pass through; got %q", got)
+	}
+}
+
+func TestRestoreHeadersMap_SensitiveOnly(t *testing.T) {
+	t.Parallel()
+	const auth = "Bearer sk-header-secret-token"
+	incoming := map[string]string{
+		"Authorization": redactSecretValue(auth),
+		"X-Custom":      "keep-me",
+	}
+	current := map[string]string{
+		"Authorization": auth,
+		"X-Custom":      "other",
+	}
+	out := restoreHeadersMap(incoming, current)
+	if out["Authorization"] != auth {
+		t.Fatalf("Authorization = %q, want restored secret", out["Authorization"])
+	}
+	if out["X-Custom"] != "keep-me" {
+		t.Fatalf("non-sensitive header must be unchanged; got %q", out["X-Custom"])
+	}
+}
+
+func TestRestoreGeminiKeyListSecrets_IndexAligned(t *testing.T) {
+	t.Parallel()
+	const key = "sk-gemini-secret-key-01"
+	const proxy = "http://u:p@proxy.example:9"
+	current := []config.GeminiKey{{APIKey: key, ProxyURL: proxy, Headers: map[string]string{"Authorization": "Bearer real-token-zzzz"}}}
+	incoming := []config.GeminiKey{{
+		APIKey:   redactSecretValue(key),
+		ProxyURL: redactProxyURL(proxy),
+		Headers:  map[string]string{"Authorization": redactSecretValue("Bearer real-token-zzzz")},
+	}}
+	restoreGeminiKeyListSecrets(incoming, current)
+	if incoming[0].APIKey != key {
+		t.Fatalf("api-key = %q, want %q", incoming[0].APIKey, key)
+	}
+	if incoming[0].ProxyURL != proxy {
+		t.Fatalf("proxy-url = %q, want %q", incoming[0].ProxyURL, proxy)
+	}
+	if incoming[0].Headers["Authorization"] != "Bearer real-token-zzzz" {
+		t.Fatalf("header not restored: %v", incoming[0].Headers)
+	}
+}
+
+func TestRestoreClaudeKeyListSecrets_IndexAligned(t *testing.T) {
+	t.Parallel()
+	const key = "sk-claude-secret-key-01"
+	const proxy = "http://u:p@claude-proxy.example:9"
+	current := []config.ClaudeKey{{APIKey: key, ProxyURL: proxy}}
+	incoming := []config.ClaudeKey{{
+		APIKey:   redactSecretValue(key),
+		ProxyURL: redactProxyURL(proxy),
+	}}
+	restoreClaudeKeyListSecrets(incoming, current)
+	if incoming[0].APIKey != key {
+		t.Fatalf("api-key = %q, want %q", incoming[0].APIKey, key)
+	}
+	if incoming[0].ProxyURL != proxy {
+		t.Fatalf("proxy-url = %q, want %q", incoming[0].ProxyURL, proxy)
+	}
+}
+
+func TestRestoreStringListSecretsJSON_IndexAligned(t *testing.T) {
+	t.Parallel()
+	const secret = "client-api-key-abcdef"
+	got := restoreStringListSecretsJSON([]string{redactSecretValue(secret)}, []string{secret})
+	if len(got) != 1 || got[0] != secret {
+		t.Fatalf("got %#v, want [%q]", got, secret)
+	}
+	// New non-redacted values must pass through.
+	got = restoreStringListSecretsJSON([]string{"brand-new-key-zzzz"}, []string{secret})
+	if len(got) != 1 || got[0] != "brand-new-key-zzzz" {
+		t.Fatalf("new key clobbered: %#v", got)
+	}
+}
+
+func TestRestoreOpenAICompatibilitySecrets_MatchByName(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-compat-entry-secret"
+	current := []config.OpenAICompatibility{{
+		Name: "alpha",
+		APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+			{APIKey: secret},
+		},
+	}}
+	incoming := []config.OpenAICompatibility{{
+		Name: "alpha",
+		APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+			{APIKey: redactSecretValue(secret)},
+		},
+	}}
+	restoreOpenAICompatibilitySecrets(incoming, current)
+	if got := incoming[0].APIKeyEntries[0].APIKey; got != secret {
+		t.Fatalf("api-key = %q, want %q", got, secret)
 	}
 }

@@ -10,7 +10,9 @@ import (
 )
 
 // Generic helpers for list[string]
-func (h *Handler) putStringList(c *gin.Context, set func([]string), after func()) {
+// restoreSecrets, when true, reverses management redaction placeholders against
+// the live list before persistence (used by api-keys).
+func (h *Handler) putStringList(c *gin.Context, set func([]string), after func(), restoreSecrets bool) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
@@ -33,6 +35,9 @@ func (h *Handler) putStringList(c *gin.Context, set func([]string), after func()
 		c.JSON(500, gin.H{"error": "config_unavailable"})
 		return
 	}
+	if restoreSecrets {
+		arr = restoreStringListSecretsJSON(arr, h.cfg.APIKeys)
+	}
 	set(arr)
 	if after != nil {
 		after()
@@ -40,7 +45,7 @@ func (h *Handler) putStringList(c *gin.Context, set func([]string), after func()
 	h.persistLocked(c)
 }
 
-func (h *Handler) patchStringList(c *gin.Context, target func() *[]string, after func()) {
+func (h *Handler) patchStringList(c *gin.Context, target func() *[]string, after func(), restoreSecrets bool) {
 	var body struct {
 		Old   *string `json:"old"`
 		New   *string `json:"new"`
@@ -63,7 +68,11 @@ func (h *Handler) patchStringList(c *gin.Context, target func() *[]string, after
 		return
 	}
 	if body.Index != nil && body.Value != nil && *body.Index >= 0 && *body.Index < len(*targetList) {
-		(*targetList)[*body.Index] = *body.Value
+		val := *body.Value
+		if restoreSecrets {
+			val = restoreSecretString(val, (*targetList)[*body.Index], *targetList)
+		}
+		(*targetList)[*body.Index] = val
 		if after != nil {
 			after()
 		}
@@ -71,9 +80,22 @@ func (h *Handler) patchStringList(c *gin.Context, target func() *[]string, after
 		return
 	}
 	if body.Old != nil && body.New != nil {
+		newVal := *body.New
+		if restoreSecrets {
+			// Prefer matching against the old entry's real secret when old is
+			// itself a redacted placeholder or the raw secret.
+			idxVal := ""
+			for _, cur := range *targetList {
+				if cur == *body.Old || redactSecretValue(cur) == *body.Old {
+					idxVal = cur
+					break
+				}
+			}
+			newVal = restoreSecretString(newVal, idxVal, *targetList)
+		}
 		for i := range *targetList {
-			if (*targetList)[i] == *body.Old {
-				(*targetList)[i] = *body.New
+			if (*targetList)[i] == *body.Old || (restoreSecrets && redactSecretValue((*targetList)[i]) == *body.Old) {
+				(*targetList)[i] = newVal
 				if after != nil {
 					after()
 				}
@@ -81,7 +103,7 @@ func (h *Handler) patchStringList(c *gin.Context, target func() *[]string, after
 				return
 			}
 		}
-		*targetList = append(*targetList, *body.New)
+		*targetList = append(*targetList, newVal)
 		if after != nil {
 			after()
 		}
@@ -145,10 +167,10 @@ func (h *Handler) GetAPIKeys(c *gin.Context) {
 func (h *Handler) PutAPIKeys(c *gin.Context) {
 	h.putStringList(c, func(v []string) {
 		h.cfg.APIKeys = append([]string(nil), v...)
-	}, nil)
+	}, nil, true)
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
-	h.patchStringList(c, func() *[]string { return &h.cfg.APIKeys }, func() {})
+	h.patchStringList(c, func() *[]string { return &h.cfg.APIKeys }, func() {}, true)
 }
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 	h.deleteFromStringList(c, func() *[]string { return &h.cfg.APIKeys }, func() {})
@@ -177,6 +199,7 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	restoreGeminiKeyListSecrets(arr, h.cfg.GeminiKey)
 	h.cfg.GeminiKey = append([]config.GeminiKey(nil), arr...)
 	h.cfg.SanitizeGeminiKeys()
 	h.persistLocked(c)
@@ -223,6 +246,8 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.GeminiKey[targetIndex]
+	allSecrets := extractGeminiSecrets(h.cfg.GeminiKey)
+	curSecret := allSecrets[targetIndex]
 	if body.Value.APIKey != nil {
 		trimmed := strings.TrimSpace(*body.Value.APIKey)
 		if trimmed == "" {
@@ -231,6 +256,7 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 			h.persistLocked(c)
 			return
 		}
+		restoreProviderEntrySecrets(&trimmed, nil, nil, curSecret, allSecrets)
 		entry.APIKey = trimmed
 	}
 	if body.Value.Prefix != nil {
@@ -240,10 +266,14 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
 	}
 	if body.Value.ProxyURL != nil {
-		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+		proxy := strings.TrimSpace(*body.Value.ProxyURL)
+		restoreProviderEntrySecrets(nil, &proxy, nil, curSecret, allSecrets)
+		entry.ProxyURL = proxy
 	}
 	if body.Value.Headers != nil {
-		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+		headers := config.NormalizeHeaders(*body.Value.Headers)
+		restoreProviderEntrySecrets(nil, nil, &headers, curSecret, allSecrets)
+		entry.Headers = headers
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
@@ -336,6 +366,7 @@ func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	restoreGeminiKeyListSecrets(arr, h.cfg.InteractionsKey)
 	h.cfg.InteractionsKey = append([]config.GeminiKey(nil), arr...)
 	h.cfg.SanitizeInteractionsKeys()
 	h.persistLocked(c)
@@ -383,6 +414,8 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.InteractionsKey[targetIndex]
+	allSecrets := extractGeminiSecrets(h.cfg.InteractionsKey)
+	curSecret := allSecrets[targetIndex]
 	if body.Value.APIKey != nil {
 		trimmed := strings.TrimSpace(*body.Value.APIKey)
 		if trimmed == "" {
@@ -391,6 +424,7 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 			h.persistLocked(c)
 			return
 		}
+		restoreProviderEntrySecrets(&trimmed, nil, nil, curSecret, allSecrets)
 		entry.APIKey = trimmed
 	}
 	if body.Value.Prefix != nil {
@@ -400,10 +434,14 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
 	}
 	if body.Value.ProxyURL != nil {
-		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+		proxy := strings.TrimSpace(*body.Value.ProxyURL)
+		restoreProviderEntrySecrets(nil, &proxy, nil, curSecret, allSecrets)
+		entry.ProxyURL = proxy
 	}
 	if body.Value.Headers != nil {
-		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+		headers := config.NormalizeHeaders(*body.Value.Headers)
+		restoreProviderEntrySecrets(nil, nil, &headers, curSecret, allSecrets)
+		entry.Headers = headers
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
@@ -498,6 +536,7 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	restoreClaudeKeyListSecrets(arr, h.cfg.ClaudeKey)
 	h.cfg.ClaudeKey = arr
 	h.cfg.SanitizeClaudeKeys()
 	h.persistLocked(c)
@@ -544,8 +583,12 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.ClaudeKey[targetIndex]
+	allSecrets := extractClaudeSecrets(h.cfg.ClaudeKey)
+	curSecret := allSecrets[targetIndex]
 	if body.Value.APIKey != nil {
-		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+		apiKey := strings.TrimSpace(*body.Value.APIKey)
+		restoreProviderEntrySecrets(&apiKey, nil, nil, curSecret, allSecrets)
+		entry.APIKey = apiKey
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
@@ -554,13 +597,17 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 		entry.BaseURL = strings.TrimSpace(*body.Value.BaseURL)
 	}
 	if body.Value.ProxyURL != nil {
-		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+		proxy := strings.TrimSpace(*body.Value.ProxyURL)
+		restoreProviderEntrySecrets(nil, &proxy, nil, curSecret, allSecrets)
+		entry.ProxyURL = proxy
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.ClaudeModel(nil), (*body.Value.Models)...)
 	}
 	if body.Value.Headers != nil {
-		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+		headers := config.NormalizeHeaders(*body.Value.Headers)
+		restoreProviderEntrySecrets(nil, nil, &headers, curSecret, allSecrets)
+		entry.Headers = headers
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
@@ -657,6 +704,7 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	restoreOpenAICompatibilitySecrets(filtered, h.cfg.OpenAICompatibility)
 	h.cfg.OpenAICompatibility = filtered
 	h.cfg.SanitizeOpenAICompatibility()
 	h.persistLocked(c)
@@ -702,7 +750,10 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		return
 	}
 
-	entry := h.cfg.OpenAICompatibility[targetIndex]
+	// Snapshot the live entry before mutating entry.Name so secret restore
+	// can still match by the pre-rename provider name.
+	current := h.cfg.OpenAICompatibility[targetIndex]
+	entry := current
 	if body.Value.Name != nil {
 		entry.Name = strings.TrimSpace(*body.Value.Name)
 	}
@@ -726,13 +777,23 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		entry.BaseURL = trimmed
 	}
 	if body.Value.APIKeyEntries != nil {
-		entry.APIKeyEntries = append([]config.OpenAICompatibilityAPIKey(nil), (*body.Value.APIKeyEntries)...)
+		entries := append([]config.OpenAICompatibilityAPIKey(nil), (*body.Value.APIKeyEntries)...)
+		// Match secrets against the pre-rename name; entry.Name may already
+		// differ from current.Name when the patch renames the provider.
+		tmp := []config.OpenAICompatibility{{
+			Name:          current.Name,
+			APIKeyEntries: entries,
+		}}
+		restoreOpenAICompatibilitySecrets(tmp, []config.OpenAICompatibility{current})
+		entry.APIKeyEntries = tmp[0].APIKeyEntries
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.OpenAICompatibilityModel(nil), (*body.Value.Models)...)
 	}
 	if body.Value.Headers != nil {
-		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+		headers := config.NormalizeHeaders(*body.Value.Headers)
+		headers = restoreHeadersMap(headers, current.Headers)
+		entry.Headers = headers
 	}
 	normalizeOpenAICompatibilityEntry(&entry)
 	h.cfg.OpenAICompatibility[targetIndex] = entry
@@ -791,13 +852,16 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 	}
 	for i := range arr {
 		normalizeVertexCompatKey(&arr[i])
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	restoreVertexKeyListSecrets(arr, h.cfg.VertexCompatAPIKey)
+	for i := range arr {
 		if arr[i].APIKey == "" {
 			c.JSON(400, gin.H{"error": fmt.Sprintf("vertex-api-key[%d].api-key is required", i)})
 			return
 		}
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.cfg.VertexCompatAPIKey = append([]config.VertexCompatKey(nil), arr...)
 	h.cfg.SanitizeVertexCompatKeys()
 	h.persistLocked(c)
@@ -845,6 +909,8 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.VertexCompatAPIKey[targetIndex]
+	allSecrets := extractVertexSecrets(h.cfg.VertexCompatAPIKey)
+	curSecret := allSecrets[targetIndex]
 	if body.Value.APIKey != nil {
 		trimmed := strings.TrimSpace(*body.Value.APIKey)
 		if trimmed == "" {
@@ -853,6 +919,7 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 			h.persistLocked(c)
 			return
 		}
+		restoreProviderEntrySecrets(&trimmed, nil, nil, curSecret, allSecrets)
 		entry.APIKey = trimmed
 	}
 	if body.Value.Prefix != nil {
@@ -869,10 +936,14 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 		entry.BaseURL = trimmed
 	}
 	if body.Value.ProxyURL != nil {
-		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+		proxy := strings.TrimSpace(*body.Value.ProxyURL)
+		restoreProviderEntrySecrets(nil, &proxy, nil, curSecret, allSecrets)
+		entry.ProxyURL = proxy
 	}
 	if body.Value.Headers != nil {
-		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+		headers := config.NormalizeHeaders(*body.Value.Headers)
+		restoreProviderEntrySecrets(nil, nil, &headers, curSecret, allSecrets)
+		entry.Headers = headers
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.VertexCompatModel(nil), (*body.Value.Models)...)
@@ -1202,6 +1273,7 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	restoreCodexKeyListSecrets(filtered, h.cfg.CodexKey)
 	h.cfg.CodexKey = filtered
 	h.cfg.SanitizeCodexKeys()
 	h.persistLocked(c)
@@ -1247,8 +1319,12 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.CodexKey[targetIndex]
+	allSecrets := extractCodexSecrets(h.cfg.CodexKey)
+	curSecret := allSecrets[targetIndex]
 	if body.Value.APIKey != nil {
-		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+		apiKey := strings.TrimSpace(*body.Value.APIKey)
+		restoreProviderEntrySecrets(&apiKey, nil, nil, curSecret, allSecrets)
+		entry.APIKey = apiKey
 	}
 	if body.Value.Prefix != nil {
 		entry.Prefix = strings.TrimSpace(*body.Value.Prefix)
@@ -1264,13 +1340,17 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		entry.BaseURL = trimmed
 	}
 	if body.Value.ProxyURL != nil {
-		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+		proxy := strings.TrimSpace(*body.Value.ProxyURL)
+		restoreProviderEntrySecrets(nil, &proxy, nil, curSecret, allSecrets)
+		entry.ProxyURL = proxy
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.CodexModel(nil), (*body.Value.Models)...)
 	}
 	if body.Value.Headers != nil {
-		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+		headers := config.NormalizeHeaders(*body.Value.Headers)
+		restoreProviderEntrySecrets(nil, nil, &headers, curSecret, allSecrets)
+		entry.Headers = headers
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
@@ -1367,6 +1447,7 @@ func (h *Handler) PutXAIKeys(c *gin.Context) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	restoreXAIKeyListSecrets(filtered, h.cfg.XAIKey)
 	h.cfg.XAIKey = filtered
 	h.cfg.SanitizeXAIKeys()
 	h.persistLocked(c)
@@ -1416,8 +1497,12 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.XAIKey[targetIndex]
+	allSecrets := extractCodexSecrets(h.cfg.XAIKey)
+	curSecret := allSecrets[targetIndex]
 	if body.Value.APIKey != nil {
-		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
+		apiKey := strings.TrimSpace(*body.Value.APIKey)
+		restoreProviderEntrySecrets(&apiKey, nil, nil, curSecret, allSecrets)
+		entry.APIKey = apiKey
 	}
 	if body.Value.Priority != nil {
 		entry.Priority = *body.Value.Priority
@@ -1439,13 +1524,17 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 		entry.Websockets = *body.Value.Websockets
 	}
 	if body.Value.ProxyURL != nil {
-		entry.ProxyURL = strings.TrimSpace(*body.Value.ProxyURL)
+		proxy := strings.TrimSpace(*body.Value.ProxyURL)
+		restoreProviderEntrySecrets(nil, &proxy, nil, curSecret, allSecrets)
+		entry.ProxyURL = proxy
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.XAIModel(nil), (*body.Value.Models)...)
 	}
 	if body.Value.Headers != nil {
-		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+		headers := config.NormalizeHeaders(*body.Value.Headers)
+		restoreProviderEntrySecrets(nil, nil, &headers, curSecret, allSecrets)
+		entry.Headers = headers
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)

@@ -408,7 +408,23 @@ func (h *Handler) GetProxyURL(c *gin.Context) {
 	c.JSON(200, gin.H{"proxy-url": v})
 }
 func (h *Handler) PutProxyURL(c *gin.Context) {
-	h.updateStringField(c, func(v string) { h.cfg.ProxyURL = v })
+	var body struct {
+		Value *string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
+	incoming := strings.TrimSpace(*body.Value)
+	// Restore userinfo when the management UI round-trips a redacted proxy-url.
+	h.cfg.ProxyURL = restoreProxyURLString(incoming, h.cfg.ProxyURL, []string{h.cfg.ProxyURL})
+	h.persistLocked(c)
 }
 func (h *Handler) DeleteProxyURL(c *gin.Context) {
 	h.mu.Lock()

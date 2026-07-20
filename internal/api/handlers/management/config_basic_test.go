@@ -392,3 +392,192 @@ func TestPutConfigYAML_PreservesNewSecretsInPutBody(t *testing.T) {
 		t.Fatalf("old secret should NOT replace the new one:\n%s", persistedStr)
 	}
 }
+
+// TestPutProxyURL_RestoresRedactedUserinfo ensures a single-field PUT of a
+// management-redacted proxy-url does not wipe credentials on disk.
+func TestPutProxyURL_RestoresRedactedUserinfo(t *testing.T) {
+	t.Parallel()
+	const full = "http://user:supersecretpass@proxy.example:8080"
+	dir := t.TempDir()
+	configPath := dir + string(os.PathSeparator) + "config.yaml"
+	if errWrite := os.WriteFile(configPath, []byte("proxy-url: "+full+"\n"), 0o600); errWrite != nil {
+		t.Fatalf("seed: %v", errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(configPath)
+	if errLoad != nil {
+		t.Fatalf("load: %v", errLoad)
+	}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	_, _ = captureConfigReload(h)
+
+	body := `{"value":"` + redactProxyURL(full) + `"}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/proxy-url", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PutProxyURL(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if h.cfg.ProxyURL != full {
+		t.Fatalf("in-memory ProxyURL = %q, want %q", h.cfg.ProxyURL, full)
+	}
+	persisted, errRead := os.ReadFile(configPath)
+	if errRead != nil {
+		t.Fatalf("read: %v", errRead)
+	}
+	if !strings.Contains(string(persisted), "supersecretpass") {
+		t.Fatalf("disk lost proxy credentials:\n%s", persisted)
+	}
+}
+
+// TestPutAPIKeys_RestoresRedactedPlaceholders covers the list PUT path used by
+// the management UI after GET /config redacts api-keys.
+func TestPutAPIKeys_RestoresRedactedPlaceholders(t *testing.T) {
+	t.Parallel()
+	const secret = "client-api-key-abcdef"
+	dir := t.TempDir()
+	configPath := dir + string(os.PathSeparator) + "config.yaml"
+	if errWrite := os.WriteFile(configPath, []byte("api-keys:\n  - "+secret+"\n"), 0o600); errWrite != nil {
+		t.Fatalf("seed: %v", errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(configPath)
+	if errLoad != nil {
+		t.Fatalf("load: %v", errLoad)
+	}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	_, _ = captureConfigReload(h)
+
+	body := `["` + redactSecretValue(secret) + `"]`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/api-keys", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PutAPIKeys(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(h.cfg.APIKeys) != 1 || h.cfg.APIKeys[0] != secret {
+		t.Fatalf("APIKeys = %#v, want [%q]", h.cfg.APIKeys, secret)
+	}
+}
+
+// TestPutClaudeKeys_RestoresRedactedSecrets is the provider-list analogue of
+// PutConfigYAML redaction restore.
+func TestPutClaudeKeys_RestoresRedactedSecrets(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-claude-secret-1234"
+	const proxy = "http://u:p@proxy.example:8080"
+	dir := t.TempDir()
+	configPath := dir + string(os.PathSeparator) + "config.yaml"
+	seed := strings.Join([]string{
+		"claude-api-key:",
+		"  - api-key: " + secret,
+		"    base-url: https://claude.example.com",
+		"    proxy-url: " + proxy,
+		"",
+	}, "\n")
+	if errWrite := os.WriteFile(configPath, []byte(seed), 0o600); errWrite != nil {
+		t.Fatalf("seed: %v", errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(configPath)
+	if errLoad != nil {
+		t.Fatalf("load: %v", errLoad)
+	}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	_, _ = captureConfigReload(h)
+
+	body := fmt.Sprintf(`[{"api-key":%q,"base-url":"https://claude.example.com","proxy-url":%q}]`,
+		redactSecretValue(secret), redactProxyURL(proxy))
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/claude-api-key", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PutClaudeKeys(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := h.cfg.ClaudeKey[0].APIKey; got != secret {
+		t.Fatalf("APIKey = %q, want %q", got, secret)
+	}
+	if got := h.cfg.ClaudeKey[0].ProxyURL; got != proxy {
+		t.Fatalf("ProxyURL = %q, want %q", got, proxy)
+	}
+}
+
+// TestPatchClaudeKey_RestoresRedactedAPIKey covers single-entry patch restore.
+func TestPatchClaudeKey_RestoresRedactedAPIKey(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-claude-secret-1234"
+	dir := t.TempDir()
+	configPath := dir + string(os.PathSeparator) + "config.yaml"
+	seed := "claude-api-key:\n  - api-key: " + secret + "\n    base-url: https://claude.example.com\n"
+	if errWrite := os.WriteFile(configPath, []byte(seed), 0o600); errWrite != nil {
+		t.Fatalf("seed: %v", errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(configPath)
+	if errLoad != nil {
+		t.Fatalf("load: %v", errLoad)
+	}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	_, _ = captureConfigReload(h)
+
+	body := fmt.Sprintf(`{"index":0,"value":{"api-key":%q}}`, redactSecretValue(secret))
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/claude-api-key", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PatchClaudeKey(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := h.cfg.ClaudeKey[0].APIKey; got != secret {
+		t.Fatalf("APIKey = %q, want %q", got, secret)
+	}
+}
+
+// TestPatchOpenAICompat_RenameWithRedactedAPIKeyEntries ensures renaming a
+// provider in the same patch that round-trips redacted api-key-entries still
+// restores secrets against the pre-rename live entry.
+func TestPatchOpenAICompat_RenameWithRedactedAPIKeyEntries(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-openai-compat-aaaa"
+	dir := t.TempDir()
+	configPath := dir + string(os.PathSeparator) + "config.yaml"
+	seed := strings.Join([]string{
+		"openai-compatibility:",
+		"  - name: alpha",
+		"    base-url: https://alpha.example/v1",
+		"    api-key-entries:",
+		"      - api-key: " + secret,
+		"",
+	}, "\n")
+	if errWrite := os.WriteFile(configPath, []byte(seed), 0o600); errWrite != nil {
+		t.Fatalf("seed: %v", errWrite)
+	}
+	cfg, errLoad := config.LoadConfig(configPath)
+	if errLoad != nil {
+		t.Fatalf("load: %v", errLoad)
+	}
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	_, _ = captureConfigReload(h)
+
+	body := fmt.Sprintf(
+		`{"index":0,"value":{"name":"beta","api-key-entries":[{"api-key":%q}]}}`,
+		redactSecretValue(secret),
+	)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/openai-compatibility", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PatchOpenAICompat(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := h.cfg.OpenAICompatibility[0].Name; got != "beta" {
+		t.Fatalf("Name = %q, want beta", got)
+	}
+	if got := h.cfg.OpenAICompatibility[0].APIKeyEntries[0].APIKey; got != secret {
+		t.Fatalf("APIKey = %q, want %q (rename must not break restore)", got, secret)
+	}
+}

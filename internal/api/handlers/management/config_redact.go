@@ -406,19 +406,15 @@ func restoreTLSMapping(tlsNode *yaml.Node, current config.TLSConfig) {
 	}
 }
 
-// restoreSecretScalar detects redacted placeholders in a scalar node and
-// restores the original secret. Restoration requires exactly one candidate
+// restoreSecretString reverses redactSecretValue redaction for JSON/YAML
+// management PUT/PATCH bodies. Restoration requires exactly one candidate
 // whose redaction matches the incoming value — when multiple candidates share
 // the same redaction we cannot safely disambiguate (the body may have been
 // reordered) so the redacted value is left in place. The index-aligned value
 // is preferred when it satisfies the unique match.
-func restoreSecretScalar(valNode *yaml.Node, indexValue string, allCandidates []string) {
-	if valNode == nil || valNode.Kind != yaml.ScalarNode {
-		return
-	}
-	incoming := valNode.Value
+func restoreSecretString(incoming, indexValue string, allCandidates []string) string {
 	if !isRedactedPlaceholder(incoming) {
-		return
+		return incoming
 	}
 	matchCount := 0
 	for _, cand := range allCandidates {
@@ -430,31 +426,34 @@ func restoreSecretScalar(valNode *yaml.Node, indexValue string, allCandidates []
 		}
 	}
 	if matchCount != 1 {
-		return
+		return incoming
 	}
 	if indexValue != "" && redactSecretValue(indexValue) == incoming {
-		setScalarString(valNode, indexValue)
-		return
+		return indexValue
 	}
 	for _, cand := range allCandidates {
 		if cand != "" && redactSecretValue(cand) == incoming {
-			setScalarString(valNode, cand)
-			return
+			return cand
 		}
 	}
+	return incoming
 }
 
-// restoreProxyURLScalar restores proxy URLs that were redacted via
-// redactProxyURL (userinfo stripped). As with restoreSecretScalar, we require
-// a unique candidate to avoid restoring the wrong credential when the body
-// has been reordered.
-func restoreProxyURLScalar(valNode *yaml.Node, indexValue string, allCandidates []string) {
-	if valNode == nil || valNode.Kind != yaml.ScalarNode {
-		return
-	}
-	incoming := valNode.Value
+// restoreProxyURLString reverses redactProxyURL (userinfo stripped) and, for
+// opaque/malformed proxies that fell back to redactSecretValue, also accepts
+// isRedactedPlaceholder shapes. Matching uses the literal output of
+// redactProxyURL: that helper only strips userinfo and must not normalize
+// scheme/host/port, or comparisons here silently break.
+//
+// As with restoreSecretString, we require a unique candidate to avoid restoring
+// the wrong credential when the body has been reordered.
+func restoreProxyURLString(incoming, indexValue string, allCandidates []string) string {
 	if incoming == "" {
-		return
+		return incoming
+	}
+	// Opaque proxies redacted via redactSecretValue use "***" / "xxxx...yyyy".
+	if isRedactedPlaceholder(incoming) {
+		return restoreSecretString(incoming, indexValue, allCandidates)
 	}
 	matchCount := 0
 	for _, cand := range allCandidates {
@@ -466,20 +465,264 @@ func restoreProxyURLScalar(valNode *yaml.Node, indexValue string, allCandidates 
 		}
 	}
 	if matchCount != 1 {
-		return
+		return incoming
 	}
 	if indexValue != "" && indexValue != incoming && redactProxyURL(indexValue) == incoming {
-		setScalarString(valNode, indexValue)
-		return
+		return indexValue
 	}
 	for _, cand := range allCandidates {
 		if cand == "" || cand == incoming {
 			continue
 		}
 		if redactProxyURL(cand) == incoming {
-			setScalarString(valNode, cand)
-			return
+			return cand
 		}
+	}
+	return incoming
+}
+
+// restoreHeadersMap restores sensitive header values that were redacted via
+// redactSecretValue. Non-sensitive header names are left untouched. Returns
+// a new map when any restoration occurs; otherwise returns incoming as-is.
+func restoreHeadersMap(incoming map[string]string, currentHeaders map[string]string) map[string]string {
+	if incoming == nil || len(currentHeaders) == 0 {
+		return incoming
+	}
+	out := incoming
+	copied := false
+	for key, val := range incoming {
+		if !isSensitiveHeaderName(key) || !isRedactedPlaceholder(val) {
+			continue
+		}
+		currentVal, ok := currentHeaders[key]
+		if !ok {
+			for k, v := range currentHeaders {
+				if strings.EqualFold(k, key) {
+					currentVal = v
+					ok = true
+					break
+				}
+			}
+		}
+		if !ok || currentVal == "" || redactSecretValue(currentVal) != val {
+			continue
+		}
+		if !copied {
+			out = make(map[string]string, len(incoming))
+			for k, v := range incoming {
+				out[k] = v
+			}
+			copied = true
+		}
+		out[key] = currentVal
+	}
+	return out
+}
+
+// restoreStringListSecretsJSON restores a string list (e.g. api-keys) where
+// items may be redactSecretValue placeholders. Matching is by index with a
+// unique-redaction fallback, matching restoreStringListSecrets.
+func restoreStringListSecretsJSON(incoming, current []string) []string {
+	if len(incoming) == 0 {
+		return incoming
+	}
+	out := make([]string, len(incoming))
+	for i, item := range incoming {
+		idxVal := ""
+		if i < len(current) {
+			idxVal = current[i]
+		}
+		out[i] = restoreSecretString(item, idxVal, current)
+	}
+	return out
+}
+
+// restoreProviderBundleSecrets restores api-key/proxy-url/headers on a
+// providerSecretBundle slice using index-aligned current entries.
+func restoreProviderBundleSecrets(incoming, current []providerSecretBundle) {
+	if len(incoming) == 0 {
+		return
+	}
+	allAPIKeys := make([]string, 0, len(current))
+	allProxyURLs := make([]string, 0, len(current))
+	for _, c := range current {
+		allAPIKeys = append(allAPIKeys, c.apiKey)
+		allProxyURLs = append(allProxyURLs, c.proxyURL)
+	}
+	for i := range incoming {
+		var idxAPIKey, idxProxy string
+		var idxHeaders map[string]string
+		if i < len(current) {
+			idxAPIKey = current[i].apiKey
+			idxProxy = current[i].proxyURL
+			idxHeaders = current[i].headers
+		}
+		incoming[i].apiKey = restoreSecretString(incoming[i].apiKey, idxAPIKey, allAPIKeys)
+		incoming[i].proxyURL = restoreProxyURLString(incoming[i].proxyURL, idxProxy, allProxyURLs)
+		incoming[i].headers = restoreHeadersMap(incoming[i].headers, idxHeaders)
+	}
+}
+
+func restoreGeminiKeyListSecrets(incoming, current []config.GeminiKey) {
+	if len(incoming) == 0 {
+		return
+	}
+	curr := extractGeminiSecrets(current)
+	in := extractGeminiSecrets(incoming)
+	restoreProviderBundleSecrets(in, curr)
+	for i := range incoming {
+		incoming[i].APIKey = in[i].apiKey
+		incoming[i].ProxyURL = in[i].proxyURL
+		incoming[i].Headers = in[i].headers
+	}
+}
+
+func restoreClaudeKeyListSecrets(incoming, current []config.ClaudeKey) {
+	if len(incoming) == 0 {
+		return
+	}
+	curr := extractClaudeSecrets(current)
+	in := extractClaudeSecrets(incoming)
+	restoreProviderBundleSecrets(in, curr)
+	for i := range incoming {
+		incoming[i].APIKey = in[i].apiKey
+		incoming[i].ProxyURL = in[i].proxyURL
+		incoming[i].Headers = in[i].headers
+	}
+}
+
+func restoreCodexKeyListSecrets(incoming, current []config.CodexKey) {
+	if len(incoming) == 0 {
+		return
+	}
+	curr := extractCodexSecrets(current)
+	in := extractCodexSecrets(incoming)
+	restoreProviderBundleSecrets(in, curr)
+	for i := range incoming {
+		incoming[i].APIKey = in[i].apiKey
+		incoming[i].ProxyURL = in[i].proxyURL
+		incoming[i].Headers = in[i].headers
+	}
+}
+
+func restoreXAIKeyListSecrets(incoming, current []config.XAIKey) {
+	if len(incoming) == 0 {
+		return
+	}
+	// XAIKey shares the same secret fields as CodexKey.
+	curr := make([]providerSecretBundle, 0, len(current))
+	for _, k := range current {
+		curr = append(curr, providerSecretBundle{apiKey: k.APIKey, proxyURL: k.ProxyURL, headers: k.Headers})
+	}
+	in := make([]providerSecretBundle, 0, len(incoming))
+	for _, k := range incoming {
+		in = append(in, providerSecretBundle{apiKey: k.APIKey, proxyURL: k.ProxyURL, headers: k.Headers})
+	}
+	restoreProviderBundleSecrets(in, curr)
+	for i := range incoming {
+		incoming[i].APIKey = in[i].apiKey
+		incoming[i].ProxyURL = in[i].proxyURL
+		incoming[i].Headers = in[i].headers
+	}
+}
+
+func restoreVertexKeyListSecrets(incoming, current []config.VertexCompatKey) {
+	if len(incoming) == 0 {
+		return
+	}
+	curr := extractVertexSecrets(current)
+	in := extractVertexSecrets(incoming)
+	restoreProviderBundleSecrets(in, curr)
+	for i := range incoming {
+		incoming[i].APIKey = in[i].apiKey
+		incoming[i].ProxyURL = in[i].proxyURL
+		incoming[i].Headers = in[i].headers
+	}
+}
+
+// restoreOpenAICompatibilitySecrets restores api-key-entries and headers by
+// provider name (same matching policy as restoreOpenAICompatibilityList).
+func restoreOpenAICompatibilitySecrets(incoming, current []config.OpenAICompatibility) {
+	if len(incoming) == 0 {
+		return
+	}
+	byName := make(map[string]int, len(current))
+	for i, p := range current {
+		if p.Name != "" {
+			byName[strings.ToLower(p.Name)] = i
+		}
+	}
+	for i := range incoming {
+		name := strings.TrimSpace(incoming[i].Name)
+		if name == "" {
+			continue
+		}
+		idx, ok := byName[strings.ToLower(name)]
+		if !ok {
+			continue
+		}
+		cur := current[idx]
+		if len(incoming[i].APIKeyEntries) > 0 {
+			currBundles := make([]providerSecretBundle, 0, len(cur.APIKeyEntries))
+			for _, e := range cur.APIKeyEntries {
+				currBundles = append(currBundles, providerSecretBundle{apiKey: e.APIKey, proxyURL: e.ProxyURL})
+			}
+			inBundles := make([]providerSecretBundle, 0, len(incoming[i].APIKeyEntries))
+			for _, e := range incoming[i].APIKeyEntries {
+				inBundles = append(inBundles, providerSecretBundle{apiKey: e.APIKey, proxyURL: e.ProxyURL})
+			}
+			restoreProviderBundleSecrets(inBundles, currBundles)
+			for j := range incoming[i].APIKeyEntries {
+				incoming[i].APIKeyEntries[j].APIKey = inBundles[j].apiKey
+				incoming[i].APIKeyEntries[j].ProxyURL = inBundles[j].proxyURL
+			}
+		}
+		incoming[i].Headers = restoreHeadersMap(incoming[i].Headers, cur.Headers)
+	}
+}
+
+// restoreProviderEntrySecrets restores secret fields for a single provider
+// entry patch against the current entry and the full candidate lists.
+func restoreProviderEntrySecrets(apiKey, proxyURL *string, headers *map[string]string, current providerSecretBundle, all []providerSecretBundle) {
+	allAPIKeys := make([]string, 0, len(all))
+	allProxyURLs := make([]string, 0, len(all))
+	for _, c := range all {
+		allAPIKeys = append(allAPIKeys, c.apiKey)
+		allProxyURLs = append(allProxyURLs, c.proxyURL)
+	}
+	// Callers trim inputs before invoking; avoid double TrimSpace so intentional
+	// surrounding whitespace on brand-new secrets is not silently altered twice.
+	if apiKey != nil {
+		*apiKey = restoreSecretString(*apiKey, current.apiKey, allAPIKeys)
+	}
+	if proxyURL != nil {
+		*proxyURL = restoreProxyURLString(*proxyURL, current.proxyURL, allProxyURLs)
+	}
+	if headers != nil {
+		*headers = restoreHeadersMap(*headers, current.headers)
+	}
+}
+
+// restoreSecretScalar detects redacted placeholders in a scalar node and
+// restores the original secret via restoreSecretString.
+func restoreSecretScalar(valNode *yaml.Node, indexValue string, allCandidates []string) {
+	if valNode == nil || valNode.Kind != yaml.ScalarNode {
+		return
+	}
+	restored := restoreSecretString(valNode.Value, indexValue, allCandidates)
+	if restored != valNode.Value {
+		setScalarString(valNode, restored)
+	}
+}
+
+// restoreProxyURLScalar restores proxy URLs via restoreProxyURLString.
+func restoreProxyURLScalar(valNode *yaml.Node, indexValue string, allCandidates []string) {
+	if valNode == nil || valNode.Kind != yaml.ScalarNode {
+		return
+	}
+	restored := restoreProxyURLString(valNode.Value, indexValue, allCandidates)
+	if restored != valNode.Value {
+		setScalarString(valNode, restored)
 	}
 }
 
@@ -492,34 +735,26 @@ func restoreHeadersMapping(headersNode *yaml.Node, currentHeaders map[string]str
 	if len(currentHeaders) == 0 {
 		return
 	}
+	// Collect current mapping as a plain map, restore, then write back only
+	// changed sensitive values so YAML node styles stay intact for others.
+	incoming := make(map[string]string)
 	for i := 0; i+1 < len(headersNode.Content); i += 2 {
 		keyNode := headersNode.Content[i]
 		valNode := headersNode.Content[i+1]
 		if keyNode.Kind != yaml.ScalarNode || valNode.Kind != yaml.ScalarNode {
 			continue
 		}
-		if !isSensitiveHeaderName(keyNode.Value) {
+		incoming[keyNode.Value] = valNode.Value
+	}
+	restored := restoreHeadersMap(incoming, currentHeaders)
+	for i := 0; i+1 < len(headersNode.Content); i += 2 {
+		keyNode := headersNode.Content[i]
+		valNode := headersNode.Content[i+1]
+		if keyNode.Kind != yaml.ScalarNode || valNode.Kind != yaml.ScalarNode {
 			continue
 		}
-		incoming := valNode.Value
-		if !isRedactedPlaceholder(incoming) {
-			continue
-		}
-		currentVal, ok := currentHeaders[keyNode.Value]
-		if !ok {
-			for k, v := range currentHeaders {
-				if strings.EqualFold(k, keyNode.Value) {
-					currentVal = v
-					ok = true
-					break
-				}
-			}
-		}
-		if !ok || currentVal == "" {
-			continue
-		}
-		if redactSecretValue(currentVal) == incoming {
-			setScalarString(valNode, currentVal)
+		if newVal, ok := restored[keyNode.Value]; ok && newVal != valNode.Value {
+			setScalarString(valNode, newVal)
 		}
 	}
 }
