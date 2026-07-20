@@ -154,3 +154,39 @@ func TestStatusErrorStatusCode(t *testing.T) {
 		t.Fatalf("StatusCode() = %d", err.StatusCode())
 	}
 }
+
+func TestDoWithRetryJitterDoesNotExceedMaxDelay(t *testing.T) {
+	t.Parallel()
+	maxDelay := 10 * time.Millisecond
+	cfg := RetryConfig{
+		MaxAttempts:       3,
+		BaseDelay:         100 * time.Millisecond,
+		MaxDelay:          maxDelay,
+		RespectRetryAfter: false,
+		JitterFactor:      0.25,
+	}
+	for i := 0; i < 100; i++ {
+		attempts := 0
+		start := time.Now()
+		_, err := DoWithRetry(context.Background(), cfg, func(context.Context) (*http.Response, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, errors.New("transient")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("ok")),
+			}, nil
+		})
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("unexpected err on iteration %d: %v", i, err)
+		}
+		if attempts != 3 {
+			t.Fatalf("iteration %d: attempts = %d, want 3", i, attempts)
+		}
+		if elapsed > maxDelay*2+15*time.Millisecond {
+			t.Fatalf("iteration %d: total backoff elapsed %v suggests individual delays exceeded MaxDelay %v (jitter leaked past cap)", i, elapsed, maxDelay)
+		}
+	}
+}

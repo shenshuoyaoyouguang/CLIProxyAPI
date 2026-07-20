@@ -159,6 +159,19 @@ func (s *DeepSeekShard) updateUtilizationLocked() {
 	}
 }
 
+// SetMetrics updates the metrics collector for this shard.
+func (s *DeepSeekShard) SetMetrics(metrics *DeepSeekGatewayMetrics) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.metrics = metrics
+	if s.metrics != nil {
+		s.updateUtilizationLocked()
+	}
+}
+
 // ShardStats is a snapshot of per-shard counters.
 type ShardStats struct {
 	UserID         string  `json:"user_id"`
@@ -200,6 +213,15 @@ func (m *DeepSeekLimiterManager) SetMetrics(metrics *DeepSeekGatewayMetrics) {
 	m.metricsMu.Lock()
 	m.metrics = metrics
 	m.metricsMu.Unlock()
+	m.shards.Range(func(_, value interface{}) bool {
+		value.(*DeepSeekShard).SetMetrics(metrics)
+		return true
+	})
+	if metrics != nil && metrics.GlobalUtilization != nil {
+		m.globalMu.Lock()
+		m.updateGlobalUtilizationLocked()
+		m.globalMu.Unlock()
+	}
 }
 
 func (m *DeepSeekLimiterManager) metricsOrNil() *DeepSeekGatewayMetrics {
@@ -296,6 +318,7 @@ func (m *DeepSeekLimiterManager) acquireGlobal(ctx context.Context) error {
 		}
 	}
 	m.globalActive++
+	m.updateGlobalUtilizationLocked()
 	return nil
 }
 
@@ -309,7 +332,14 @@ func (m *DeepSeekLimiterManager) releaseGlobal() {
 		return
 	}
 	m.globalActive--
+	m.updateGlobalUtilizationLocked()
 	m.globalCond.Signal()
+}
+
+func (m *DeepSeekLimiterManager) updateGlobalUtilizationLocked() {
+	if metrics := m.metricsOrNil(); metrics != nil && metrics.GlobalUtilization != nil && m.globalMax > 0 {
+		metrics.GlobalUtilization.Set(float64(m.globalActive) / float64(m.globalMax))
+	}
 }
 
 // ReleaseFunc releases previously acquired slots.
@@ -319,6 +349,9 @@ type ReleaseFunc func()
 func (m *DeepSeekLimiterManager) Record429(userID string) {
 	if m == nil {
 		return
+	}
+	if userID == "" {
+		userID = "default"
 	}
 	if shard, ok := m.shards.Load(userID); ok {
 		shard.(*DeepSeekShard).Record429()
@@ -382,5 +415,6 @@ func (m *DeepSeekLimiterManager) SetGlobalConcurrency(newMax int) {
 	m.globalMu.Lock()
 	defer m.globalMu.Unlock()
 	m.globalMax = newMax
+	m.updateGlobalUtilizationLocked()
 	m.globalCond.Broadcast()
 }

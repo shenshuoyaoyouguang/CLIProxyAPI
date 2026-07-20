@@ -128,15 +128,15 @@ func DoWithRetry(ctx context.Context, config RetryConfig, fn func(context.Contex
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
 		if attempt > 1 && !skipBackoff {
 			delay := config.BaseDelay * time.Duration(math.Pow(2, float64(attempt-2)))
-			if delay > config.MaxDelay {
-				delay = config.MaxDelay
-			}
 			if config.JitterFactor > 0 {
 				jitter := time.Duration(float64(delay) * config.JitterFactor * (2*rand.Float64() - 1))
 				delay += jitter
-				if delay < 0 {
-					delay = 0
-				}
+			}
+			if delay > config.MaxDelay {
+				delay = config.MaxDelay
+			}
+			if delay < 0 {
+				delay = 0
 			}
 			select {
 			case <-ctx.Done():
