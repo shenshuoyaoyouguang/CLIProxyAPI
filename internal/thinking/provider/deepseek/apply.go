@@ -2,10 +2,11 @@
 //
 // DeepSeek models use the reasoning_effort format with discrete levels
 // (low/medium/high/xhigh/max), compatible with the OpenAI API format.
+// The special value "auto" is also supported for dynamic effort selection.
 // See: https://api-docs.deepseek.com/guides/thinking_mode
 //
 // DeepSeek-specific behavior:
-//   - Output format: reasoning_effort (string: low/medium/high/xhigh/max)
+//   - Output format: reasoning_effort (string: low/medium/high/xhigh/max, or "auto")
 //   - Level-only mode: no native numeric budget support (converted via thresholds)
 //   - Server-side mapping: low/medium → high, xhigh → max
 //   - Supports thinking.type: "enabled"/"disabled" for explicit control

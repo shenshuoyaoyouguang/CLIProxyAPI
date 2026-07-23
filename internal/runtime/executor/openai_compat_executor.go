@@ -49,6 +49,20 @@ func NewOpenAICompatExecutor(provider string, cfg *config.Config) *OpenAICompatE
 // Identifier implements cliproxyauth.ProviderExecutor.
 func (e *OpenAICompatExecutor) Identifier() string { return e.provider }
 
+// openAICompatThinkingRoute selects ApplyThinking toFormat/providerKey.
+// DeepSeek passback models must use the deepseek applier (thinking.type +
+// reasoning_effort) even though the wire format remains OpenAI chat completions.
+// LookupModelInfo falls back to static models.json when providerKey misses.
+func openAICompatThinkingRoute(baseModel, toFormat, providerKey string) (thinkingTo, thinkingProvider string) {
+	thinkingTo = toFormat
+	thinkingProvider = providerKey
+	if thinking.RequiresDeepSeekReasoningPassback(baseModel) {
+		thinkingTo = "deepseek"
+		thinkingProvider = "deepseek"
+	}
+	return thinkingTo, thinkingProvider
+}
+
 // PrepareRequest injects OpenAI-compatible credentials into the outgoing HTTP request.
 func (e *OpenAICompatExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
 	if req == nil {
@@ -114,7 +128,8 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
 
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	thinkingTo, thinkingProvider := openAICompatThinkingRoute(baseModel, to.String(), e.Identifier())
+	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTo, thinkingProvider)
 	if err != nil {
 		return resp, err
 	}
@@ -122,6 +137,11 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	// DeepSeek multi-turn reasoning passback is chat.completions only
+	// (messages[]). responses/compact uses input and is intentionally skipped.
+	if opts.Alt != "responses/compact" {
+		translated = ensureDeepSeekReasoningContent(translated, baseModel)
+	}
 	if opts.Alt == "responses/compact" {
 		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
 			translated = updated
@@ -315,7 +335,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	thinkingTo, thinkingProvider := openAICompatThinkingRoute(baseModel, to.String(), e.Identifier())
+	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTo, thinkingProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -323,6 +344,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	translated = ensureDeepSeekReasoningContent(translated, baseModel)
 
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
