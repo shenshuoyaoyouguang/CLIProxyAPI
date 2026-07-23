@@ -2554,5 +2554,128 @@
       "context_length": 200000,
       "max_completion_tokens": 32768
     }
+  ],
+  "deepseek": [
+    {
+      "id": "deepseek-v4-pro",
+      "object": "model",
+      "created": 1779062400,
+      "owned_by": "deepseek",
+      "type": "deepseek",
+      "display_name": "DeepSeek V4 Pro",
+      "version": "deepseek-v4-pro",
+      "description": "DeepSeek's most capable model, featuring thinking mode with chain-of-thought reasoning. Supports reasoning_effort control: low/medium are mapped to high, xhigh is mapped to max by the server.",
+      "context_length": 1000000,
+      "max_completion_tokens": 8192,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "zero_allowed": true,
+        "dynamic_allowed": true
+      }
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "object": "model",
+      "created": 1779062400,
+      "owned_by": "deepseek",
+      "type": "deepseek",
+      "display_name": "DeepSeek V4 Flash",
+      "version": "deepseek-v4-flash",
+      "description": "DeepSeek's faster, more efficient model with thinking mode support. Supports reasoning_effort control.",
+      "context_length": 1000000,
+      "max_completion_tokens": 8192,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "zero_allowed": true,
+        "dynamic_allowed": true
+      }
+    },
+    {
+      "id": "deepseek-v3.1",
+      "object": "model",
+      "created": 1773705600,
+      "owned_by": "deepseek",
+      "type": "deepseek",
+      "display_name": "DeepSeek V3.1",
+      "version": "deepseek-v3.1",
+      "description": "DeepSeek V3.1 with thinking mode support. Supports reasoning_effort control.",
+      "context_length": 65536,
+      "max_completion_tokens": 8192,
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "zero_allowed": true,
+        "dynamic_allowed": true
+      }
+    },
+    {
+      "id": "deepseek-chat",
+      "object": "model",
+      "created": 1772496000,
+      "owned_by": "deepseek",
+      "type": "deepseek",
+      "display_name": "DeepSeek Chat (Deprecated)",
+      "version": "deepseek-chat",
+      "description": "[Deprecated on 2026/07/24] Maps to deepseek-v4-flash non-thinking mode. Use deepseek-v4-flash instead.",
+      "context_length": 1000000,
+      "max_completion_tokens": 8192,
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "zero_allowed": true,
+        "dynamic_allowed": true
+      }
+    },
+    {
+      "id": "deepseek-reasoner",
+      "object": "model",
+      "created": 1772496000,
+      "owned_by": "deepseek",
+      "type": "deepseek",
+      "display_name": "DeepSeek Reasoner (Deprecated)",
+      "version": "deepseek-reasoner",
+      "description": "[Deprecated on 2026/07/24] Maps to deepseek-v4-flash thinking mode. Use deepseek-v4-flash instead.",
+      "context_length": 1000000,
+      "max_completion_tokens": 8192,
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "zero_allowed": true,
+        "dynamic_allowed": true
+      }
+    }
   ]
 }

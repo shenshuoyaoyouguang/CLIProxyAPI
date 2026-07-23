@@ -27,6 +27,7 @@ var nativeProviderAppliers = map[string]ProviderApplier{
 	"antigravity": nil,
 	"kimi":        nil,
 	"xai":         nil,
+	"deepseek":    nil,
 }
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.
@@ -420,6 +421,8 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 		return extractOpenAIConfig(body)
 	case "codex", "xai":
 		return extractCodexConfig(body)
+	case "deepseek":
+		return extractDeepSeekConfig(body)
 	case "kimi":
 		return extractKimiConfig(body)
 	default:
@@ -447,6 +450,8 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 			config = extractCodexConfig(body)
 		case "openai":
 			config = extractCodexConfig(body)
+		case "deepseek":
+			config = extractOpenAIConfig(body)
 		}
 	}
 	return reasoningEffortFromConfig(config)
@@ -464,6 +469,8 @@ func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 			if !hasThinkingConfig(config) {
 				config = extractOpenAIConfig(body)
 			}
+		case "deepseek":
+			config = extractOpenAIConfig(body)
 		}
 	}
 	return reasoningEffortFromConfig(config)
@@ -737,6 +744,46 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
 		}
 		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	}
+
+	return ThinkingConfig{}
+}
+
+// extractDeepSeekConfig extracts thinking configuration from DeepSeek format request body.
+//
+// DeepSeek API format:
+//   - thinking.type: "enabled"/"disabled" (thought toggle)
+//   - reasoning_effort: "none", "low", "medium", "high", "xhigh", "max", "auto" (discrete levels)
+//
+// thinking.type takes precedence. When thinking.type="disabled", any reasoning_effort is ignored.
+// When thinking.type="enabled" without reasoning_effort, returns empty config to let the
+// upstream use its default effort.
+func extractDeepSeekConfig(body []byte) ThinkingConfig {
+	thinkingType := gjson.GetBytes(body, "thinking.type")
+	if thinkingType.Exists() {
+		switch strings.ToLower(strings.TrimSpace(thinkingType.String())) {
+		case "disabled":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "enabled":
+			if !gjson.GetBytes(body, "reasoning_effort").Exists() {
+				return ThinkingConfig{}
+			}
+		}
+	}
+
+	// Check reasoning_effort (OpenAI-compatible top-level field)
+	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+		value := strings.ToLower(strings.TrimSpace(effort.String()))
+		switch value {
+		case "":
+			return ThinkingConfig{}
+		case "none":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "auto":
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		default:
+			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+		}
 	}
 
 	return ThinkingConfig{}

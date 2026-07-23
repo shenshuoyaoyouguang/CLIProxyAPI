@@ -16,8 +16,9 @@ var levelToBudgetMap = map[string]int{
 	"medium":  8192,
 	"high":    24576,
 	"xhigh":   32768,
-	// "max" is used by Claude adaptive thinking effort. We map it to a large budget
-	// and rely on per-model clamping when converting to budget-only providers.
+	// "max" is used by Claude adaptive thinking effort and DeepSeek reasoning effort.
+	// We map it to a large budget and rely on per-model clamping when converting
+	// to budget-only providers.
 	"max": 128000,
 }
 
