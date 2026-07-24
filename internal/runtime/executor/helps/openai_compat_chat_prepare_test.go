@@ -1,12 +1,26 @@
 package helps
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+// normalizedJSON unmarshals JSON into a shape-comparable value (order-independent
+// for object keys), so fixture equality is robust to whitespace and key ordering.
+func normalizedJSON(t *testing.T, data string) any {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal([]byte(data), &v); err != nil {
+		t.Fatalf("invalid JSON fixture: %v\n%s", err, data)
+	}
+	return v
+}
 
 func TestPrepareOpenAICompatChatBody_SkipPassback(t *testing.T) {
 	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":"hi"}]}`)
@@ -221,5 +235,108 @@ func TestPrepareOpenAICompatChatBody_AC10_NonDeepSeekMessagesStable(t *testing.T
 		if m.Get("reasoning_content").Exists() {
 			t.Fatalf("non-DeepSeek must not inject reasoning_content; message=%s", m.Raw)
 		}
+	}
+}
+
+// AC10: DeepSeek lift path (thinking_blocks -> reasoning_content) produces a
+// byte-shaped output equal to a known expected-output fixture, not just a
+// single-field assertion. This locks the full messages[] transform so a future
+// change to lift/placeholder ordering or extra field mutation is caught.
+func TestPrepareOpenAICompatChatBody_AC10_DeepSeekLiftFixtureEquality(t *testing.T) {
+	body := []byte(`{
+		"model": "deepseek-v4-flash",
+		"thinking": {"type": "enabled"},
+		"messages": [
+			{"role": "user", "content": "Weather?"},
+			{"role": "assistant", "content": "", "thinking_blocks": [{"type": "thinking", "thinking": "Call get_weather for Hangzhou."}], "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}]},
+			{"role": "tool", "tool_call_id": "c1", "content": "sunny"}
+		]
+	}`)
+	// Expected messages[] after Prepare: user unchanged; assistant keeps its
+	// thinking_blocks/tool_calls and gains reasoning_content lifted from the
+	// thinking block; tool message unchanged.
+	wantMessages := `[
+		{"role": "user", "content": "Weather?"},
+		{"role": "assistant", "content": "", "thinking_blocks": [{"type": "thinking", "thinking": "Call get_weather for Hangzhou."}], "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}], "reasoning_content": "Call get_weather for Hangzhou."},
+		{"role": "tool", "tool_call_id": "c1", "content": "sunny"}
+	]`
+	out, err := PrepareOpenAICompatChatBody(OpenAICompatChatPrepareInput{
+		Body:          body,
+		ModelForApply: "deepseek-v4-flash",
+		BaseModel:     "deepseek-v4-flash",
+		FromFormat:    "openai",
+		WireToFormat:  "openai",
+		ProviderKey:   "opencode",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := gjson.GetBytes(out, "messages").Raw
+	if !reflect.DeepEqual(normalizedJSON(t, got), normalizedJSON(t, wantMessages)) {
+		t.Fatalf("DeepSeek lift messages[] mismatch:\nwant %s\ngot  %s", wantMessages, got)
+	}
+}
+
+// CountTokens shares the thinking+passback prepare with Execute but passes
+// Middle=nil, so PayloadConfig side effects (e.g. an override rule) must NOT
+// appear in the CountTokens body. This is the documented residual: CountTokens
+// does not count exactly what Execute sends. The test drives the real
+// ApplyPayloadConfigWithRequest to prove the divergence is Middle-gated.
+func TestPrepareOpenAICompatChatBody_CountTokensOmitsPayloadConfig(t *testing.T) {
+	cfg := &config.Config{
+		Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{
+				{
+					Models: []config.PayloadModelRule{{Name: "deepseek-v4-flash"}},
+					Params: map[string]any{"top_p": 0.5},
+				},
+			},
+		},
+	}
+	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":"hi"}]}`)
+	base := OpenAICompatChatPrepareInput{
+		Body:          body,
+		ModelForApply: "deepseek-v4-flash",
+		BaseModel:     "deepseek-v4-flash",
+		FromFormat:    "openai",
+		WireToFormat:  "openai",
+		ProviderKey:   "opencode",
+	}
+
+	// Execute-like: PayloadConfig runs as Middle.
+	executeInput := base
+	executeInput.Middle = func(b []byte) []byte {
+		return ApplyPayloadConfigWithRequest(cfg, "deepseek-v4-flash", "openai", "openai", "", b, body, "deepseek-v4-flash", "", nil)
+	}
+	executeOut, err := PrepareOpenAICompatChatBody(executeInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// CountTokens-like: Middle omitted.
+	countInput := base
+	countInput.Middle = nil
+	countOut, err := PrepareOpenAICompatChatBody(countInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The override must reach the Execute body but not the CountTokens body.
+	if got := gjson.GetBytes(executeOut, "top_p"); !got.Exists() {
+		t.Fatalf("Execute body must carry PayloadConfig override top_p; body=%s", executeOut)
+	} else if got.Num != 0.5 {
+		t.Fatalf("Execute body top_p = %v, want 0.5", got.Num)
+	}
+	if gjson.GetBytes(countOut, "top_p").Exists() {
+		t.Fatalf("CountTokens body must NOT carry PayloadConfig override top_p; body=%s", countOut)
+	}
+
+	// Both paths must still share the thinking+passback result (reasoning_content
+	// back-fill), so the divergence is strictly PayloadConfig and nothing else.
+	if !gjson.GetBytes(executeOut, "messages.0.reasoning_content").Exists() {
+		t.Error("Execute body missing passback reasoning_content")
+	}
+	if !gjson.GetBytes(countOut, "messages.0.reasoning_content").Exists() {
+		t.Error("CountTokens body missing passback reasoning_content")
 	}
 }
