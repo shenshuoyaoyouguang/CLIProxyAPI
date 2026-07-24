@@ -392,7 +392,7 @@ func shouldMapClaudeThinkingToGPTReasoning(part gjson.Result) bool {
 // The lift is still gated by `role == "assistant"` at the call site, so
 // user/system thinking blocks remain ignored (AC4).
 func shouldMapClaudeThinkingToReasoning(part gjson.Result, targetModel string) bool {
-	// Shared allowlist with executor ensureDeepSeekReasoningContent so translator
+	// Shared allowlist with thinking.EnsureMultiTurnReasoningPassback so translator
 	// lift and last-mile passback never drift (see thinking.RequiresDeepSeekReasoningPassback).
 	if thinking.RequiresDeepSeekReasoningPassback(targetModel) {
 		return true

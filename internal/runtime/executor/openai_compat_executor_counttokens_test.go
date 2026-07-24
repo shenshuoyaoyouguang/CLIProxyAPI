@@ -14,8 +14,9 @@ import (
 )
 
 // TestCountTokensMirrorsExecuteDeepSeekReasoningPassback covers issue #6:
-// CountTokens must share the same thinking route + ensureDeepSeekReasoningContent
-// pipeline as Execute / ExecuteStream so token counts match the upstream body.
+// CountTokens must share the same thinking route + multi-turn passback via
+// helps.PrepareOpenAICompatChatBody as Execute / ExecuteStream so token counts
+// match the upstream body (thinking+passback phases; PayloadConfig residual OK).
 //
 // Strategy:
 //  1. Multi-turn deepseek-reasoner request that triggers passback; capture the

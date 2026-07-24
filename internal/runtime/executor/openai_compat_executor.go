@@ -49,20 +49,6 @@ func NewOpenAICompatExecutor(provider string, cfg *config.Config) *OpenAICompatE
 // Identifier implements cliproxyauth.ProviderExecutor.
 func (e *OpenAICompatExecutor) Identifier() string { return e.provider }
 
-// openAICompatThinkingRoute selects ApplyThinking toFormat/providerKey.
-// DeepSeek passback models must use the deepseek applier (thinking.type +
-// reasoning_effort) even though the wire format remains OpenAI chat completions.
-// LookupModelInfo falls back to static models.json when providerKey misses.
-func openAICompatThinkingRoute(baseModel, toFormat, providerKey string) (thinkingTo, thinkingProvider string) {
-	thinkingTo = toFormat
-	thinkingProvider = providerKey
-	if thinking.RequiresDeepSeekReasoningPassback(baseModel) {
-		thinkingTo = "deepseek"
-		thinkingProvider = "deepseek"
-	}
-	return thinkingTo, thinkingProvider
-}
-
 // PrepareRequest injects OpenAI-compatible credentials into the outgoing HTTP request.
 func (e *OpenAICompatExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
 	if req == nil {
@@ -128,19 +114,23 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
 
-	thinkingTo, thinkingProvider := openAICompatThinkingRoute(baseModel, to.String(), e.Identifier())
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTo, thinkingProvider)
-	if err != nil {
-		return resp, err
-	}
-
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
-	// DeepSeek multi-turn reasoning passback is chat.completions only
-	// (messages[]). responses/compact uses input and is intentionally skipped.
-	if opts.Alt != "responses/compact" {
-		translated = ensureDeepSeekReasoningContent(translated, baseModel)
+	// thinking -> PayloadConfig -> passback (D7). SkipPassback for responses/compact.
+	translated, err = helps.PrepareOpenAICompatChatBody(helps.OpenAICompatChatPrepareInput{
+		Body:          translated,
+		ModelForApply: req.Model,
+		BaseModel:     baseModel,
+		FromFormat:    from.String(),
+		WireToFormat:  to.String(),
+		ProviderKey:   e.Identifier(),
+		SkipPassback:  opts.Alt == "responses/compact",
+		Middle: func(b []byte) []byte {
+			return helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", b, originalTranslated, requestedModel, requestPath, opts.Headers)
+		},
+	})
+	if err != nil {
+		return resp, err
 	}
 	if opts.Alt == "responses/compact" {
 		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
@@ -335,16 +325,24 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 
-	thinkingTo, thinkingProvider := openAICompatThinkingRoute(baseModel, to.String(), e.Identifier())
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTo, thinkingProvider)
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	// SkipPassback from Alt for symmetry (Stream is chat-only today).
+	translated, err = helps.PrepareOpenAICompatChatBody(helps.OpenAICompatChatPrepareInput{
+		Body:          translated,
+		ModelForApply: req.Model,
+		BaseModel:     baseModel,
+		FromFormat:    from.String(),
+		WireToFormat:  to.String(),
+		ProviderKey:   e.Identifier(),
+		SkipPassback:  opts.Alt == "responses/compact",
+		Middle: func(b []byte) []byte {
+			return helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", b, originalTranslated, requestedModel, requestPath, opts.Headers)
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	requestPath := helps.PayloadRequestPath(opts)
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
-	translated = ensureDeepSeekReasoningContent(translated, baseModel)
 
 	// Request usage data in the final streaming chunk so that token statistics
 	// are captured even when the upstream is an OpenAI-compatible provider.
@@ -609,17 +607,20 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 
 	modelForCounting := baseModel
 
-	// Mirror Execute's thinking + DeepSeek passback pipeline so token counts
-	// reflect the same payload shape that will be sent upstream (issue #6).
-	thinkingTo, thinkingProvider := openAICompatThinkingRoute(baseModel, to.String(), e.Identifier())
-	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTo, thinkingProvider)
+	// Same thinking+passback prepare as Execute (issue #6). CountTokens does not
+	// apply PayloadConfig (documented residual - not full Execute body parity).
+	translated, err := helps.PrepareOpenAICompatChatBody(helps.OpenAICompatChatPrepareInput{
+		Body:          translated,
+		ModelForApply: req.Model,
+		BaseModel:     baseModel,
+		FromFormat:    from.String(),
+		WireToFormat:  to.String(),
+		ProviderKey:   e.Identifier(),
+		SkipPassback:  opts.Alt == "responses/compact",
+		Middle:        nil,
+	})
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
-	}
-	// DeepSeek multi-turn reasoning passback is chat.completions only; mirror
-	// Execute's guard so responses/compact payloads are not mutated.
-	if opts.Alt != "responses/compact" {
-		translated = ensureDeepSeekReasoningContent(translated, baseModel)
 	}
 
 	enc, err := helps.TokenizerForModel(modelForCounting)
