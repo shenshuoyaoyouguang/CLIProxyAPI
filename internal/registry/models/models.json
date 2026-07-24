@@ -2641,18 +2641,7 @@
       "version": "deepseek-chat",
       "description": "[Deprecated on 2026/07/24] Maps to deepseek-v4-flash non-thinking mode. Use deepseek-v4-flash instead.",
       "context_length": 1000000,
-      "max_completion_tokens": 8192,
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "zero_allowed": true,
-        "dynamic_allowed": true
-      }
+      "max_completion_tokens": 8192
     },
     {
       "id": "deepseek-reasoner",

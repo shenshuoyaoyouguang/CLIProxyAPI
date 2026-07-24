@@ -81,3 +81,70 @@ func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing
 		t.Fatalf("unknown model should not get Antigravity web search model, got %q", got)
 	}
 }
+
+// TestDeepSeekModelsDeserializedFromCatalog verifies that the "deepseek"
+// section of models.json is deserialized and retrievable (issue #1).
+func TestDeepSeekModelsDeserializedFromCatalog(t *testing.T) {
+	models := GetDeepSeekModels()
+	if len(models) == 0 {
+		t.Fatal("GetDeepSeekModels returned empty slice; deepseek section not deserialized")
+	}
+
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		seen[m.ID] = true
+	}
+	for _, want := range []string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.1", "deepseek-chat", "deepseek-reasoner"} {
+		if !seen[want] {
+			t.Errorf("deepseek models missing %q", want)
+		}
+	}
+}
+
+// TestDeepSeekModelsAvailableViaChannel verifies GetStaticModelDefinitionsByChannel
+// returns DeepSeek models for the "deepseek" channel (issue #1).
+func TestDeepSeekModelsAvailableViaChannel(t *testing.T) {
+	models := GetStaticModelDefinitionsByChannel("deepseek")
+	if len(models) == 0 {
+		t.Fatal(`GetStaticModelDefinitionsByChannel("deepseek") returned empty slice`)
+	}
+}
+
+// TestLookupStaticModelInfoFindsDeepSeek verifies LookupStaticModelInfo
+// searches the DeepSeek section (issue #1).
+func TestLookupStaticModelInfoFindsDeepSeek(t *testing.T) {
+	info := LookupStaticModelInfo("deepseek-v4-pro")
+	if info == nil {
+		t.Fatal("LookupStaticModelInfo(deepseek-v4-pro) = nil; deepseek section not searched")
+	}
+	if info.ID != "deepseek-v4-pro" {
+		t.Errorf("LookupStaticModelInfo returned ID %q, want deepseek-v4-pro", info.ID)
+	}
+}
+
+// TestDeepSeekChatHasNoThinkingBlock verifies that deepseek-chat no longer
+// declares thinking capability since it maps to non-thinking mode (issue #14).
+func TestDeepSeekChatHasNoThinkingBlock(t *testing.T) {
+	info := LookupStaticModelInfo("deepseek-chat")
+	if info == nil {
+		t.Fatal("LookupStaticModelInfo(deepseek-chat) = nil")
+	}
+	if info.Thinking != nil {
+		t.Errorf("deepseek-chat Thinking = %#v, want nil (non-thinking mode)", info.Thinking)
+	}
+}
+
+// TestDeepSeekV4ProRetainsThinkingBlock verifies that thinking-capable
+// DeepSeek models still carry thinking metadata (regression guard for #14).
+func TestDeepSeekV4ProRetainsThinkingBlock(t *testing.T) {
+	info := LookupStaticModelInfo("deepseek-v4-pro")
+	if info == nil {
+		t.Fatal("LookupStaticModelInfo(deepseek-v4-pro) = nil")
+	}
+	if info.Thinking == nil {
+		t.Error("deepseek-v4-pro Thinking = nil, want non-nil (thinking-capable model)")
+	}
+}

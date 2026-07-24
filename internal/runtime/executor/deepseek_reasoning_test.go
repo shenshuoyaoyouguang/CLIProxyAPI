@@ -135,6 +135,28 @@ func TestEnsureDeepSeekReasoningContent_ReasoningEffortNone_NoInjection(t *testi
 	}
 }
 
+func TestEnsureDeepSeekReasoningContent_ReasoningEffortNone_WithHistory_NoInjection(t *testing.T) {
+	// P1: inactive effort is hard-off; history with liftable CoT must not re-open the gate.
+	body := []byte(`{"model":"deepseek-v4-pro","reasoning_effort":"none","messages":[
+		{"role":"assistant","content":"","thinking_blocks":[{"type":"thinking","thinking":"old cot"}],"tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"ok"},
+		{"role":"assistant","content":"done"}
+	]}`)
+	result := ensureDeepSeekReasoningContent(body, "deepseek-v4-pro")
+	if string(result) != string(body) {
+		t.Error(`reasoning_effort:"none" with liftable history must not inject or rewrite`)
+	}
+}
+
+func TestEnsureDeepSeekReasoningContent_ThinkingEnabledWinsOverEffortNone(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"},"reasoning_effort":"none","messages":[
+		{"role":"assistant","content":"hello"}
+	]}`)
+	result := ensureDeepSeekReasoningContent(body, "deepseek-v4-pro")
+	if !gjson.GetBytes(result, "messages.0.reasoning_content").Exists() {
+		t.Error("thinking.type=enabled must still passback even when effort is none")
+	}
+}
 func TestEnsureDeepSeekReasoningContent_DisabledHardOffWithHistory(t *testing.T) {
 	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"disabled"},"messages":[
 		{"role":"assistant","content":"","reasoning_content":"old cot","tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]},
@@ -249,5 +271,84 @@ func TestEnsureDeepSeekReasoningContent_V31Lift(t *testing.T) {
 	result := ensureDeepSeekReasoningContent(body, "deepseek-v3.1")
 	if got := gjson.GetBytes(result, "messages.0.reasoning_content").String(); got != "v3.1 cot" {
 		t.Errorf("v3.1 lift = %q", got)
+	}
+}
+
+// TestEnsureDeepSeekReasoningContent_InactiveEffortMultiToolPassback (issue #3)
+// verifies that inactive reasoning_effort still injects the reasoning_content
+// placeholder when history shows multi-tool reasoning continuity (an assistant
+// turn already carried reasoning_content + tool calls).
+func TestEnsureDeepSeekReasoningContent_InactiveEffortMultiToolPassback(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","reasoning_effort":"none","messages":[
+		{"role":"user","content":"What's the weather?"},
+		{"role":"assistant","content":"","reasoning_content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"sunny"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"c2","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"NYC\"}"}}]}
+	]}`)
+	result := ensureDeepSeekReasoningContent(body, "deepseek-v4-pro")
+	if !gjson.GetBytes(result, "messages.3.reasoning_content").Exists() {
+		t.Error("issue #3: inactive effort + multi-tool history should still placeholder messages[3]")
+	}
+}
+
+// TestEnsureDeepSeekReasoningContent_EmptyRCWithToolCalls (issue #5) verifies
+// that empty-string reasoning_content in history triggers the gate for
+// subsequent tool-call turns even without an explicit reasoning_effort.
+func TestEnsureDeepSeekReasoningContent_EmptyRCWithToolCalls(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"","reasoning_content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"ok"},
+		{"role":"assistant","content":"follow-up"}
+	]}`)
+	result := ensureDeepSeekReasoningContent(body, "deepseek-v4-pro")
+	if !gjson.GetBytes(result, "messages.3.reasoning_content").Exists() {
+		t.Error("issue #5: empty rc + tool calls should trigger gate for later turns")
+	}
+}
+
+// TestEnsureDeepSeekReasoningContent_LiftWrappedThinkingObject (issue #13)
+// verifies that wrapped object thinking structures are lifted via GetThinkingText.
+func TestEnsureDeepSeekReasoningContent_LiftWrappedThinkingObject(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"},"messages":[
+		{"role":"assistant","content":"","thinking_blocks":[{"type":"thinking","thinking":{"text":"wrapped cot","cache_control":{"type":"ephemeral"}}}]}
+	]}`)
+	result := ensureDeepSeekReasoningContent(body, "deepseek-v4-pro")
+	if got := gjson.GetBytes(result, "messages.0.reasoning_content").String(); got != "wrapped cot" {
+		t.Errorf("issue #13: wrapped object lift = %q, want %q", got, "wrapped cot")
+	}
+}
+
+// TestEnsureDeepSeekReasoningContent_NullReasoningContentStandardized (issue #4)
+// verifies that JSON null reasoning_content is standardized to "" instead of
+// being left as null in the payload (which would yield HTTP 400 from DeepSeek).
+func TestEnsureDeepSeekReasoningContent_NullReasoningContentStandardized(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","reasoning_effort":"high","messages":[
+		{"role":"assistant","content":"hello","reasoning_content":null},
+		{"role":"assistant","content":"world","reasoning_content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]}
+	]}`)
+	result := ensureDeepSeekReasoningContent(body, "deepseek-v4-pro")
+
+	// Both null entries must be standardized to empty string, not left as null.
+	rc0 := gjson.GetBytes(result, "messages.0.reasoning_content")
+	if !rc0.Exists() {
+		t.Error("issue #4: messages[0].reasoning_content missing after standardization")
+	}
+	if rc0.Type == gjson.Null {
+		t.Error("issue #4: messages[0].reasoning_content still null, want empty string")
+	}
+	if rc0.String() != "" {
+		t.Errorf("issue #4: messages[0].reasoning_content = %q, want empty string", rc0.String())
+	}
+
+	rc1 := gjson.GetBytes(result, "messages.1.reasoning_content")
+	if !rc1.Exists() {
+		t.Error("issue #4: messages[1].reasoning_content missing after standardization")
+	}
+	if rc1.Type == gjson.Null {
+		t.Error("issue #4: messages[1].reasoning_content still null, want empty string")
+	}
+	if rc1.String() != "" {
+		t.Errorf("issue #4: messages[1].reasoning_content = %q, want empty string", rc1.String())
 	}
 }

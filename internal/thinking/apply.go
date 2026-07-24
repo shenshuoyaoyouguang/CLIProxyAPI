@@ -758,13 +758,22 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 // thinking.type takes precedence. When thinking.type="disabled", any reasoning_effort is ignored.
 // When thinking.type="enabled" without reasoning_effort, returns empty config to let the
 // upstream use its default effort.
+//
+// When thinking.type="enabled" and reasoning_effort="none", thinking must stay enabled.
+// Returning ModeNone would call applyDisabledThinking (thinking.type=disabled), contradicting
+// the explicit enabled flag. Returning ModeLevel+LevelNone is also unsafe because ValidateConfig
+// normalizes it back to ModeNone. We therefore return an empty config so the body passes through
+// unchanged: the upstream receives thinking.type=enabled + reasoning_effort=none exactly as the
+// client intended.
 func extractDeepSeekConfig(body []byte) ThinkingConfig {
 	thinkingType := gjson.GetBytes(body, "thinking.type")
+	thinkingEnabled := false
 	if thinkingType.Exists() {
 		switch strings.ToLower(strings.TrimSpace(thinkingType.String())) {
 		case "disabled":
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
 		case "enabled":
+			thinkingEnabled = true
 			if !gjson.GetBytes(body, "reasoning_effort").Exists() {
 				return ThinkingConfig{}
 			}
@@ -778,6 +787,11 @@ func extractDeepSeekConfig(body []byte) ThinkingConfig {
 		case "":
 			return ThinkingConfig{}
 		case "none":
+			// When thinking.type=enabled, "none" must not disable thinking.
+			// Passthrough so the upstream sees thinking.type=enabled + effort=none.
+			if thinkingEnabled {
+				return ThinkingConfig{}
+			}
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
 		case "auto":
 			return ThinkingConfig{Mode: ModeAuto, Budget: -1}

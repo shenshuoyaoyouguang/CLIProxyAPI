@@ -279,3 +279,24 @@ func TestXAIReasoningReplayCacheStoresRefusalMessagePart(t *testing.T) {
 		t.Fatalf("refusal part should not use text field; item=%s", got[1])
 	}
 }
+
+func TestStoreXAIReasoningReplayItemsBackendError(t *testing.T) {
+	ClearXAIReasoningReplayCache()
+	t.Cleanup(ClearXAIReasoningReplayCache)
+
+	client := newFakeXAIReasoningReplayKVClient()
+	client.setErr = errors.New("set failed")
+	useFakeXAIReasoningReplayKVClient(t, client, true, nil)
+
+	encryptedContent := validGrokEncryptedContentForReplayCacheTest()
+	items := [][]byte{
+		[]byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"` + encryptedContent + `"}`),
+	}
+	status := StoreXAIReasoningReplayItems(context.Background(), "grok-4.5", "session-backend-error", items)
+	if status != XAIReasoningReplayStoreBackendError {
+		t.Fatalf("StoreXAIReasoningReplayItems status = %v, want BackendError", status)
+	}
+	if client.setCount != 1 {
+		t.Fatalf("KVSet count = %d, want 1", client.setCount)
+	}
+}

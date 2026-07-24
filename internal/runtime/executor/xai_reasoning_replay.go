@@ -2,8 +2,6 @@ package executor
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"strings"
 
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
@@ -21,6 +19,7 @@ type xaiReasoningReplayScope struct {
 }
 
 var getXAIReasoningReplayItemsRequired = internalcache.GetXAIReasoningReplayItemsRequired
+var storeXAIReasoningReplayItems = internalcache.StoreXAIReasoningReplayItems
 
 func (s xaiReasoningReplayScope) valid() bool {
 	return strings.TrimSpace(s.modelName) != "" && strings.TrimSpace(s.sessionKey) != ""
@@ -60,32 +59,12 @@ func xaiReasoningReplayScopeFromRequest(ctx context.Context, from sdktranslator.
 		return xaiReasoningReplayScope{}
 	}
 	sessionKey := codexReasoningReplaySessionKey(ctx, from, req, opts, body)
-	sessionKey = xaiReasoningReplayIsolateSessionKey(ctx, sessionKey)
+	// Shared tenant isolation: client-controlled keys require a caller API key.
+	sessionKey = helps.IsolateClientControlledSessionKey(ctx, sessionKey)
 	return xaiReasoningReplayScope{
 		modelName:  thinking.ParseSuffix(req.Model).ModelName,
 		sessionKey: sessionKey,
 	}
-}
-
-// xaiReasoningReplayIsolateSessionKey namespaces client-controlled session keys
-// by the downstream CPA API key so two callers cannot share encrypted reasoning
-// or assistant text by reusing prompt_cache_key / window / session headers.
-// Trusted execution session keys keep their existing form. Client-controlled
-// sessions without a caller API key are disabled rather than shared globally.
-func xaiReasoningReplayIsolateSessionKey(ctx context.Context, sessionKey string) string {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return ""
-	}
-	if strings.HasPrefix(sessionKey, "execution:") {
-		return sessionKey
-	}
-	apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx))
-	if apiKey == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(apiKey))
-	return "caller:" + hex.EncodeToString(sum[:8]) + ":" + sessionKey
 }
 
 func xaiReasoningReplayEnabledForSource(from sdktranslator.Format) bool {
@@ -277,7 +256,7 @@ func cacheXAIReasoningReplayFromCompleted(ctx context.Context, scope xaiReasonin
 			continue
 		}
 	}
-	switch internalcache.StoreXAIReasoningReplayItems(ctx, scope.modelName, scope.sessionKey, items) {
+	switch storeXAIReasoningReplayItems(ctx, scope.modelName, scope.sessionKey, items) {
 	case internalcache.XAIReasoningReplayStored:
 		return
 	case internalcache.XAIReasoningReplayNoReplayableState:
@@ -287,7 +266,13 @@ func cacheXAIReasoningReplayFromCompleted(ctx context.Context, scope xaiReasonin
 			log.Warnf("xai reasoning replay cache delete failed after non-replayable completed output: %v", errDelete)
 		}
 	case internalcache.XAIReasoningReplayStoreBackendError:
-		log.Debug("xai reasoning replay cache store backend error; retaining previous entry")
+		// Prefer a cache miss over injecting a previous turn's encrypted
+		// reasoning after the conversation has advanced.
+		if errDelete := internalcache.DeleteXAIReasoningReplayItemRequired(ctx, scope.modelName, scope.sessionKey); errDelete != nil {
+			log.Warnf("xai reasoning replay cache delete failed after store backend error: %v", errDelete)
+		} else {
+			log.Debug("xai reasoning replay cache store backend error; cleared previous entry to avoid stale inject")
+		}
 	default:
 		// Invalid args: nothing to store or clear.
 	}

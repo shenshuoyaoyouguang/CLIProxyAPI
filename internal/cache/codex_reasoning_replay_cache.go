@@ -63,17 +63,25 @@ var currentCodexReasoningReplayKVClient = func() (codexReasoningReplayKVClient, 
 // CacheCodexReasoningReplayItem stores a final GPT/Codex reasoning item for
 // stateless replay. The stored item is normalized to the minimal shape accepted
 // by Responses input replay.
+//
+// WARNING: This REPLACES the entire cache entry (single-slot write). Multi-turn
+// production paths must use AppendCodexReasoningReplayItemsBestEffort so prior
+// turns remain available for cumulative replay. Prefer Append in new code.
 func CacheCodexReasoningReplayItem(modelName, sessionKey string, item []byte) bool {
 	return CacheCodexReasoningReplayItems(modelName, sessionKey, [][]byte{item})
 }
 
 // CacheCodexReasoningReplayItems stores the final GPT/Codex assistant output
 // items needed to replay a stateless next turn.
+//
+// WARNING: Whole-entry replace, not append. See CacheCodexReasoningReplayItem.
 func CacheCodexReasoningReplayItems(modelName, sessionKey string, items [][]byte) bool {
 	return CacheCodexReasoningReplayItemsBestEffort(context.Background(), modelName, sessionKey, items)
 }
 
-// CacheCodexReasoningReplayItemsBestEffort stores replay items for completed response paths.
+// CacheCodexReasoningReplayItemsBestEffort stores replay items for completed
+// response paths by replacing the full entry. Production multi-turn Codex
+// completion handling uses AppendCodexReasoningReplayItemsBestEffort instead.
 func CacheCodexReasoningReplayItemsBestEffort(ctx context.Context, modelName, sessionKey string, items [][]byte) bool {
 	key := codexReasoningReplayCacheKey(modelName, sessionKey)
 	if key == "" {

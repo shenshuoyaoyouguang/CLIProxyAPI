@@ -341,9 +341,13 @@ func codexReasoningReplayScopeFromRequest(ctx context.Context, from sdktranslato
 		modelName = thinking.ParseSuffix(req.Model).ModelName
 	}
 	inputItems := gjson.GetBytes(body, "input").Array()
+	sessionKey := codexReasoningReplaySessionKey(ctx, from, req, opts, body)
+	// Tenant isolation for client-controlled keys (prompt_cache / session /
+	// claude:…); trusted execution: keys pass through unchanged.
+	sessionKey = helps.IsolateClientControlledSessionKey(ctx, sessionKey)
 	return codexReasoningReplayScope{
 		modelName:          modelName,
-		sessionKey:         codexReasoningReplaySessionKey(ctx, from, req, opts, body),
+		sessionKey:         sessionKey,
 		requestFingerprint: codexReplayInputPrefixFingerprint(inputItems, len(inputItems)),
 	}
 }

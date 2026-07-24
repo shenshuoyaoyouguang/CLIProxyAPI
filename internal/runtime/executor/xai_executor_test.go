@@ -3928,6 +3928,38 @@ func TestCacheXAIReasoningReplayFromCompletedClearsPreviousEntryWhenNoReplayable
 	}
 }
 
+func TestCacheXAIReasoningReplayFromCompletedClearsPreviousEntryWhenStoreBackendError(t *testing.T) {
+	internalcache.ClearXAIReasoningReplayCache()
+	t.Cleanup(internalcache.ClearXAIReasoningReplayCache)
+
+	modelName := "grok-4.5"
+	sessionKey := "prompt-cache:clear-backend-error"
+	encryptedContent := testValidGrokEncryptedContentForSeed(15)
+	previousItems := [][]byte{
+		[]byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":""}`),
+		[]byte(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"previous answer"}]}`),
+	}
+	previousItems[0], _ = sjson.SetBytes(previousItems[0], "encrypted_content", encryptedContent)
+	if !internalcache.CacheXAIReasoningReplayItems(modelName, sessionKey, previousItems) {
+		t.Fatal("failed to seed xAI reasoning replay cache")
+	}
+
+	prev := storeXAIReasoningReplayItems
+	storeXAIReasoningReplayItems = func(ctx context.Context, modelName, sessionKey string, items [][]byte) internalcache.XAIReasoningReplayStoreStatus {
+		return internalcache.XAIReasoningReplayStoreBackendError
+	}
+	t.Cleanup(func() { storeXAIReasoningReplayItems = prev })
+
+	cacheXAIReasoningReplayFromCompleted(context.Background(), xaiReasoningReplayScope{
+		modelName:  modelName,
+		sessionKey: sessionKey,
+	}, []byte(`{"response":{"output":[{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+encryptedContent+`"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"new answer"}]}]}}`))
+
+	if _, ok := internalcache.GetXAIReasoningReplayItems(modelName, sessionKey); ok {
+		t.Fatal("expected previous replay entry to be cleared after store backend error")
+	}
+}
+
 func TestXAIReasoningReplayScopeIsolatesOpenAIResponsePromptCacheKeyByAPIKey(t *testing.T) {
 	payload := []byte(`{"model":"grok-4.5","prompt_cache_key":"shared-session","input":[]}`)
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse}
@@ -3945,20 +3977,32 @@ func TestXAIReasoningReplayScopeIsolatesOpenAIResponsePromptCacheKeyByAPIKey(t *
 		t.Fatalf("session key A = %q, want caller-isolated prompt-cache key", scopeA.sessionKey)
 	}
 
+	// issue #8: 缺失 caller API key 时不再彻底禁用回放，而是退化到进程级命名空间。
 	scopeNoKey := xaiReasoningReplayScopeFromRequest(context.Background(), sdktranslator.FormatOpenAIResponse, req, opts, payload)
-	if scopeNoKey.valid() {
-		t.Fatalf("OpenAI Responses without caller API key must disable replay: %+v", scopeNoKey)
+	if !scopeNoKey.valid() {
+		t.Fatalf("OpenAI Responses without caller API key must still produce a degraded scope (issue #8): %+v", scopeNoKey)
+	}
+	if !strings.HasPrefix(scopeNoKey.sessionKey, "degraded:") || !strings.Contains(scopeNoKey.sessionKey, "prompt-cache:shared-session") {
+		t.Fatalf("degraded session key = %q, want degraded:*:prompt-cache:shared-session", scopeNoKey.sessionKey)
+	}
+	// degraded namespace 仍必须与 caller namespace 隔离
+	if scopeNoKey.sessionKey == scopeA.sessionKey {
+		t.Fatalf("degraded namespace must not collide with caller namespace: both %q", scopeNoKey.sessionKey)
 	}
 }
 
-func TestXAIReasoningReplayScopeDisablesClaudeWithoutAPIKey(t *testing.T) {
+func TestXAIReasoningReplayScopeDegradesClaudeWithoutAPIKey(t *testing.T) {
 	payload := []byte(`{"model":"grok-4.3","metadata":{"user_id":"{\"session_id\":\"shared-session\"}"},"messages":[{"role":"user","content":"hello"}]}`)
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude}
 	req := cliproxyexecutor.Request{Model: "grok-4.3", Payload: payload}
 
+	// issue #8: 缺失 caller API key 时不再彻底禁用 Claude 回放，而是退化到进程级命名空间。
 	scopeNoKey := xaiReasoningReplayScopeFromRequest(context.Background(), sdktranslator.FormatClaude, req, opts, payload)
-	if scopeNoKey.valid() {
-		t.Fatalf("Claude without caller API key must disable replay: %+v", scopeNoKey)
+	if !scopeNoKey.valid() {
+		t.Fatalf("Claude without caller API key must still produce a degraded scope (issue #8): %+v", scopeNoKey)
+	}
+	if !strings.HasPrefix(scopeNoKey.sessionKey, "degraded:") || !strings.Contains(scopeNoKey.sessionKey, "claude:shared-session") {
+		t.Fatalf("degraded session key = %q, want degraded:*:claude:shared-session", scopeNoKey.sessionKey)
 	}
 
 	scopeWithKey := xaiReasoningReplayScopeFromRequest(testContextWithAPIKey("api-key-a"), sdktranslator.FormatClaude, req, opts, payload)
@@ -3967,6 +4011,10 @@ func TestXAIReasoningReplayScopeDisablesClaudeWithoutAPIKey(t *testing.T) {
 	}
 	if !strings.HasPrefix(scopeWithKey.sessionKey, "caller:") || !strings.Contains(scopeWithKey.sessionKey, "claude:shared-session") {
 		t.Fatalf("session key = %q, want caller-isolated Claude session key", scopeWithKey.sessionKey)
+	}
+	// degraded namespace 仍必须与 caller namespace 隔离
+	if scopeNoKey.sessionKey == scopeWithKey.sessionKey {
+		t.Fatalf("degraded namespace must not collide with caller namespace: both %q", scopeNoKey.sessionKey)
 	}
 }
 

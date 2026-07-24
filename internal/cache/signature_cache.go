@@ -24,8 +24,17 @@ const (
 	// SignatureCacheTTL is how long signatures are valid
 	SignatureCacheTTL = 3 * time.Hour
 
-	// SignatureTextHashLen is the length of the hash key (16 hex chars = 64-bit key space)
-	SignatureTextHashLen = 16
+	// SignatureTextHashLen is the hex length of the thinking-text key.
+	// Full SHA-256 (32 bytes → 64 hex chars) avoids 64-bit birthday collisions
+	// that could map distinct thinking blocks onto the same signature entry.
+	SignatureTextHashLen = 64
+
+	// legacySignatureTextHashLen is the hex length used before the
+	// 64-bit-collision fix. Pre-upgrade in-memory entries may still live under
+	// this shorter key; GetCachedSignatureRequired / DeleteCachedSignatureRequired
+	// consult it as a fallback so historical cache entries remain readable /
+	// removable during the upgrade window (issue #10).
+	legacySignatureTextHashLen = 16
 
 	// MinValidSignatureLen is the minimum length for a signature to be considered valid
 	MinValidSignatureLen = 50
@@ -57,10 +66,20 @@ type groupCache struct {
 	entries map[string]SignatureEntry
 }
 
-// hashText creates a stable, Unicode-safe key from text content
+// hashText creates a stable, Unicode-safe key from text content.
+// Uses the full SHA-256 digest (SignatureTextHashLen hex chars).
 func hashText(text string) string {
 	h := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(h[:])[:SignatureTextHashLen]
+	return hex.EncodeToString(h[:])
+}
+
+// hashTextLegacy produces the pre-64-bit-collision-fix key shape (first 8 bytes
+// of the SHA-256 digest → 16 hex chars). It is consulted only as a read /
+// delete fallback so in-memory entries written by older code remain accessible
+// during the upgrade window (issue #10). New writes always use hashText.
+func hashTextLegacy(text string) string {
+	h := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(h[:legacySignatureTextHashLen / 2])
 }
 
 // getOrCreateGroupCache gets or creates a cache bucket for a model group
@@ -206,11 +225,24 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 	sc := val.(*groupCache)
 
 	textHash := hashText(text)
+	legacyTextHash := hashTextLegacy(text)
 
 	now := time.Now()
 
 	sc.mu.Lock()
 	entry, exists := sc.entries[textHash]
+	// issue #10: fall back to the legacy 16-char key shape so entries written
+	// by pre-upgrade code remain readable. On hit, migrate the entry to the
+	// new 64-char key so future lookups skip the fallback path.
+	if !exists {
+		entry, exists = sc.entries[legacyTextHash]
+		if exists {
+			if now.Sub(entry.Timestamp) <= SignatureCacheTTL {
+				sc.entries[textHash] = entry
+			}
+			delete(sc.entries, legacyTextHash)
+		}
+	}
 	if !exists {
 		sc.mu.Unlock()
 		if groupKey == "gemini" {
@@ -220,6 +252,8 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 	}
 	if now.Sub(entry.Timestamp) > SignatureCacheTTL {
 		delete(sc.entries, textHash)
+		// also clean up any stale legacy entry sharing the same text
+		delete(sc.entries, legacyTextHash)
 		sc.mu.Unlock()
 		if groupKey == "gemini" {
 			return "skip_thought_signature_validator", nil
@@ -262,13 +296,17 @@ func DeleteCachedSignatureRequired(ctx context.Context, modelName, text string) 
 	}
 	groupKey := GetModelGroup(modelName)
 	textHash := hashText(text)
+	legacyTextHash := hashTextLegacy(text)
 	val, ok := signatureCache.Load(groupKey)
 	if !ok {
 		return nil
 	}
 	sc := val.(*groupCache)
 	sc.mu.Lock()
+	// issue #10: delete both new and legacy key shapes so stale entries from
+	// either generation are cleaned up regardless of which version wrote them.
 	delete(sc.entries, textHash)
+	delete(sc.entries, legacyTextHash)
 	isEmpty := len(sc.entries) == 0
 	sc.mu.Unlock()
 	if isEmpty {

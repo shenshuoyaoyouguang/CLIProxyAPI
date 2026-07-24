@@ -50,8 +50,17 @@ func TestFileBodySource_RecreatesPartDirAfterManualCleanup(t *testing.T) {
 	if errAppend := source.AppendPart([]byte("before manual cleanup")); errAppend != nil {
 		t.Fatalf("AppendPart before cleanup: %v", errAppend)
 	}
+	// 记录清理前的 part 路径，用于检测 RemoveAll 是否真正生效
+	preCleanupPaths := source.Paths()
 	if errRemove := os.RemoveAll(logsDir); errRemove != nil {
 		t.Fatalf("RemoveAll logs dir: %v", errRemove)
+	}
+	// Windows 下 RemoveAll 可能静默失败（Defender/索引服务占用文件句柄），
+	// 此时旧 part 文件仍可读，无法可靠模拟"手动清理后重建"场景，跳过测试。
+	for _, p := range preCleanupPaths {
+		if _, err := os.Stat(p); err == nil {
+			t.Skip("os.RemoveAll did not remove part file (Windows file locking); cannot test manual cleanup scenario")
+		}
 	}
 	if errAppend := source.AppendPart([]byte("after manual cleanup")); errAppend != nil {
 		t.Fatalf("AppendPart after cleanup: %v", errAppend)

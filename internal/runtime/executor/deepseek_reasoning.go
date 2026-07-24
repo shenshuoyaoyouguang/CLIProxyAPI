@@ -68,12 +68,15 @@ func ensureDeepSeekReasoningContent(body []byte, model string) []byte {
 	}
 
 	// Phase 2: placeholder for assistants still missing the field.
+	// JSON null reasoning_content is treated as missing and standardized to ""
+	// so the upstream never receives a bare null (which would yield HTTP 400).
 	messages = gjson.GetBytes(result, "messages")
 	for i, msg := range messages.Array() {
 		if msg.Get("role").String() != "assistant" {
 			continue
 		}
-		if msg.Get("reasoning_content").Exists() {
+		rc := msg.Get("reasoning_content")
+		if rc.Exists() && rc.Type != gjson.Null {
 			continue
 		}
 		path := fmt.Sprintf("messages.%d.reasoning_content", i)

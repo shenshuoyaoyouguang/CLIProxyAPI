@@ -609,9 +609,17 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 
 	modelForCounting := baseModel
 
-	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	// Mirror Execute's thinking + DeepSeek passback pipeline so token counts
+	// reflect the same payload shape that will be sent upstream (issue #6).
+	thinkingTo, thinkingProvider := openAICompatThinkingRoute(baseModel, to.String(), e.Identifier())
+	translated, err := thinking.ApplyThinking(translated, req.Model, from.String(), thinkingTo, thinkingProvider)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
+	}
+	// DeepSeek multi-turn reasoning passback is chat.completions only; mirror
+	// Execute's guard so responses/compact payloads are not mutated.
+	if opts.Alt != "responses/compact" {
+		translated = ensureDeepSeekReasoningContent(translated, baseModel)
 	}
 
 	enc, err := helps.TokenizerForModel(modelForCounting)

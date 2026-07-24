@@ -135,11 +135,18 @@ func (s *GitTokenStore) EnsureRepository() error {
 		}
 		if _, errClone := git.PlainClone(repoDir, cloneOpts); errClone != nil {
 			if errors.Is(errClone, transport.ErrEmptyRemoteRepository) {
+				// Windows 下 RemoveAll 可能静默失败（go-git 句柄未释放 + OS 文件锁），
+				// 导致 .git 目录残留，后续 PlainInit 会因目录非空而失败。
+				// 先尝试 PlainInit；若失败则回退到 PlainOpen 复用 clone 残留的空仓库。
 				_ = os.RemoveAll(gitDir)
 				repo, errInit := git.PlainInit(repoDir, false)
 				if errInit != nil {
-					s.dirLock.Unlock()
-					return fmt.Errorf("git token store: init empty repo: %w", errInit)
+					var errOpen error
+					repo, errOpen = git.PlainOpen(repoDir)
+					if errOpen != nil {
+						s.dirLock.Unlock()
+						return fmt.Errorf("git token store: init empty repo: %w (open fallback: %w)", errInit, errOpen)
+					}
 				}
 				if s.branch != "" {
 					headRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(s.branch))

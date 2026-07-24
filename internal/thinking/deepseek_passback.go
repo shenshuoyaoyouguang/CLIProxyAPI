@@ -27,8 +27,8 @@ func NormalizeDeepSeekModelID(model string) string {
 // the deprecated deepseek-reasoner alias that maps to v4-flash thinking mode).
 //
 // deepseek-chat is intentionally excluded: it maps to v4-flash non-thinking mode
-// and must not receive passback injection even though models.json still lists a
-// thinking block for compatibility metadata.
+// and must not receive passback injection. models.json also omits the thinking
+// block for this id so ApplyThinking does not advertise levels for chat mode.
 func RequiresDeepSeekReasoningPassback(model string) bool {
 	m := NormalizeDeepSeekModelID(model)
 	if m == "" || m == "deepseek-chat" {
@@ -38,8 +38,9 @@ func RequiresDeepSeekReasoningPassback(model string) bool {
 	case "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.1", "deepseek-reasoner":
 		return true
 	}
-	// Future V4 aliases / regional ids.
-	return strings.Contains(m, "deepseek-v4")
+	// Future V4 aliases / regional ids. Use prefix match (stricter than
+	// strings.Contains) so unrelated IDs like "not-deepseek-v4" don't match.
+	return strings.HasPrefix(m, "deepseek-v4")
 }
 
 // IsInactiveReasoningEffort reports whether a reasoning_effort value means
@@ -69,6 +70,9 @@ func ShouldReplaceDeepSeekReasoningContent(rc gjson.Result) bool {
 //   - thinking_blocks: [{type:"thinking", thinking:"..."}] (LiteLLM / Anthropic adapter)
 //   - content as array with {type:"thinking", thinking:"..."}
 //
+// Uses GetThinkingText to correctly parse wrapped object thinking structures
+// (e.g. {"thinking": {"text": "..."}}) that direct .String() access would miss.
+//
 // Returns ("", false) when no non-empty thinking text is found.
 func LiftDeepSeekReasoningText(msg gjson.Result) (string, bool) {
 	var parts []string
@@ -78,10 +82,7 @@ func LiftDeepSeekReasoningText(msg gjson.Result) (string, bool) {
 			if t := block.Get("type").String(); t != "" && t != "thinking" {
 				continue
 			}
-			text := strings.TrimSpace(block.Get("thinking").String())
-			if text == "" {
-				text = strings.TrimSpace(block.Get("text").String())
-			}
+			text := strings.TrimSpace(GetThinkingText(block))
 			if text != "" {
 				parts = append(parts, text)
 			}
@@ -93,10 +94,7 @@ func LiftDeepSeekReasoningText(msg gjson.Result) (string, bool) {
 			if part.Get("type").String() != "thinking" {
 				continue
 			}
-			text := strings.TrimSpace(part.Get("thinking").String())
-			if text == "" {
-				text = strings.TrimSpace(part.Get("text").String())
-			}
+			text := strings.TrimSpace(GetThinkingText(part))
 			if text != "" {
 				parts = append(parts, text)
 			}
@@ -113,12 +111,19 @@ func LiftDeepSeekReasoningText(msg gjson.Result) (string, bool) {
 // (lift + empty placeholder). Semantics:
 //
 //  1. thinking.type == "disabled" is a hard off (covers history pollution).
-//  2. thinking.type == "enabled" is hard on.
-//  3. reasoning_effort that is not inactive is on.
-//  4. History with non-empty reasoning_content or liftable thinking is on
-//     (only when not hard-off).
-//
-// Empty-only history reasoning_content does not alone activate the gate.
+//  2. thinking.type == "enabled" is hard on (wins over inactive effort).
+//  3. reasoning_effort that is inactive (none/off/disabled/"") is a soft off:
+//     the gate only re-opens when history shows multi-tool reasoning continuity
+//     (an assistant turn carried reasoning_content, even empty, followed by tool
+//     calls). Liftable thinking_blocks alone do not re-open the gate — that would
+//     re-pollute chat mode. This keeps tool-call chains working (issue #3) without
+//     letting chat turns inherit placeholder injection.
+//  4. reasoning_effort that is active is on.
+//  5. Otherwise history with non-empty reasoning_content or liftable thinking
+//     is on (multi-turn tool passback when the client omitted effort flags).
+//  6. History with only empty-string reasoning_content re-opens the gate when
+//     tool calls follow (issue #5): the empty field marks a prior thinking turn
+//     whose chain-of-thought must be preserved for subsequent tool calls.
 func DeepSeekThinkingActive(body []byte, messages gjson.Result) bool {
 	tt := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
 	if tt == "disabled" {
@@ -129,9 +134,13 @@ func DeepSeekThinkingActive(body []byte, messages gjson.Result) bool {
 	}
 
 	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
-		if !IsInactiveReasoningEffort(effort.String()) {
-			return true
+		if IsInactiveReasoningEffort(effort.String()) {
+			// Explicit inactive effort: only re-open for multi-tool reasoning
+			// continuity (real reasoning_content field + tool calls). Liftable
+			// thinking_blocks alone must not re-pollute chat mode.
+			return hasDeepSeekMultiToolReasoningContinuity(messages)
 		}
+		return true
 	}
 
 	if !messages.IsArray() {
@@ -150,5 +159,39 @@ func DeepSeekThinkingActive(body []byte, messages gjson.Result) bool {
 			return true
 		}
 	}
-	return false
+	// Issue #5: empty-string reasoning_content marks a prior thinking turn.
+	// Re-open the gate when tool calls follow so the chain stays intact.
+	return hasDeepSeekMultiToolReasoningContinuity(messages)
+}
+
+// hasDeepSeekMultiToolReasoningContinuity reports whether the message history
+// shows a multi-turn tool scenario that requires reasoning_content passback
+// continuity: at least one assistant message carries a reasoning_content field
+// (even empty, which marks a prior thinking turn) AND at least one tool-call
+// turn exists (role=tool or assistant with tool_calls).
+//
+// This is the narrow signal that re-opens the L4 gate under inactive effort
+// (issue #3) or empty-only reasoning_content history (issue #5) without
+// re-polluting plain chat turns.
+func hasDeepSeekMultiToolReasoningContinuity(messages gjson.Result) bool {
+	if !messages.IsArray() {
+		return false
+	}
+	hasAssistantReasoningContent := false
+	hasToolCall := false
+	for _, msg := range messages.Array() {
+		role := msg.Get("role").String()
+		if role == "assistant" {
+			if msg.Get("reasoning_content").Exists() {
+				hasAssistantReasoningContent = true
+			}
+			if tc := msg.Get("tool_calls"); tc.Exists() && tc.IsArray() && len(tc.Array()) > 0 {
+				hasToolCall = true
+			}
+		}
+		if role == "tool" {
+			hasToolCall = true
+		}
+	}
+	return hasAssistantReasoningContent && hasToolCall
 }

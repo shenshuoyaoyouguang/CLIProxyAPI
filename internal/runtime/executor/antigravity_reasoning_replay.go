@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -24,16 +25,15 @@ func (s antigravityReasoningReplayScope) valid() bool {
 	return strings.TrimSpace(s.modelName) != "" && strings.TrimSpace(s.sessionKey) != ""
 }
 
+// antigravityReasoningReplayScopeFromPayload resolves a client-controlled
+// session id only from explicit payload fields. Content-hash fallbacks are
+// intentionally not used here: identical first-user prompts across tenants would
+// otherwise share thought_signature / tool-call replay state. The content-hash
+// fallback lives in antigravityReasoningReplayScopeFromContentHash and is only
+// consulted after IsolateClientControlledSessionKey has namespaced the result,
+// so distinct callers cannot collide (issue #7).
 func antigravityReasoningReplayScopeFromPayload(modelName string, payload []byte) antigravityReasoningReplayScope {
 	sessionID := antigravityReplaySessionIDFromPayload(payload)
-	if sessionID == "" {
-		if stable := strings.TrimSpace(generateStableSessionID(payload)); stable != "" {
-			sessionID = strings.TrimPrefix(stable, "-")
-			if sessionID == "" {
-				sessionID = stable
-			}
-		}
-	}
 	if sessionID == "" {
 		return antigravityReasoningReplayScope{}
 	}
@@ -43,21 +43,99 @@ func antigravityReasoningReplayScopeFromPayload(modelName string, payload []byte
 	}
 }
 
+// antigravityReasoningReplayScopeFromRequest resolves the replay scope with
+// the following priority (issue #9):
+//  1. Execution metadata sessionId (trusted server-issued)
+//  2. Client payload sessionId (client-controlled, namespaced by caller apiKey)
+//  3. Content-hash fallback anchored to the first user prompt (issue #7),
+//     also namespaced by caller apiKey so distinct tenants do not collide
+//
+// The result is always passed through IsolateClientControlledSessionKey so
+// tenant isolation is enforced. With the degraded-namespace fallback in
+// helps.IsolateClientControlledSessionKey (issue #8) the session key is no
+// longer cleared when userApiKey is absent, fixing the empty-key wipe noted
+// in issue #9.
 func antigravityReasoningReplayScopeFromRequest(ctx context.Context, modelName string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, payload []byte) antigravityReasoningReplayScope {
-	if scope := antigravityReasoningReplayScopeFromPayload(modelName, payload); scope.valid() {
-		return scope
-	}
-	if scope := antigravityReasoningReplayScopeFromPayload(modelName, req.Payload); scope.valid() {
-		return scope
-	}
+	scope := antigravityReasoningReplayScope{}
+	// 1. Trusted execution metadata takes precedence over client-controlled
+	//    payload sessionId (issue #9).
 	if value := metadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
-		return antigravityReasoningReplayScope{modelName: modelName, sessionKey: "execution:" + value}
+		scope = antigravityReasoningReplayScope{modelName: strings.TrimSpace(modelName), sessionKey: "execution:" + value}
+	} else if value := metadataString(req.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
+		scope = antigravityReasoningReplayScope{modelName: strings.TrimSpace(modelName), sessionKey: "execution:" + value}
+	} else if s := antigravityReasoningReplayScopeFromPayload(modelName, payload); s.valid() {
+		// 2. Client payload sessionId on the already-prepared payload.
+		scope = s
+	} else if s := antigravityReasoningReplayScopeFromPayload(modelName, req.Payload); s.valid() {
+		// 2b. Client payload sessionId on the original request body.
+		scope = s
+	} else {
+		// 3. Content-hash fallback (issue #7): no explicit sessionId anywhere.
+		//    Anchor to the first user prompt; IsolateClientControlledSessionKey
+		//    will namespace by caller so tenants do not collide.
+		if s := antigravityReasoningReplayScopeFromContentHash(modelName, payload); s.valid() {
+			scope = s
+		} else if s := antigravityReasoningReplayScopeFromContentHash(modelName, req.Payload); s.valid() {
+			scope = s
+		}
 	}
-	if value := metadataString(req.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); value != "" {
-		return antigravityReasoningReplayScope{modelName: modelName, sessionKey: "execution:" + value}
+	if !scope.valid() {
+		return antigravityReasoningReplayScope{}
 	}
-	_ = ctx
-	return antigravityReasoningReplayScope{}
+	// Apply tenant isolation. With the degraded-namespace fallback in
+	// IsolateClientControlledSessionKey (issue #8), this no longer clears
+	// the key when userApiKey is absent (issue #9).
+	scope.sessionKey = helps.IsolateClientControlledSessionKey(ctx, scope.sessionKey)
+	if !scope.valid() {
+		return antigravityReasoningReplayScope{}
+	}
+	return scope
+}
+
+// antigravityReasoningReplayScopeFromContentHash derives a session scope from
+// the first user message in a Gemini-style payload. The resulting sessionKey is
+// namespaced by IsolateClientControlledSessionKey downstream so distinct tenants
+// with identical first prompts cannot share replay state. This restores the
+// thought_signature replay continuity that the original content-hash fallback
+// provided before tenant-isolation hardening removed it (issue #7).
+func antigravityReasoningReplayScopeFromContentHash(modelName string, payload []byte) antigravityReasoningReplayScope {
+	if len(payload) == 0 {
+		return antigravityReasoningReplayScope{}
+	}
+	contents := gjson.GetBytes(payload, "request.contents")
+	if !contents.IsArray() {
+		return antigravityReasoningReplayScope{}
+	}
+	hasher := sha256.New()
+	found := false
+	for _, content := range contents.Array() {
+		role := strings.ToLower(strings.TrimSpace(content.Get("role").String()))
+		if role != "user" {
+			continue
+		}
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			continue
+		}
+		for _, part := range parts.Array() {
+			text := strings.TrimSpace(part.Get("text").String())
+			if text == "" {
+				continue
+			}
+			hasher.Write([]byte(text))
+			hasher.Write([]byte{0})
+			found = true
+		}
+		break // only first user message
+	}
+	if !found {
+		return antigravityReasoningReplayScope{}
+	}
+	sum := hasher.Sum(nil)
+	return antigravityReasoningReplayScope{
+		modelName:  strings.TrimSpace(modelName),
+		sessionKey: "content:" + hex.EncodeToString(sum[:16]),
+	}
 }
 
 func antigravityReplaySessionIDFromPayload(payload []byte) string {

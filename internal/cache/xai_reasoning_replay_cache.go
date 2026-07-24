@@ -76,7 +76,12 @@ const (
 	// cacheable reasoning batch (for example reasoning disabled).
 	XAIReasoningReplayNoReplayableState
 	// XAIReasoningReplayStoreBackendError means normalize succeeded but the
-	// storage backend failed; previous entries should be retained.
+	// storage backend failed. The completed-turn cache writer
+	// (cacheXAIReasoningReplayFromCompleted) intentionally deletes any prior
+	// entry under this status so a stale encrypted reasoning block from an
+	// earlier turn is not injected into the now-advanced conversation; callers
+	// that prefer "retain on backend error" semantics must implement their own
+	// retry / fallback rather than relying on the cache layer to preserve state.
 	XAIReasoningReplayStoreBackendError
 )
 

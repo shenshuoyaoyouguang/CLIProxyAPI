@@ -28,6 +28,7 @@ type staticModelsJSON struct {
 	Kimi        []*ModelInfo `json:"kimi"`
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
+	DeepSeek    []*ModelInfo `json:"deepseek"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -108,6 +109,11 @@ func AntigravityWebSearchModelFor(modelID string) string {
 // GetXAIModels returns the standard xAI Grok model definitions.
 func GetXAIModels() []*ModelInfo {
 	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
+}
+
+// GetDeepSeekModels returns the standard DeepSeek model definitions.
+func GetDeepSeekModels() []*ModelInfo {
+	return cloneModelInfos(getModels().DeepSeek)
 }
 
 // WithCodexBuiltins injects hard-coded Codex-only model definitions that should
@@ -277,6 +283,7 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - kimi
 //   - antigravity
 //   - xai
+//   - deepseek
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
@@ -296,6 +303,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAntigravityModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
+	case "deepseek":
+		return GetDeepSeekModels()
 	default:
 		return nil
 	}
@@ -318,6 +327,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Kimi,
 		data.Antigravity,
 		data.XAI,
+		data.DeepSeek,
 	}
 	for _, models := range allModels {
 		for _, m := range models {

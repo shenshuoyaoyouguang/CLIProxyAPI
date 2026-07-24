@@ -87,9 +87,10 @@ func TestCodexWebsocketsExecuteRestoresClaudeAgentReasoningReplay(t *testing.T) 
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
 	encryptedContent := validCodexReasoningEncryptedContentForTestSeed(31)
+	sessionKey := codexIsolatedReplaySessionKey("codex-ws-caller", "claude:ws-replay-session:agent:agent-a")
 	cacheCodexReasoningReplayFromCompleted(codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
-		sessionKey: "claude:ws-replay-session:agent:agent-a",
+		sessionKey: sessionKey,
 	}, []byte(`{"response":{"output":[`+
 		`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+encryptedContent+`"},`+
 		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"previous answer"}]}`+
@@ -134,7 +135,7 @@ func TestCodexWebsocketsExecuteRestoresClaudeAgentReasoningReplay(t *testing.T) 
 	headers.Set("X-Claude-Code-Agent-Id", "agent-a")
 	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude"), Headers: headers}
 
-	if _, errExecute := exec.Execute(context.Background(), auth, req, opts); errExecute != nil {
+	if _, errExecute := exec.Execute(testContextWithAPIKey("codex-ws-caller"), auth, req, opts); errExecute != nil {
 		t.Fatalf("Execute() error = %v", errExecute)
 	}
 
@@ -159,7 +160,10 @@ func TestClearCodexReasoningReplayOnWebsocketInvalidSignature(t *testing.T) {
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
-	scope := codexReasoningReplayScope{modelName: "gpt-5.4", sessionKey: "claude:ws-invalid:agent:main"}
+	scope := codexReasoningReplayScope{
+		modelName:  "gpt-5.4",
+		sessionKey: codexIsolatedReplaySessionKey("codex-ws-caller", "claude:ws-invalid:agent:main"),
+	}
 	encryptedContent := validCodexReasoningEncryptedContentForTestSeed(32)
 	if !internalcache.CacheCodexReasoningReplayItem(scope.modelName, scope.sessionKey, []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+encryptedContent+`"}`)) {
 		t.Fatal("failed to seed websocket replay cache")
