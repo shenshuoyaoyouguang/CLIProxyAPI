@@ -166,7 +166,15 @@ func (r *UsageReporter) MarkFirstResponseByte() {
 	if start.IsZero() {
 		return
 	}
-	r.setTTFT(time.Since(start))
+	elapsed := time.Since(start)
+	// On some platforms (notably Windows QPC) time.Since can return 0 when the
+	// round trip completes within a single timer tick. We still observed the
+	// first response byte, so clamp to a minimal positive duration to preserve
+	// the "TTFT is set once, non-zero" invariant instead of latching 0.
+	if elapsed <= 0 {
+		elapsed = time.Nanosecond
+	}
+	r.setTTFT(elapsed)
 }
 
 func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.Detail) (usage.Record, bool) {
