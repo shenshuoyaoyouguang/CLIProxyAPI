@@ -24,9 +24,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 
 ## Architecture
 - `cmd/server/` — Server entrypoint
-- `internal/api/` — Gin HTTP API (routes, middleware, modules)
-- `internal/api/modules/amp/` — Amp integration (Amp-style routes + reverse proxy)
-- `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
+- `internal/api/` — Gin HTTP API (routes, middleware, protocol multiplexer, management handlers)
+- `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Multi-turn CoT field hygiene is orthogonal (`multi_turn_passback.go` / DeepSeek in `deepseek_passback.go`); OpenAI-compat chat goes through `internal/runtime/executor/helps/openai_compat_chat_prepare.go` (`PrepareOpenAICompatChatBody`). Do not break this "canonical representation → per-provider translation" architecture, and do not fold passback into `ApplyThinking`.
 - `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket)
 - `internal/translator/` — Provider protocol translators (and shared `common`)
 - `internal/registry/` — Model registry + remote updater (`StartModelsUpdater`); `--local-model` disables remote updates
@@ -35,7 +34,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `internal/cache/` — Request signature caching
 - `internal/watcher/` — Config hot-reload and watchers
 - `internal/wsrelay/` — WebSocket relay sessions
-- `internal/usage/` — Usage and token accounting
+- `sdk/cliproxy/usage/` — Usage manager, plugins, and canonical token accounting (`TokenAccountingSchemaVersion`)
+- `internal/redisqueue/` — Redis usage-queue plugin (registers on `sdk/cliproxy/usage`)
 - `internal/tui/` — Bubbletea terminal UI (`--tui`, `--standalone`)
 - `sdk/cliproxy/` — Embeddable SDK entry (service/builder/watchers/pipeline)
 - `test/` — Cross-module integration tests

@@ -1,0 +1,33 @@
+# golangci-lint v2 config (local / optional; not enforced in upstream CI).
+# Run: golangci-lint run ./...
+# Or:  ./build-optimized.ps1 -WithLint
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+    paths:
+      - examples$
+      - third_party$
+      - builtin$
+
+issues:
+  # Large existing tree: only report issues introduced vs the merge base / dirty tree.
+  # Drop `new: true` once the baseline is clean if you want full-tree enforcement.
+  new: true
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

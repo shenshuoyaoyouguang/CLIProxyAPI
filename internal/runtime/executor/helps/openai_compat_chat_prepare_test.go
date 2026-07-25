@@ -1,7 +1,9 @@
 package helps
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -338,5 +340,152 @@ func TestPrepareOpenAICompatChatBody_CountTokensOmitsPayloadConfig(t *testing.T)
 	}
 	if !gjson.GetBytes(countOut, "messages.0.reasoning_content").Exists() {
 		t.Error("CountTokens body missing passback reasoning_content")
+	}
+}
+
+// TestPrepareOpenAICompatChatBody_CodexDesktopDeepSeekV4MultiTurnToolCall
+// 验证 Codex Desktop + DeepSeek V4 + 多轮 tool call 场景下,多 agent v2 归一化
+// 与 DeepSeek passback 的协同行为。
+//
+// 协同安全点(冲突核实结论):
+//   - 多 agent v2 把 agent_message 转成 role=user,encrypted_content 转成 input_text
+//   - DeepSeek passback 只处理 role==assistant 的 reasoning_content
+//   - 因此 user 消息(来自 agent_message 归一化)不会被误注入空字符串 reasoning_content
+//
+// 本测试分两步,模拟 openai_compat_executor.go 的调用顺序:
+//  1. 调用 RewriteCodexMultiAgentV2Input 验证归一化(Responses API 格式)
+//  2. 模拟翻译后调用 PrepareOpenAICompatChatBody 验证 passback(Chat 格式)
+func TestPrepareOpenAICompatChatBody_CodexDesktopDeepSeekV4MultiTurnToolCall(t *testing.T) {
+	// --- 步骤 1:多 agent v2 归一化 ---
+
+	// 构造 Codex Desktop 的 Responses API payload(含 agent_message + encrypted_content
+	// + assistant 消息带 thinking + function_call + function_call_output)
+	responsesPayload := []byte(`{
+		"model": "deepseek-v4-pro",
+		"thinking": {"type": "enabled"},
+		"input": [
+			{
+				"type": "agent_message",
+				"content": [
+					{"type": "encrypted_content", "encrypted_content": "user-via-codex-encrypted"}
+				]
+			},
+			{
+				"type": "message",
+				"role": "assistant",
+				"content": [
+					{"type": "thinking", "thinking": "Need to call get_weather for Hangzhou."},
+					{"type": "text", "text": "Let me check the weather."}
+				]
+			},
+			{
+				"type": "function_call",
+				"call_id": "c1",
+				"name": "get_weather",
+				"arguments": "{}"
+			},
+			{
+				"type": "function_call_output",
+				"call_id": "c1",
+				"output": "sunny"
+			}
+		]
+	}`)
+
+	headers := http.Header{"User-Agent": []string{"Codex Desktop/0.146.0-alpha.3"}}
+	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
+
+	// 归一化(模拟 openai_compat_executor.go L114-115 的 TranslateRequestWithCodexMultiAgentV2 内部归一化)
+	normalized := RewriteCodexMultiAgentV2Input(context.Background(), headers, responsesPayload, cfg)
+
+	// 验证归一化结果
+	// 1. agent_message 被转成 message + role=user
+	firstItem := gjson.GetBytes(normalized, "input.0")
+	if firstItem.Get("type").String() != "message" {
+		t.Fatalf("agent_message type = %q, want message", firstItem.Get("type").String())
+	}
+	if firstItem.Get("role").String() != "user" {
+		t.Fatalf("agent_message role = %q, want user", firstItem.Get("role").String())
+	}
+	// 2. encrypted_content 被转成 input_text
+	if contentType := gjson.GetBytes(normalized, "input.0.content.0.type").String(); contentType != "input_text" {
+		t.Fatalf("encrypted_content type = %q, want input_text", contentType)
+	}
+	if text := gjson.GetBytes(normalized, "input.0.content.0.text").String(); text != "user-via-codex-encrypted" {
+		t.Fatalf("input_text = %q, want user-via-codex-encrypted", text)
+	}
+	if gjson.GetBytes(normalized, "input.0.content.0.encrypted_content").Exists() {
+		t.Fatal("encrypted_content field should be removed after normalization")
+	}
+
+	// --- 步骤 2:DeepSeek passback ---
+
+	// 模拟翻译器把 Responses API input 转成 Chat API messages
+	// (翻译器实现复杂,这里手动构造翻译后的 Chat 格式,聚焦验证 passback 协同行为)
+	chatBody := []byte(`{
+		"model": "deepseek-v4-pro",
+		"thinking": {"type": "enabled"},
+		"messages": [
+			{
+				"role": "user",
+				"content": "user-via-codex-encrypted"
+			},
+			{
+				"role": "assistant",
+				"content": "Let me check the weather.",
+				"thinking_blocks": [{"type": "thinking", "thinking": "Need to call get_weather for Hangzhou."}],
+				"tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}]
+			},
+			{
+				"role": "tool",
+				"tool_call_id": "c1",
+				"content": "sunny"
+			},
+			{
+				"role": "user",
+				"content": "Thanks, what about tomorrow?"
+			}
+		]
+	}`)
+
+	out, err := PrepareOpenAICompatChatBody(OpenAICompatChatPrepareInput{
+		Body:          chatBody,
+		ModelForApply: "deepseek-v4-pro",
+		BaseModel:     "deepseek-v4-pro",
+		FromFormat:    "openai",
+		WireToFormat:  "openai",
+		ProviderKey:   "opencode",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 验证 passback 行为
+	messages := gjson.GetBytes(out, "messages").Array()
+	if len(messages) != 4 {
+		t.Fatalf("messages count = %d, want 4", len(messages))
+	}
+
+	// 关键安全点 1:assistant 消息的 thinking_blocks 被提升到 reasoning_content
+	assistantRC := messages[1].Get("reasoning_content").String()
+	if assistantRC != "Need to call get_weather for Hangzhou." {
+		t.Fatalf("assistant reasoning_content = %q, want lifted CoT", assistantRC)
+	}
+	// assistant 的 tool_calls 保留
+	if !messages[1].Get("tool_calls.0").Exists() {
+		t.Fatal("assistant tool_calls should be preserved")
+	}
+
+	// 关键安全点 2:user 消息(来自 agent_message 归一化)和 tool 消息不被注入 reasoning_content
+	// 这是两套优化协同的核心安全点:DeepSeek passback 只处理 role==assistant,
+	// 不会误把空字符串 reasoning_content 注入到 user/tool 消息(否则会触发 400 或 CoT 污染)
+	for i, msg := range messages {
+		role := msg.Get("role").String()
+		if role == "user" || role == "tool" {
+			if rc := msg.Get("reasoning_content"); rc.Exists() {
+				t.Fatalf("messages.%d (role=%s) must not have reasoning_content injected; got %q",
+					i, role, rc.String())
+			}
+		}
 	}
 }
