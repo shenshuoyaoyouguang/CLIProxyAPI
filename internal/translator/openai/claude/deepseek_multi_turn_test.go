@@ -202,8 +202,7 @@ func TestMultiTurnThinkingLift_MultipleThinkingBlocks(t *testing.T) {
 }
 
 // TestMultiTurnThinkingLift_DeprecatedReasoner verifies that the deprecated
-// deepseek-reasoner model (which maps to v4-flash thinking mode upstream) also
-// gets the lift. This keeps the deprecated alias consistent with V4.
+// deepseek-reasoner model (removed from models.json) does NOT receive passback.
 func TestMultiTurnThinkingLift_DeprecatedReasoner(t *testing.T) {
 	const thinkingText = "reasoning via deprecated alias"
 	inputJSON := `{
@@ -230,13 +229,15 @@ func TestMultiTurnThinkingLift_DeprecatedReasoner(t *testing.T) {
 		if msg.Get("role").String() != "assistant" {
 			continue
 		}
-		if got := msg.Get("reasoning_content").String(); got != thinkingText {
-			t.Errorf("deepseek-reasoner: reasoning_content = %q, want %q", got, thinkingText)
+		if msg.Get("reasoning_content").Exists() {
+			t.Errorf("deepseek-reasoner: must not receive passback after removal, got reasoning_content=%q",
+				msg.Get("reasoning_content").String())
 		}
 	}
 }
 
-// TestMultiTurnThinkingLift_V31Model verifies deepseek-v3.1 is in the passback set.
+// TestMultiTurnThinkingLift_V31Model verifies deepseek-v3.1 (removed from models.json)
+// does NOT receive passback.
 func TestMultiTurnThinkingLift_V31Model(t *testing.T) {
 	const thinkingText = "v3.1 multi-turn cot"
 	inputJSON := `{
@@ -254,8 +255,9 @@ func TestMultiTurnThinkingLift_V31Model(t *testing.T) {
 		if msg.Get("role").String() != "assistant" {
 			continue
 		}
-		if got := msg.Get("reasoning_content").String(); got != thinkingText {
-			t.Errorf("deepseek-v3.1: reasoning_content = %q, want %q", got, thinkingText)
+		if msg.Get("reasoning_content").Exists() {
+			t.Errorf("deepseek-v3.1: must not receive passback after removal, got reasoning_content=%q",
+				msg.Get("reasoning_content").String())
 		}
 	}
 }

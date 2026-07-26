@@ -28,6 +28,7 @@ var nativeProviderAppliers = map[string]ProviderApplier{
 	"kimi":        nil,
 	"xai":         nil,
 	"deepseek":    nil,
+	"nvidia":      nil,
 }
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.
@@ -425,6 +426,8 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 		return extractDeepSeekConfig(body)
 	case "kimi":
 		return extractKimiConfig(body)
+	case "nvidia":
+		return extractNvidiaConfig(body)
 	default:
 		return ThinkingConfig{}
 	}
@@ -801,4 +804,41 @@ func extractDeepSeekConfig(body []byte) ThinkingConfig {
 	}
 
 	return ThinkingConfig{}
+}
+
+// extractNvidiaConfig extracts thinking configuration from NVIDIA format request body.
+//
+// NVIDIA Nemotron API format:
+//   - enable_thinking: true/false (primary toggle)
+//   - reasoning_budget: integer (optional token budget)
+//   - medium_effort: true/false (reduced thinking depth)
+//
+// Falls back to reasoning_effort for cross-compatibility with OpenAI format clients.
+func extractNvidiaConfig(body []byte) ThinkingConfig {
+	// Check enable_thinking first (NVIDIA-native)
+	enabled := gjson.GetBytes(body, "enable_thinking")
+	if enabled.Exists() {
+		if !enabled.Bool() {
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		}
+
+		// Check medium_effort for level mapping
+		if effort := gjson.GetBytes(body, "medium_effort"); effort.Exists() && effort.Bool() {
+			return ThinkingConfig{Mode: ModeLevel, Level: LevelLow}
+		}
+
+		// Check reasoning_budget
+		if budget := gjson.GetBytes(body, "reasoning_budget"); budget.Exists() {
+			value := int(budget.Int())
+			if value > 0 {
+				return ThinkingConfig{Mode: ModeBudget, Budget: value}
+			}
+		}
+
+		// Thinking enabled without specific config - treat as auto
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+	}
+
+	// Fall back to reasoning_effort (OpenAI-compat client compatibility)
+	return extractOpenAIConfig(body)
 }

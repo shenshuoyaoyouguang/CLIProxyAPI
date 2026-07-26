@@ -55,6 +55,8 @@ func StripThinkingConfig(body []byte, provider string) []byte {
 			"reasoning_effort",
 			"thinking",
 		}
+	case "nvidia":
+		paths = []string{"reasoning_effort", "enable_thinking", "medium_effort", "reasoning_budget"}
 	case "codex", "xai":
 		paths = []string{"reasoning.effort"}
 	default:

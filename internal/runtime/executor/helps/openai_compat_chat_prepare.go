@@ -1,6 +1,8 @@
 package helps
 
 import (
+	"strings"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 )
 
@@ -32,6 +34,7 @@ type OpenAICompatChatPrepareInput struct {
 // openAICompatThinkingRoute selects ApplyThinking toFormat/providerKey.
 // DeepSeek passback models must use the deepseek applier (thinking.type +
 // reasoning_effort) even though the wire format remains OpenAI chat completions.
+// NVIDIA models must use the nvidia applier (enable_thinking + reasoning_budget).
 func openAICompatThinkingRoute(baseModel, toFormat, providerKey string) (thinkingTo, thinkingProvider string) {
 	thinkingTo = toFormat
 	thinkingProvider = providerKey
@@ -39,7 +42,26 @@ func openAICompatThinkingRoute(baseModel, toFormat, providerKey string) (thinkin
 		thinkingTo = "deepseek"
 		thinkingProvider = "deepseek"
 	}
+	if isNvidiaModel(baseModel) {
+		thinkingTo = "nvidia"
+		thinkingProvider = "nvidia"
+	}
 	return thinkingTo, thinkingProvider
+}
+
+// isNvidiaModel reports whether the model is an NVIDIA model that should use
+// the nvidia thinking applier for enable_thinking / reasoning_budget params.
+func isNvidiaModel(model string) bool {
+	m := thinking.NormalizeDeepSeekModelID(model)
+	if m == "" {
+		return false
+	}
+	// Canonical ID, alias, and common abbreviations
+	switch m {
+	case "nemotron-3-ultra", "550b-a55b", "nvidia-nemotron-3":
+		return true
+	}
+	return strings.HasPrefix(m, "nemotron-") || strings.HasPrefix(m, "550b-") || strings.HasPrefix(m, "nvidia-nemotron-")
 }
 
 // PrepareOpenAICompatChatBody runs:

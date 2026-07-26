@@ -89,12 +89,13 @@ func TestEnsureMultiTurnReasoningPassback_NonV4DeepSeek(t *testing.T) {
 }
 
 func TestEnsureMultiTurnReasoningPassback_DeprecatedReasoner(t *testing.T) {
+	// deepseek-reasoner is removed; must not receive passback.
 	body := []byte(`{"model":"deepseek-reasoner","reasoning_effort":"high","messages":[
-		{"role":"assistant","content":"thinking...","tool_calls":[{"id":"c1","type":"function","function":{"name":"test","arguments":"{}"}}]}
-	]}`)
+			{"role":"assistant","content":"thinking...","tool_calls":[{"id":"c1","type":"function","function":{"name":"test","arguments":"{}"}}]}
+		]}`)
 	result := EnsureMultiTurnReasoningPassback(body, "deepseek-reasoner")
-	if !gjson.GetBytes(result, "messages.0.reasoning_content").Exists() {
-		t.Error("deepseek-reasoner: reasoning_content not back-filled")
+	if gjson.GetBytes(result, "messages.0.reasoning_content").Exists() {
+		t.Error("deepseek-reasoner must not receive passback after removal")
 	}
 }
 
@@ -254,23 +255,24 @@ func TestEnsureMultiTurnReasoningPassback_LiftActivatesGateWithoutRequestFlag(t 
 }
 
 func TestEnsureMultiTurnReasoningPassback_V31Model(t *testing.T) {
-	// P1-2: deepseek-v3.1 must receive passback.
+	// deepseek-v3.1 is removed; must not receive passback.
 	body := []byte(`{"model":"deepseek-v3.1","reasoning_effort":"high","messages":[
-		{"role":"assistant","content":"hello"}
-	]}`)
+			{"role":"assistant","content":"hello"}
+		]}`)
 	result := EnsureMultiTurnReasoningPassback(body, "deepseek-v3.1")
-	if !gjson.GetBytes(result, "messages.0.reasoning_content").Exists() {
-		t.Error("deepseek-v3.1: reasoning_content not back-filled")
+	if gjson.GetBytes(result, "messages.0.reasoning_content").Exists() {
+		t.Error("deepseek-v3.1 must not receive passback after removal")
 	}
 }
 
 func TestEnsureMultiTurnReasoningPassback_V31Lift(t *testing.T) {
+	// deepseek-v3.1 is removed; must not receive passback.
 	body := []byte(`{"model":"deepseek-v3.1","thinking":{"type":"enabled"},"messages":[
-		{"role":"assistant","thinking_blocks":[{"type":"thinking","thinking":"v3.1 cot"}],"content":""}
-	]}`)
+			{"role":"assistant","thinking_blocks":[{"type":"thinking","thinking":"v3.1 cot"}],"content":""}
+		]}`)
 	result := EnsureMultiTurnReasoningPassback(body, "deepseek-v3.1")
-	if got := gjson.GetBytes(result, "messages.0.reasoning_content").String(); got != "v3.1 cot" {
-		t.Errorf("v3.1 lift = %q", got)
+	if gjson.GetBytes(result, "messages.0.reasoning_content").Exists() {
+		t.Error("deepseek-v3.1 must not receive passback after removal")
 	}
 }
 

@@ -97,7 +97,7 @@ func TestDeepSeekModelsDeserializedFromCatalog(t *testing.T) {
 		}
 		seen[m.ID] = true
 	}
-	for _, want := range []string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.1", "deepseek-chat", "deepseek-reasoner"} {
+	for _, want := range []string{"deepseek-v4-pro", "deepseek-v4-flash"} {
 		if !seen[want] {
 			t.Errorf("deepseek models missing %q", want)
 		}
@@ -122,18 +122,6 @@ func TestLookupStaticModelInfoFindsDeepSeek(t *testing.T) {
 	}
 	if info.ID != "deepseek-v4-pro" {
 		t.Errorf("LookupStaticModelInfo returned ID %q, want deepseek-v4-pro", info.ID)
-	}
-}
-
-// TestDeepSeekChatHasNoThinkingBlock verifies that deepseek-chat no longer
-// declares thinking capability since it maps to non-thinking mode (issue #14).
-func TestDeepSeekChatHasNoThinkingBlock(t *testing.T) {
-	info := LookupStaticModelInfo("deepseek-chat")
-	if info == nil {
-		t.Fatal("LookupStaticModelInfo(deepseek-chat) = nil")
-	}
-	if info.Thinking != nil {
-		t.Errorf("deepseek-chat Thinking = %#v, want nil (non-thinking mode)", info.Thinking)
 	}
 }
 

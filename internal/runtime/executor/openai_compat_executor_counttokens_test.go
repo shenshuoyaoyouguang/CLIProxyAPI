@@ -19,7 +19,7 @@ import (
 // match the upstream body (thinking+passback phases; PayloadConfig residual OK).
 //
 // Strategy:
-//  1. Multi-turn deepseek-reasoner request that triggers passback; capture the
+//  1. Multi-turn deepseek-v4-flash request that triggers passback; capture the
 //     body Execute sends upstream.
 //  2. Assert assistant reasoning_content was back-filled (empty string).
 //  3. CountTokens must succeed with prompt_tokens > 0; deepseek-chat (no
@@ -50,10 +50,10 @@ func TestCountTokensMirrorsExecuteDeepSeekReasoningPassback(t *testing.T) {
 		"api_key":  "test",
 	}}
 
-	// Multi-turn: assistant has tool_calls but no reasoning_content → Phase 2 fill.
-	// reasoning_effort=low opens the DeepSeek thinking-active gate.
+// Multi-turn: assistant has tool_calls but no reasoning_content → Phase 2 fill.
+// reasoning_effort=low opens the DeepSeek thinking-active gate.
 	payload := []byte(`{
-			"model": "deepseek-reasoner",
+			"model": "deepseek-v4-flash",
 			"reasoning_effort": "low",
 			"messages": [
 				{"role": "user", "content": "lookup weather"},
@@ -64,7 +64,7 @@ func TestCountTokensMirrorsExecuteDeepSeekReasoningPassback(t *testing.T) {
 
 	// 1. Execute path: upstream must receive back-filled reasoning_content.
 	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "deepseek-reasoner",
+		Model:   "deepseek-v4-flash",
 		Payload: payload,
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("openai"),
@@ -83,7 +83,7 @@ func TestCountTokensMirrorsExecuteDeepSeekReasoningPassback(t *testing.T) {
 
 	// 2. CountTokens path: no error and non-zero count.
 	countResp, err := executor.CountTokens(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "deepseek-reasoner",
+		Model:   "deepseek-v4-flash",
 		Payload: payload,
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("openai"),

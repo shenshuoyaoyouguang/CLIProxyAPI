@@ -2566,7 +2566,7 @@
       "version": "deepseek-v4-pro",
       "description": "DeepSeek's most capable model, featuring thinking mode with chain-of-thought reasoning. Supports reasoning_effort control: low/medium are mapped to high, xhigh is mapped to max by the server.",
       "context_length": 1000000,
-      "max_completion_tokens": 8192,
+      "max_completion_tokens": 384000,
       "supported_parameters": [
         "tools"
       ],
@@ -2592,7 +2592,7 @@
       "version": "deepseek-v4-flash",
       "description": "DeepSeek's faster, more efficient model with thinking mode support. Supports reasoning_effort control.",
       "context_length": 1000000,
-      "max_completion_tokens": 8192,
+      "max_completion_tokens": 384000,
       "supported_parameters": [
         "tools"
       ],
@@ -2607,63 +2607,70 @@
         "zero_allowed": true,
         "dynamic_allowed": true
       }
-    },
+    }
+  ],
+  "nvidia": [
     {
-      "id": "deepseek-v3.1",
+      "id": "nemotron-3-ultra",
       "object": "model",
-      "created": 1773705600,
-      "owned_by": "deepseek",
-      "type": "deepseek",
-      "display_name": "DeepSeek V3.1",
-      "version": "deepseek-v3.1",
-      "description": "DeepSeek V3.1 with thinking mode support. Supports reasoning_effort control.",
-      "context_length": 65536,
-      "max_completion_tokens": 8192,
+      "created": 1779235200,
+      "owned_by": "nvidia",
+      "type": "nvidia",
+      "display_name": "NVIDIA Nemotron 3 Ultra 550B-A55B",
+      "description": "NVIDIA's most capable model with thinking/reasoning mode and tool calling support.",
+      "context_length": 1000000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
       "thinking": {
+        "zero_allowed": true,
         "levels": [
           "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "zero_allowed": true,
-        "dynamic_allowed": true
+          "high"
+        ]
       }
     },
     {
-      "id": "deepseek-chat",
+      "id": "550B-A55B",
       "object": "model",
-      "created": 1772496000,
-      "owned_by": "deepseek",
-      "type": "deepseek",
-      "display_name": "DeepSeek Chat (Deprecated)",
-      "version": "deepseek-chat",
-      "description": "[Deprecated on 2026/07/24] Maps to deepseek-v4-flash non-thinking mode. Use deepseek-v4-flash instead.",
+      "created": 1779235200,
+      "owned_by": "nvidia",
+      "type": "nvidia",
+      "display_name": "NVIDIA Nemotron 3 Ultra 550B-A55B",
+      "description": "Short alias for NVIDIA Nemotron 3 Ultra 550B-A55B.",
       "context_length": 1000000,
-      "max_completion_tokens": 8192
-    },
-    {
-      "id": "deepseek-reasoner",
-      "object": "model",
-      "created": 1772496000,
-      "owned_by": "deepseek",
-      "type": "deepseek",
-      "display_name": "DeepSeek Reasoner (Deprecated)",
-      "version": "deepseek-reasoner",
-      "description": "[Deprecated on 2026/07/24] Maps to deepseek-v4-flash thinking mode. Use deepseek-v4-flash instead.",
-      "context_length": 1000000,
-      "max_completion_tokens": 8192,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
       "thinking": {
+        "zero_allowed": true,
         "levels": [
           "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "nvidia-nemotron-3",
+      "object": "model",
+      "created": 1779235200,
+      "owned_by": "nvidia",
+      "type": "nvidia",
+      "display_name": "NVIDIA Nemotron 3",
+      "description": "Short alias for NVIDIA Nemotron 3 Ultra 550B-A55B.",
+      "context_length": 1000000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
         "zero_allowed": true,
-        "dynamic_allowed": true
+        "levels": [
+          "low",
+          "high"
+        ]
       }
     }
   ]

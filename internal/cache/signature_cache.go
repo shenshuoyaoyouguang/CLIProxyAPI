@@ -79,7 +79,7 @@ func hashText(text string) string {
 // during the upgrade window (issue #10). New writes always use hashText.
 func hashTextLegacy(text string) string {
 	h := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(h[:legacySignatureTextHashLen / 2])
+	return hex.EncodeToString(h[:legacySignatureTextHashLen/2])
 }
 
 // getOrCreateGroupCache gets or creates a cache bucket for a model group

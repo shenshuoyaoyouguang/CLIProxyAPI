@@ -409,8 +409,6 @@ nonstream-keepalive-interval: 0
 #       # Requests to that alias will round-robin across the upstream names below,
 #       # and if the chosen upstream fails before producing output, the request will
 #       # continue with the next upstream model in the same alias pool.
-#       - name: "deepseek-v3.1"
-#         alias: "claude-opus-4.66"
 #       - name: "glm-5"
 #         alias: "claude-opus-4.66"
 #       - name: "kimi-k2.5"

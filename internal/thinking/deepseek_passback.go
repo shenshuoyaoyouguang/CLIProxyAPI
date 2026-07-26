@@ -23,19 +23,18 @@ func NormalizeDeepSeekModelID(model string) string {
 }
 
 // RequiresDeepSeekReasoningPassback reports whether the model requires
-// reasoning_content multi-turn passback (DeepSeek V4 / V3.1 thinking mode, and
-// the deprecated deepseek-reasoner alias that maps to v4-flash thinking mode).
+// reasoning_content multi-turn passback (DeepSeek V4 thinking mode).
 //
 // deepseek-chat is intentionally excluded: it maps to v4-flash non-thinking mode
 // and must not receive passback injection. models.json also omits the thinking
 // block for this id so ApplyThinking does not advertise levels for chat mode.
 func RequiresDeepSeekReasoningPassback(model string) bool {
 	m := NormalizeDeepSeekModelID(model)
-	if m == "" || m == "deepseek-chat" {
+	if m == "" {
 		return false
 	}
 	switch m {
-	case "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.1", "deepseek-reasoner":
+	case "deepseek-v4-pro", "deepseek-v4-flash":
 		return true
 	}
 	// Future V4 aliases / regional ids. Use prefix match (stricter than
