@@ -862,6 +862,7 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.ResponseInterceptor != nil ||
 		caps.StreamChunkInterceptor != nil ||
 		caps.ThinkingApplier != nil ||
+		caps.ThinkingExtractor != nil ||
 		caps.UsagePlugin != nil ||
 		caps.CommandLinePlugin != nil ||
 		caps.ManagementAPI != nil

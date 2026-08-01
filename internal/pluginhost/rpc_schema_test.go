@@ -103,6 +103,34 @@ func TestRPCCapabilitiesIncludeModelRouter(t *testing.T) {
 	}
 }
 
+func TestRPCCapabilitiesIncludeThinkingExtractor(t *testing.T) {
+	plugin := pluginapi.Plugin{
+		Capabilities: pluginapi.Capabilities{
+			ThinkingExtractor: testThinkingExtractorCapability{provider: "plugin-extractor"},
+		},
+	}
+
+	caps := rpcCapabilitiesFromPlugin(plugin)
+	if !caps.ThinkingExtractor {
+		t.Fatal("ThinkingExtractor = false, want true")
+	}
+
+	raw, errMarshal := json.Marshal(caps)
+	if errMarshal != nil {
+		t.Fatalf("Marshal() error = %v", errMarshal)
+	}
+	if !json.Valid(raw) {
+		t.Fatalf("marshaled capabilities are invalid JSON: %s", raw)
+	}
+	var decoded map[string]any
+	if errUnmarshal := json.Unmarshal(raw, &decoded); errUnmarshal != nil {
+		t.Fatalf("Unmarshal() error = %v", errUnmarshal)
+	}
+	if decoded["thinking_extractor"] != true {
+		t.Fatalf("thinking_extractor = %#v, want true", decoded["thinking_extractor"])
+	}
+}
+
 func TestRegisterRPCPluginSendsHostSchemaVersion(t *testing.T) {
 	lookup := newTestSymbolLookup(&testPlugin{
 		registerResult: validTestPlugin("schema"),

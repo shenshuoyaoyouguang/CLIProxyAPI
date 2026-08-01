@@ -54,10 +54,13 @@ func (l *testSymbolLookup) Call(ctx context.Context, method string, request []by
 	case pluginabi.MethodPluginReconfigure:
 		return l.callLifecycle(request, true)
 	case pluginabi.MethodThinkingIdentifier:
-		if l.active.Capabilities.ThinkingApplier == nil {
-			return nil, fmt.Errorf("missing thinking applier")
+		if l.active.Capabilities.ThinkingApplier != nil {
+			return marshalRPCResult(rpcIdentifierResponse{Identifier: l.active.Capabilities.ThinkingApplier.Identifier()})
 		}
-		return marshalRPCResult(rpcIdentifierResponse{Identifier: l.active.Capabilities.ThinkingApplier.Identifier()})
+		if l.active.Capabilities.ThinkingExtractor != nil {
+			return marshalRPCResult(rpcIdentifierResponse{Identifier: l.active.Capabilities.ThinkingExtractor.Identifier()})
+		}
+		return nil, fmt.Errorf("missing thinking capability")
 	case pluginabi.MethodThinkingApply:
 		var req pluginapi.ThinkingApplyRequest
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
@@ -66,6 +69,19 @@ func (l *testSymbolLookup) Call(ctx context.Context, method string, request []by
 		resp, errApply := l.active.Capabilities.ThinkingApplier.ApplyThinking(ctx, req)
 		if errApply != nil {
 			return nil, errApply
+		}
+		return marshalRPCResult(resp)
+	case pluginabi.MethodThinkingExtract:
+		if l.active.Capabilities.ThinkingExtractor == nil {
+			return nil, fmt.Errorf("missing thinking extractor")
+		}
+		var req pluginapi.ThinkingExtractRequest
+		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		resp, errExtract := l.active.Capabilities.ThinkingExtractor.ExtractThinking(ctx, req)
+		if errExtract != nil {
+			return nil, errExtract
 		}
 		return marshalRPCResult(resp)
 	case pluginabi.MethodRequestInterceptBefore:
@@ -265,6 +281,28 @@ func (c testThinkingCapability) ApplyThinking(ctx context.Context, req pluginapi
 		return pluginapi.PayloadResponse{}, errMarshal
 	}
 	return pluginapi.PayloadResponse{Body: out}, nil
+}
+
+type testThinkingExtractorCapability struct {
+	provider string
+}
+
+func (c testThinkingExtractorCapability) Identifier() string {
+	return c.provider
+}
+
+func (c testThinkingExtractorCapability) ExtractThinking(ctx context.Context, req pluginapi.ThinkingExtractRequest) (pluginapi.ThinkingExtractResponse, error) {
+	var payload map[string]any
+	if errUnmarshal := json.Unmarshal(req.Body, &payload); errUnmarshal != nil {
+		return pluginapi.ThinkingExtractResponse{}, errUnmarshal
+	}
+	effort, ok := payload["reasoning_effort"].(string)
+	if !ok {
+		return pluginapi.ThinkingExtractResponse{}, nil
+	}
+	return pluginapi.ThinkingExtractResponse{
+		Config: pluginapi.ThinkingConfig{Mode: "level", Level: effort},
+	}, nil
 }
 
 type requestInterceptorFunc func(context.Context, pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error)
