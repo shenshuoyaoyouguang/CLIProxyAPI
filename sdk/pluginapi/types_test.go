@@ -27,6 +27,7 @@ var _ RequestInterceptor = (*compileTimePlugin)(nil)
 var _ ResponseInterceptor = (*compileTimePlugin)(nil)
 var _ StreamChunkInterceptor = (*compileTimePlugin)(nil)
 var _ ThinkingApplier = (*compileTimePlugin)(nil)
+var _ ThinkingExtractor = (*compileTimePlugin)(nil)
 var _ UsagePlugin = (*compileTimePlugin)(nil)
 var _ CommandLinePlugin = (*compileTimePlugin)(nil)
 var _ ManagementAPI = (*compileTimePlugin)(nil)
@@ -528,6 +529,10 @@ func (compileTimePlugin) InterceptStreamChunk(context.Context, StreamChunkInterc
 
 func (compileTimePlugin) ApplyThinking(context.Context, ThinkingApplyRequest) (PayloadResponse, error) {
 	return PayloadResponse{}, nil
+}
+
+func (compileTimePlugin) ExtractThinking(context.Context, ThinkingExtractRequest) (ThinkingExtractResponse, error) {
+	return ThinkingExtractResponse{}, nil
 }
 
 func (compileTimePlugin) HandleUsage(context.Context, UsageRecord) {}

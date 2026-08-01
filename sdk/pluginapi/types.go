@@ -109,6 +109,8 @@ type Capabilities struct {
 	StreamChunkInterceptor StreamChunkInterceptor
 	// ThinkingApplier applies validated thinking configuration to provider payloads.
 	ThinkingApplier ThinkingApplier
+	// ThinkingExtractor extracts provider-specific thinking configuration from provider payloads.
+	ThinkingExtractor ThinkingExtractor
 	// UsagePlugin receives completed usage records.
 	UsagePlugin UsagePlugin
 	// CommandLinePlugin declares and handles plugin-owned command-line flags.
@@ -1095,6 +1097,32 @@ type ThinkingApplier interface {
 	Identifier() string
 	// ApplyThinking returns the payload with provider-specific thinking fields.
 	ApplyThinking(context.Context, ThinkingApplyRequest) (PayloadResponse, error)
+}
+
+// ThinkingExtractRequest asks a plugin to inspect a provider payload for
+// provider-specific thinking configuration.
+type ThinkingExtractRequest struct {
+	// Provider is the normalized provider key being inspected.
+	Provider string
+	// Body contains the provider payload to inspect.
+	Body []byte
+}
+
+// ThinkingExtractResponse returns the canonical thinking configuration found in
+// a provider payload. A zero-value Config means the payload has no recognized
+// thinking fields.
+type ThinkingExtractResponse struct {
+	// Config is the canonical thinking configuration.
+	Config ThinkingConfig
+}
+
+// ThinkingExtractor extracts provider-specific thinking configuration from
+// provider payloads.
+type ThinkingExtractor interface {
+	// Identifier returns the provider key handled by this thinking extractor.
+	Identifier() string
+	// ExtractThinking returns the canonical thinking config found in the body.
+	ExtractThinking(context.Context, ThinkingExtractRequest) (ThinkingExtractResponse, error)
 }
 
 // UsagePlugin receives usage records after request completion.
