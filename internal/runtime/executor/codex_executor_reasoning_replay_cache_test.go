@@ -167,9 +167,9 @@ func TestCodexExecutorReasoningReplaySessionKeyUsesClaudeCodeJSONSessionID(t *te
 	}
 	body := []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}`)
 
-	got := codexReasoningReplaySessionKey(context.Background(), from, req, cliproxyexecutor.Options{SourceFormat: from}, body)
-	if got != "claude:session-json-1:agent:main" {
-		t.Fatalf("codexReasoningReplaySessionKey() = %q, want claude:session-json-1:agent:main", got)
+	got := codexReasoningReplaySessionKey(testContextWithAPIKey("codex-unit-caller"), from, req, cliproxyexecutor.Options{SourceFormat: from}, body)
+	if !strings.HasSuffix(got, ":claude:session-json-1:agent:main") {
+		t.Fatalf("codexReasoningReplaySessionKey() = %q, want caller-isolated claude:session-json-1:agent:main", got)
 	}
 }
 
@@ -1113,5 +1113,27 @@ func TestCodexExecutorReasoningReplayCacheMatchesShortenedClaudeToolResultCallID
 	}
 	if got := gjson.GetBytes(secondBody, "input.3.call_id").String(); got != shortCallID {
 		t.Fatalf("input.3.call_id = %q, want shortened call_id %q; body=%s", got, shortCallID, string(secondBody))
+	}
+}
+
+func TestCodexReplayPrefixFingerprintsMatchesDirectComputation(t *testing.T) {
+	items := []gjson.Result{
+		gjson.Parse(`{"type":"message","role":"user","content":"a"}`),
+		gjson.Parse(`{"type":"reasoning","encrypted_content":"abc"}`),
+		gjson.Parse(`{"type":"function_call","call_id":"call_1"}`),
+		gjson.Parse(`{"type":"function_call_output","call_id":"call_1","output":"ok"}`),
+	}
+	cache := newCodexReplayPrefixFingerprints(items)
+	// Out-of-order and repeated probes mirror the downward anchor scan.
+	for _, end := range []int{4, 2, 0, 3, 1, 4, 2} {
+		want := codexReplayInputPrefixFingerprint(items, end)
+		if got := cache.at(end); got != want {
+			t.Fatalf("cache.at(%d) = %q, want %q", end, got, want)
+		}
+	}
+	for _, end := range []int{-1, 5} {
+		if got := cache.at(end); got != "" {
+			t.Fatalf("cache.at(%d) = %q, want empty for out-of-range", end, got)
+		}
 	}
 }

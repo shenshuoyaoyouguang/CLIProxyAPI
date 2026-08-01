@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -59,8 +58,6 @@ func xaiReasoningReplayScopeFromRequest(ctx context.Context, from sdktranslator.
 		return xaiReasoningReplayScope{}
 	}
 	sessionKey := codexReasoningReplaySessionKey(ctx, from, req, opts, body)
-	// Shared tenant isolation: client-controlled keys require a caller API key.
-	sessionKey = helps.IsolateClientControlledSessionKey(ctx, sessionKey)
 	return xaiReasoningReplayScope{
 		modelName:  thinking.ParseSuffix(req.Model).ModelName,
 		sessionKey: sessionKey,
@@ -267,7 +264,20 @@ func cacheXAIReasoningReplayFromCompleted(ctx context.Context, scope xaiReasonin
 		}
 	case internalcache.XAIReasoningReplayStoreBackendError:
 		// Prefer a cache miss over injecting a previous turn's encrypted
-		// reasoning after the conversation has advanced.
+		// reasoning after the conversation has advanced. Validate with a read
+		// first: a transient store error must not trigger a blind destructive
+		// write when there is nothing stale to remove, and when the read itself
+		// fails the backend is unhealthy anyway - the inject path fails open on
+		// read errors, so no stale state can be replayed while it stays broken.
+		existing, found, errGet := getXAIReasoningReplayItemsRequired(ctx, scope.modelName, scope.sessionKey)
+		if errGet != nil {
+			log.Warnf("xai reasoning replay cache read failed after store backend error; leaving previous entry untouched: %v", errGet)
+			return
+		}
+		if !found || len(existing) == 0 {
+			log.Debug("xai reasoning replay cache store backend error; no previous entry to clear")
+			return
+		}
 		if errDelete := internalcache.DeleteXAIReasoningReplayItemRequired(ctx, scope.modelName, scope.sessionKey); errDelete != nil {
 			log.Warnf("xai reasoning replay cache delete failed after store backend error: %v", errDelete)
 		} else {

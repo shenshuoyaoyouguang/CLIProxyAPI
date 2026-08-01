@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,8 +19,7 @@ func TestAntigravityReasoningReplayClearsOnInvalidSignature400(t *testing.T) {
 	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
 
 	model := "gemini-3-flash-agent"
-	apiKey := "ag-clear-caller"
-	sessionKey := antigravityReplayTestScope(model, "pr3900-invalid-sig", apiKey).sessionKey
+	sessionKey := antigravityReplayTestSessionKey("session:pr3900-invalid-sig")
 	bad := []byte(`{"type":"thought_signature","thoughtSignature":"INVALID_REPLAY_SIGNATURE_PR3900_XXXXXXXXX","contentIndex":1,"partIndex":0}`)
 	if !internalcache.CacheAntigravityReasoningReplayItems(model, sessionKey, [][]byte{bad}) {
 		t.Fatal("failed to seed replay cache")
@@ -48,8 +46,8 @@ func TestAntigravityReasoningReplayClearsOnInvalidSignature400(t *testing.T) {
 		},
 	}
 
-	payload := []byte(`{"sessionId":"pr3900-invalid-sig","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]},{"role":"user","parts":[{"functionResponse":{"id":"id1","name":"Bash","response":{"result":"ok"}}}]}]}}`)
-	_, err := exec.Execute(testContextWithAPIKey(apiKey), auth, cliproxyexecutor.Request{
+	payload := []byte(`{"sessionId":"pr3900-invalid-sig","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]},{"role":"model","parts":[{"functionCall":{"id":"id1","name":"Bash","args":{}}}]},{"role":"model","parts":[{"functionResponse":{"id":"id1","name":"Bash","response":{"result":"ok"}}}]}]}}`)
+	_, err := exec.Execute(antigravityReplayTestCtx(), auth, cliproxyexecutor.Request{
 		Model:   model,
 		Payload: payload,
 	}, cliproxyexecutor.Options{
@@ -59,7 +57,7 @@ func TestAntigravityReasoningReplayClearsOnInvalidSignature400(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected upstream 400 error")
 	}
-	if _, ok, errGet := internalcache.GetAntigravityReasoningReplayItemsRequired(context.Background(), model, sessionKey); errGet != nil {
+	if _, ok, errGet := internalcache.GetAntigravityReasoningReplayItemsRequired(antigravityReplayTestCtx(), model, sessionKey); errGet != nil {
 		t.Fatalf("get after clear: %v", errGet)
 	} else if ok {
 		t.Fatal("invalid signature 400 should clear cached replay item")

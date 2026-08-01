@@ -297,8 +297,14 @@ func TestCodexExecutorTransportFailureBeforeTerminalIsRequestScoped(t *testing.T
 			if terminalErr == nil {
 				t.Fatal("expected transport failure before terminal event")
 			}
-			if got := statusCodeFromTestError(t, terminalErr); got != http.StatusRequestTimeout {
-				t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, terminalErr)
+			// A transport/read failure must surface as an upstream gateway error, not
+			// as the 408 used for "stream ended without a terminal event"; it stays
+			// request-scoped so the credential is not blamed.
+			if got := statusCodeFromTestError(t, terminalErr); got != http.StatusBadGateway {
+				t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusBadGateway, terminalErr)
+			}
+			if !strings.Contains(terminalErr.Error(), "failed to read upstream response") {
+				t.Fatalf("error message = %q, want it to name the read failure", terminalErr.Error())
 			}
 			assertRequestScopedTestError(t, terminalErr)
 		})

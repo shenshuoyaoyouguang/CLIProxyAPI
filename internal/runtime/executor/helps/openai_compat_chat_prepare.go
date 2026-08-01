@@ -52,7 +52,7 @@ func openAICompatThinkingRoute(baseModel, toFormat, providerKey string) (thinkin
 // isNvidiaModel reports whether the model is an NVIDIA model that should use
 // the nvidia thinking applier for enable_thinking / reasoning_budget params.
 func isNvidiaModel(model string) bool {
-	m := thinking.NormalizeDeepSeekModelID(model)
+	m := thinking.NormalizeProviderModelID(model)
 	if m == "" {
 		return false
 	}

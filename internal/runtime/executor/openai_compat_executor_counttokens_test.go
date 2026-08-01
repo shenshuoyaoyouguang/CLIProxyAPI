@@ -50,8 +50,8 @@ func TestCountTokensMirrorsExecuteDeepSeekReasoningPassback(t *testing.T) {
 		"api_key":  "test",
 	}}
 
-// Multi-turn: assistant has tool_calls but no reasoning_content → Phase 2 fill.
-// reasoning_effort=low opens the DeepSeek thinking-active gate.
+	// Multi-turn: assistant has tool_calls but no reasoning_content → Phase 2 fill.
+	// reasoning_effort=low opens the DeepSeek thinking-active gate.
 	payload := []byte(`{
 			"model": "deepseek-v4-flash",
 			"reasoning_effort": "low",

@@ -44,8 +44,9 @@ func TestPrepareOpenAICompatChatBody_SkipPassback(t *testing.T) {
 }
 
 func TestPrepareOpenAICompatChatBody_MiddleBeforePassback(t *testing.T) {
-	// D7 order: Middle stamps a marker; passback then fills empty RC.
-	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":"hi"}]}`)
+	// D7 order: Middle stamps a marker; passback then fills empty RC on the
+	// tool-call assistant turn (M1: plain-text turns are left untouched).
+	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":"hi","tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]}]}`)
 	out, err := PrepareOpenAICompatChatBody(OpenAICompatChatPrepareInput{
 		Body:          body,
 		ModelForApply: "deepseek-v4-pro",
@@ -295,7 +296,7 @@ func TestPrepareOpenAICompatChatBody_CountTokensOmitsPayloadConfig(t *testing.T)
 			},
 		},
 	}
-	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":"hi"}]}`)
+	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":"hi","tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]}]}`)
 	base := OpenAICompatChatPrepareInput{
 		Body:          body,
 		ModelForApply: "deepseek-v4-flash",
