@@ -28,7 +28,15 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		c.JSON(200, gin.H{})
 		return
 	}
-	c.JSON(200, new(*h.cfg))
+	// CloneForRuntime performs a deep copy (independent maps/slices) so that
+	// JSON marshalling does not race with concurrent management writers. The
+	// clone is taken under the writers' lock and serialized outside it. The
+	// previous shallow copy shared map headers with the live config, so a GET
+	// during a PUT could trigger a fatal "concurrent map read and map write".
+	h.mu.Lock()
+	clone := h.cfg.CloneForRuntime()
+	h.mu.Unlock()
+	c.JSON(200, clone)
 }
 
 type releaseInfo struct {

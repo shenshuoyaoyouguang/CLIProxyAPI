@@ -81,6 +81,17 @@ func toggleConfigAPIKeyExcludedAll(cfg *config.Config, auth *coreauth.Auth, disa
 			return true, nil
 		}
 	}
+	// Z.ai keys reuse the CodexKey shape and are indexed as "zai:apikey" (see
+	// zaiKeysWithAuthIndex). Without this loop the management UI cannot disable a
+	// Z.ai key: the lookup falls through and the handler answers 404.
+	for i := range cfg.ZAIKey {
+		entry := &cfg.ZAIKey[i]
+		id, _ := idGen.Next("zai:apikey", entry.APIKey, entry.BaseURL)
+		if id == authID {
+			entry.ExcludedModels = setConfigAPIKeyExcludedAll(entry.ExcludedModels, disable)
+			return true, nil
+		}
+	}
 	for i := range cfg.VertexCompatAPIKey {
 		entry := &cfg.VertexCompatAPIKey[i]
 		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)

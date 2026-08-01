@@ -192,3 +192,55 @@ func TestDeleteCodexKey_RequiresBaseURLWhenAPIKeyDuplicated(t *testing.T) {
 		t.Fatalf("codex keys len = %d, want 2", got)
 	}
 }
+
+func TestDeleteAPIKeys_ValueMatchesExactCredential(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{
+			SDKConfig: config.SDKConfig{
+				APIKeys: []string{"abc", "abc "},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/api-keys?value=abc", nil)
+
+	h.DeleteAPIKeys(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := h.cfg.APIKeys; len(got) != 1 || got[0] != "abc " {
+		t.Fatalf("api keys after delete = %#v, want [\"abc \"]", got)
+	}
+}
+
+func TestDeleteAPIKeys_ValueMatchesExactCredentialDeletesIt(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{
+			SDKConfig: config.SDKConfig{
+				APIKeys: []string{"abc"},
+			},
+		},
+		configFilePath: writeTestConfigFile(t),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/api-keys?value=abc", nil)
+
+	h.DeleteAPIKeys(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := len(h.cfg.APIKeys); got != 0 {
+		t.Fatalf("api keys len = %d, want 0", got)
+	}
+}
