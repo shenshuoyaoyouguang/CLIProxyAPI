@@ -319,10 +319,14 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	// Capture method
 	method := c.Request.Method
 
-	// Capture headers
+	// Capture headers, masking sensitive values (e.g. Authorization, X-Management-Key).
 	headers := make(map[string][]string)
 	for key, values := range c.Request.Header {
-		headers[key] = values
+		masked := make([]string, len(values))
+		for i, v := range values {
+			masked[i] = util.MaskSensitiveHeaderValue(key, v)
+		}
+		headers[key] = masked
 	}
 
 	// Capture request body
