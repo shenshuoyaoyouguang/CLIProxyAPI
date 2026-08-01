@@ -121,6 +121,10 @@ func tryRefreshModels(ctx context.Context, label string) {
 		return
 	}
 
+	// A refreshed catalog that omits a section must not wipe the definitions we
+	// already serve; carry the previous entries over before comparing.
+	preserveMissingSections(oldData, parsed)
+
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
 
@@ -189,6 +193,46 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 	return nil, ""
 }
 
+// preserveMissingSections copies model definitions from the currently served
+// catalog into any section the refreshed catalog leaves empty. Remote catalogs
+// are validated but empty sections are tolerated, so without this guard a
+// truncated or partially published models.json would silently drop every model
+// of a provider until the next successful refresh.
+func preserveMissingSections(oldData, newData *staticModelsJSON) {
+	if oldData == nil || newData == nil {
+		return
+	}
+
+	sections := []struct {
+		name string
+		old  []*ModelInfo
+		dst  *[]*ModelInfo
+	}{
+		{"claude", oldData.Claude, &newData.Claude},
+		{"gemini", oldData.Gemini, &newData.Gemini},
+		{"vertex", oldData.Vertex, &newData.Vertex},
+		{"aistudio", oldData.AIStudio, &newData.AIStudio},
+		{"codex-free", oldData.CodexFree, &newData.CodexFree},
+		{"codex-team", oldData.CodexTeam, &newData.CodexTeam},
+		{"codex-plus", oldData.CodexPlus, &newData.CodexPlus},
+		{"codex-pro", oldData.CodexPro, &newData.CodexPro},
+		{"kimi", oldData.Kimi, &newData.Kimi},
+		{"antigravity", oldData.Antigravity, &newData.Antigravity},
+		{"xai", oldData.XAI, &newData.XAI},
+		{"zai", oldData.ZAI, &newData.ZAI},
+		{"deepseek", oldData.DeepSeek, &newData.DeepSeek},
+		{"nvidia", oldData.Nvidia, &newData.Nvidia},
+	}
+
+	for _, section := range sections {
+		if len(*section.dst) > 0 || len(section.old) == 0 {
+			continue
+		}
+		*section.dst = section.old
+		log.Warnf("models catalog: refreshed catalog has no %s section, keeping %d existing model definitions", section.name, len(section.old))
+	}
+}
+
 // detectChangedProviders compares two model catalogs and returns provider names
 // whose model definitions differ. Codex tiers (free/team/plus/pro) are grouped
 // under a single "codex" provider.
@@ -215,7 +259,9 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 		{"kimi", oldData.Kimi, newData.Kimi},
 		{"antigravity", oldData.Antigravity, newData.Antigravity},
 		{"xai", oldData.XAI, newData.XAI},
+		{"zai", oldData.ZAI, newData.ZAI},
 		{"deepseek", oldData.DeepSeek, newData.DeepSeek},
+		{"nvidia", oldData.Nvidia, newData.Nvidia},
 	}
 
 	seen := make(map[string]bool, len(sections))
@@ -310,10 +356,25 @@ func loadModelsFromBytes(data []byte, source string) error {
 	return nil
 }
 
+// emptyModelsCatalog is returned by getModels when no catalog has been loaded
+// yet (for example when the embedded models.json failed to parse and no remote
+// refresh has succeeded). Returning a non-nil value keeps every caller free of
+// nil checks and prevents nil pointer dereferences on field access.
+var emptyModelsCatalog = &staticModelsJSON{}
+
+var missingCatalogWarnOnce sync.Once
+
 func getModels() *staticModelsJSON {
 	modelsCatalogStore.mu.RLock()
-	defer modelsCatalogStore.mu.RUnlock()
-	return modelsCatalogStore.data
+	data := modelsCatalogStore.data
+	modelsCatalogStore.mu.RUnlock()
+	if data == nil {
+		missingCatalogWarnOnce.Do(func() {
+			log.Warn("registry: models catalog is unavailable, serving empty model definitions until a refresh succeeds")
+		})
+		return emptyModelsCatalog
+	}
+	return data
 }
 
 func validateModelsCatalog(data *staticModelsJSON) error {
@@ -336,7 +397,9 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		{name: "kimi", models: data.Kimi},
 		{name: "antigravity", models: data.Antigravity},
 		{name: "xai", models: data.XAI},
+		{name: "zai", models: data.ZAI},
 		{name: "deepseek", models: data.DeepSeek},
+		{name: "nvidia", models: data.Nvidia},
 	}
 
 	for _, section := range requiredSections {

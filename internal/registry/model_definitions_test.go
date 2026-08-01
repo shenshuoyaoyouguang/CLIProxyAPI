@@ -50,6 +50,21 @@ func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
 	t.Fatalf("expected xAI builtin model %s", xaiBuiltinVideo15PreviewModelID)
 }
 
+func TestGetZAIModelsIncludesGLM52(t *testing.T) {
+	models := GetZAIModels()
+
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if model.ID == "glm-5.2" {
+			return
+		}
+	}
+
+	t.Fatalf("expected Z.ai model glm-5.2 in GetZAIModels")
+}
+
 func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing.T) {
 	registryRef := GetGlobalRegistry()
 	registryRef.RegisterClient("test-antigravity-websearch-route", "antigravity", []*ModelInfo{
