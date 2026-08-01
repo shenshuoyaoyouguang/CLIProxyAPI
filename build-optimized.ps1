@@ -8,6 +8,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Run everything from the repo root so relative go package paths (./cmd/server/)
+# and output files resolve regardless of the caller's working directory.
+# The finally block restores the caller's location even on `exit` paths
+# (PowerShell runs finally before exiting).
+Push-Location $PSScriptRoot
+try {
+
 # --- Pre-build: ensure Go toolchain is functional ---
 # The project declares a minimum Go version in go.mod (currently 1.26.0).
 # Force GOTOOLCHAIN=local to use the system-installed Go even when the
@@ -161,6 +168,15 @@ try {
     $sizeAfter = (Get-Item cli-proxy-api.exe).Length / 1MB
     $saved = $sizeBefore - $sizeAfter
     Write-Host "UPX: saved $([math]::Round($saved, 2)) MB ($([math]::Round($sizeBefore, 2)) -> $([math]::Round($sizeAfter, 2)) MB)" -ForegroundColor Gray
+    # Smoke test: stripped + UPX-compressed Go binaries can fail at load time
+    # on some platforms. Verify the artifact starts (--help exits 2 via the
+    # standard flag package's ErrHelp path) before declaring success.
+    $smokeOut = (& .\cli-proxy-api.exe --help 2>&1 | Out-String)
+    $smokeExit = $LASTEXITCODE
+    if ($smokeExit -notin @(0, 1, 2) -or $smokeOut -notmatch "Usage of") {
+        throw "UPX-compressed binary failed smoke test (exit=$smokeExit)"
+    }
+    Write-Host "UPX smoke test passed." -ForegroundColor Gray
 } catch {
     $sizeAfter = $sizeBefore
     Write-Host "UPX compression skipped (continuing with uncompressed build)" -ForegroundColor Yellow
@@ -178,3 +194,6 @@ Write-Host "  Executable: cli-proxy-api.exe"
 Write-Host "  Size:       $([math]::Round($sizeAfter, 2)) MB"
 Write-Host "  SHA256:     $hash"
 Write-Host "----------------------------------------"
+} finally {
+    Pop-Location
+}
