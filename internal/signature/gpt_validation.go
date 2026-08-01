@@ -26,14 +26,16 @@ func InspectGPTReasoningSignature(rawSignature string) (*GPTReasoningSignatureIn
 	if sig == "" {
 		return nil, fmt.Errorf("empty GPT reasoning signature")
 	}
+	// Reject on the constant-cost prefix check before scanning or decoding the
+	// payload, which can be up to MaxGPTReasoningSignatureLen bytes.
+	if !strings.HasPrefix(sig, "gAAAA") {
+		return nil, fmt.Errorf("invalid GPT reasoning signature: expected gAAAA prefix")
+	}
 	if len(sig) > MaxGPTReasoningSignatureLen {
 		return nil, fmt.Errorf("GPT reasoning signature exceeds maximum length (%d bytes)", MaxGPTReasoningSignatureLen)
 	}
 	if index, r, ok := firstInvalidGPTReasoningSignatureChar(sig); ok {
 		return nil, fmt.Errorf("invalid GPT reasoning signature: contains non-base64url character U+%04X at byte %d", r, index)
-	}
-	if !strings.HasPrefix(sig, "gAAAA") {
-		return nil, fmt.Errorf("invalid GPT reasoning signature: expected gAAAA prefix")
 	}
 
 	decoded, err := decodeGPTReasoningSignature(sig)
