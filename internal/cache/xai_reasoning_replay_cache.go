@@ -2,15 +2,11 @@ package cache
 
 import (
 	"context"
-	"encoding/json"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
-	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -29,26 +25,27 @@ const (
 	XAIReasoningReplayCacheEvictBatchSize = 128
 )
 
-type xaiReasoningReplayEntry struct {
-	Items     [][]byte
-	Timestamp time.Time
-}
-
-var (
-	xaiReasoningReplayMu      sync.Mutex
-	xaiReasoningReplayEntries = make(map[string]xaiReasoningReplayEntry)
-)
-
-type xaiReasoningReplayKVClient interface {
-	KVGet(ctx context.Context, key string) ([]byte, bool, error)
-	KVSet(ctx context.Context, key string, value []byte, opts homekv.KVSetOptions) (bool, error)
-	KVDel(ctx context.Context, keys ...string) (int64, error)
-	KVExpire(ctx context.Context, key string, ttl time.Duration) (bool, error)
-}
+// xaiReasoningReplayKVClient is kept as a named alias so tests can inject a
+// fake client through currentXAIReasoningReplayKVClient.
+type xaiReasoningReplayKVClient = reasoningReplayKVClient
 
 var currentXAIReasoningReplayKVClient = func() (xaiReasoningReplayKVClient, bool, error) {
 	return homekv.CurrentKVClient()
 }
+
+var xaiStore = newReasoningReplayStore(reasoningReplayStoreConfig{
+	memoryKeyPrefix:    "xai-reasoning-replay\x00",
+	kvKeyPrefix:        "cpa:xai:reasoning-replay:",
+	ttl:                XAIReasoningReplayCacheTTL,
+	maxEntries:         XAIReasoningReplayCacheMaxEntries,
+	evictBatchSize:     XAIReasoningReplayCacheEvictBatchSize,
+	logLabel:           "xai",
+	expireFailureFatal: false,
+	normalize:          normalizeXAIReasoningReplayItems,
+	kvClient: func() (reasoningReplayKVClient, bool, error) {
+		return currentXAIReasoningReplayKVClient()
+	},
+})
 
 // CacheXAIReasoningReplayItem stores a final Grok reasoning item for stateless
 // replay. The stored item is normalized to the minimal shape accepted by
@@ -65,16 +62,16 @@ func CacheXAIReasoningReplayItems(modelName, sessionKey string, items [][]byte) 
 
 // XAIReasoningReplayStoreStatus reports why a completed-turn cache write
 // succeeded or failed so callers can decide whether to keep prior entries.
-type XAIReasoningReplayStoreStatus int
+type XAIReasoningReplayStoreStatus = reasoningReplayStoreStatus
 
 const (
 	// XAIReasoningReplayStoreInvalidArgs means model/session were empty.
-	XAIReasoningReplayStoreInvalidArgs XAIReasoningReplayStoreStatus = iota
+	XAIReasoningReplayStoreInvalidArgs = reasoningReplayStoreInvalidArgs
 	// XAIReasoningReplayStored means a valid reasoning batch was written.
-	XAIReasoningReplayStored
+	XAIReasoningReplayStored = reasoningReplayStoreStored
 	// XAIReasoningReplayNoReplayableState means the completed output had no
 	// cacheable reasoning batch (for example reasoning disabled).
-	XAIReasoningReplayNoReplayableState
+	XAIReasoningReplayNoReplayableState = reasoningReplayStoreNoReplayableState
 	// XAIReasoningReplayStoreBackendError means normalize succeeded but the
 	// storage backend failed. The completed-turn cache writer
 	// (cacheXAIReasoningReplayFromCompleted) intentionally deletes any prior
@@ -82,7 +79,7 @@ const (
 	// earlier turn is not injected into the now-advanced conversation; callers
 	// that prefer "retain on backend error" semantics must implement their own
 	// retry / fallback rather than relying on the cache layer to preserve state.
-	XAIReasoningReplayStoreBackendError
+	XAIReasoningReplayStoreBackendError = reasoningReplayStoreBackendError
 )
 
 // CacheXAIReasoningReplayItemsBestEffort stores replay items for completed response paths.
@@ -93,47 +90,7 @@ func CacheXAIReasoningReplayItemsBestEffort(ctx context.Context, modelName, sess
 // StoreXAIReasoningReplayItems stores replay items and distinguishes empty
 // completed state from backend failures.
 func StoreXAIReasoningReplayItems(ctx context.Context, modelName, sessionKey string, items [][]byte) XAIReasoningReplayStoreStatus {
-	key := xaiReasoningReplayCacheKey(modelName, sessionKey)
-	if key == "" {
-		return XAIReasoningReplayStoreInvalidArgs
-	}
-	normalized, ok := normalizeXAIReasoningReplayItems(items)
-	if !ok {
-		return XAIReasoningReplayNoReplayableState
-	}
-	if client, homeMode, errClient := currentXAIReasoningReplayKVClient(); homeMode {
-		if errClient != nil {
-			log.Errorf("home kv best-effort xai reasoning replay set failed prefix=cpa:xai:*: %v", errClient)
-			return XAIReasoningReplayStoreBackendError
-		}
-		raw, errMarshal := json.Marshal(normalized)
-		if errMarshal != nil {
-			log.Errorf("home kv best-effort xai reasoning replay set failed prefix=cpa:xai:*: %v", errMarshal)
-			return XAIReasoningReplayStoreBackendError
-		}
-		written, errSet := client.KVSet(ctx, xaiReasoningReplayKVKey(modelName, sessionKey), raw, homekv.KVSetOptions{EX: XAIReasoningReplayCacheTTL})
-		if errSet != nil {
-			log.Errorf("home kv best-effort xai reasoning replay set failed prefix=cpa:xai:*: %v", errSet)
-			return XAIReasoningReplayStoreBackendError
-		}
-		if !written {
-			return XAIReasoningReplayStoreBackendError
-		}
-		return XAIReasoningReplayStored
-	}
-
-	cacheCleanupOnce.Do(startCacheCleanup)
-	now := time.Now()
-	xaiReasoningReplayMu.Lock()
-	defer xaiReasoningReplayMu.Unlock()
-	xaiReasoningReplayEntries[key] = xaiReasoningReplayEntry{
-		Items:     normalized,
-		Timestamp: now,
-	}
-	if len(xaiReasoningReplayEntries) > XAIReasoningReplayCacheMaxEntries {
-		evictOldestXAIReasoningReplayEntriesLocked(XAIReasoningReplayCacheEvictBatchSize)
-	}
-	return XAIReasoningReplayStored
+	return xaiStore.set(ctx, modelName, sessionKey, items)
 }
 
 // GetXAIReasoningReplayItem retrieves a normalized reasoning replay item.
@@ -156,44 +113,7 @@ func GetXAIReasoningReplayItems(modelName, sessionKey string) ([][]byte, bool) {
 
 // GetXAIReasoningReplayItemsRequired retrieves replay items for request-time paths.
 func GetXAIReasoningReplayItemsRequired(ctx context.Context, modelName, sessionKey string) ([][]byte, bool, error) {
-	key := xaiReasoningReplayCacheKey(modelName, sessionKey)
-	if key == "" {
-		return nil, false, nil
-	}
-	client, homeMode, errClient := currentXAIReasoningReplayKVClient()
-	if homeMode {
-		if errClient != nil {
-			return nil, false, errClient
-		}
-		raw, found, errGet := client.KVGet(ctx, xaiReasoningReplayKVKey(modelName, sessionKey))
-		if errGet != nil || !found {
-			return nil, false, errGet
-		}
-		var homeItems [][]byte
-		if errUnmarshal := json.Unmarshal(raw, &homeItems); errUnmarshal != nil {
-			return nil, false, errUnmarshal
-		}
-		if _, errExpire := client.KVExpire(ctx, xaiReasoningReplayKVKey(modelName, sessionKey), XAIReasoningReplayCacheTTL); errExpire != nil {
-			log.Warnf("home kv xai reasoning replay expire failed prefix=cpa:xai:*: %v", errExpire)
-		}
-		return cloneXAIReasoningReplayItems(homeItems), true, nil
-	}
-
-	cacheCleanupOnce.Do(startCacheCleanup)
-	now := time.Now()
-	xaiReasoningReplayMu.Lock()
-	defer xaiReasoningReplayMu.Unlock()
-	entry, ok := xaiReasoningReplayEntries[key]
-	if !ok {
-		return nil, false, nil
-	}
-	if now.Sub(entry.Timestamp) > XAIReasoningReplayCacheTTL {
-		delete(xaiReasoningReplayEntries, key)
-		return nil, false, nil
-	}
-	entry.Timestamp = now
-	xaiReasoningReplayEntries[key] = entry
-	return cloneXAIReasoningReplayItems(entry.Items), true, nil
+	return xaiStore.get(ctx, modelName, sessionKey)
 }
 
 // DeleteXAIReasoningReplayItem removes one replay item after upstream rejects
@@ -206,44 +126,16 @@ func DeleteXAIReasoningReplayItem(modelName, sessionKey string) {
 
 // DeleteXAIReasoningReplayItemRequired removes one replay item for request-time paths.
 func DeleteXAIReasoningReplayItemRequired(ctx context.Context, modelName, sessionKey string) error {
-	key := xaiReasoningReplayCacheKey(modelName, sessionKey)
-	if key == "" {
-		return nil
-	}
-	client, homeMode, errClient := currentXAIReasoningReplayKVClient()
-	if homeMode {
-		if errClient != nil {
-			return errClient
-		}
-		_, errDel := client.KVDel(ctx, xaiReasoningReplayKVKey(modelName, sessionKey))
-		return errDel
-	}
-	xaiReasoningReplayMu.Lock()
-	delete(xaiReasoningReplayEntries, key)
-	xaiReasoningReplayMu.Unlock()
-	return nil
+	return xaiStore.delete(ctx, modelName, sessionKey)
 }
 
 // ClearXAIReasoningReplayCache clears all xAI reasoning replay state.
 func ClearXAIReasoningReplayCache() {
-	xaiReasoningReplayMu.Lock()
-	xaiReasoningReplayEntries = make(map[string]xaiReasoningReplayEntry)
-	xaiReasoningReplayMu.Unlock()
-}
-
-func xaiReasoningReplayCacheKey(modelName, sessionKey string) string {
-	modelName = strings.TrimSpace(modelName)
-	sessionKey = strings.TrimSpace(sessionKey)
-	if modelName == "" || sessionKey == "" {
-		return ""
-	}
-	// The session key is the continuity boundary. Keep this independent from
-	// the selected upstream xAI credential so auth failover can preserve replay.
-	return strings.Join([]string{"xai-reasoning-replay", modelName, sessionKey}, "\x00")
+	xaiStore.clear()
 }
 
 func xaiReasoningReplayKVKey(modelName, sessionKey string) string {
-	return "cpa:xai:reasoning-replay:" + homekv.HashKeyPart(strings.TrimSpace(modelName)) + ":" + homekv.HashKeyPart(strings.TrimSpace(sessionKey))
+	return reasoningReplayKVKey("cpa:xai:reasoning-replay:", modelName, sessionKey)
 }
 
 func normalizeXAIReasoningReplayItems(items [][]byte) ([][]byte, bool) {
@@ -377,43 +269,6 @@ func normalizeXAIReasoningReplayCustomToolCallItem(itemResult gjson.Result) ([]b
 	return normalized, true
 }
 
-func cloneXAIReasoningReplayItems(items [][]byte) [][]byte {
-	cloned := make([][]byte, 0, len(items))
-	for _, item := range items {
-		cloned = append(cloned, append([]byte(nil), item...))
-	}
-	return cloned
-}
-
-func evictOldestXAIReasoningReplayEntriesLocked(count int) {
-	if count <= 0 || len(xaiReasoningReplayEntries) == 0 {
-		return
-	}
-	type candidate struct {
-		key       string
-		timestamp time.Time
-	}
-	candidates := make([]candidate, 0, len(xaiReasoningReplayEntries))
-	for key, entry := range xaiReasoningReplayEntries {
-		candidates = append(candidates, candidate{key: key, timestamp: entry.Timestamp})
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].timestamp.Before(candidates[j].timestamp)
-	})
-	if count > len(candidates) {
-		count = len(candidates)
-	}
-	for i := 0; i < count; i++ {
-		delete(xaiReasoningReplayEntries, candidates[i].key)
-	}
-}
-
 func purgeExpiredXAIReasoningReplayCache(now time.Time) {
-	xaiReasoningReplayMu.Lock()
-	for key, entry := range xaiReasoningReplayEntries {
-		if now.Sub(entry.Timestamp) > XAIReasoningReplayCacheTTL {
-			delete(xaiReasoningReplayEntries, key)
-		}
-	}
-	xaiReasoningReplayMu.Unlock()
+	xaiStore.purgeExpired(now)
 }

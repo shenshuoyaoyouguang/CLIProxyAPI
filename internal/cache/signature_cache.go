@@ -82,6 +82,14 @@ func hashTextLegacy(text string) string {
 	return hex.EncodeToString(h[:legacySignatureTextHashLen/2])
 }
 
+// hashTextKeys derives both the full and legacy key shapes from a single
+// SHA-256 pass, avoiding a duplicate digest computation on the hot read/delete
+// paths (thinking texts can be tens of KB).
+func hashTextKeys(text string) (full, legacy string) {
+	h := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(h[:]), hex.EncodeToString(h[:legacySignatureTextHashLen/2])
+}
+
 // getOrCreateGroupCache gets or creates a cache bucket for a model group
 func getOrCreateGroupCache(groupKey string) *groupCache {
 	// Start background cleanup on first access
@@ -224,8 +232,7 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 	}
 	sc := val.(*groupCache)
 
-	textHash := hashText(text)
-	legacyTextHash := hashTextLegacy(text)
+	textHash, legacyTextHash := hashTextKeys(text)
 
 	now := time.Now()
 
@@ -295,8 +302,7 @@ func DeleteCachedSignatureRequired(ctx context.Context, modelName, text string) 
 		return errDel
 	}
 	groupKey := GetModelGroup(modelName)
-	textHash := hashText(text)
-	legacyTextHash := hashTextLegacy(text)
+	textHash, legacyTextHash := hashTextKeys(text)
 	val, ok := signatureCache.Load(groupKey)
 	if !ok {
 		return nil

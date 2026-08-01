@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -66,6 +67,20 @@ func (c *fakeXAIReasoningReplayKVClient) KVDel(_ context.Context, keys ...string
 		}
 	}
 	return deleted, nil
+}
+
+func (c *fakeXAIReasoningReplayKVClient) KVCompareAndSwap(_ context.Context, key string, expected []byte, expectedExists bool, value []byte, ttl time.Duration) (bool, error) {
+	c.setCount++
+	c.lastSetTTL = ttl
+	if c.setErr != nil {
+		return false, c.setErr
+	}
+	current, exists := c.values[key]
+	if exists != expectedExists || (exists && !bytes.Equal(current, expected)) {
+		return false, nil
+	}
+	c.values[key] = append([]byte(nil), value...)
+	return true, nil
 }
 
 func (c *fakeXAIReasoningReplayKVClient) KVExpire(_ context.Context, _ string, ttl time.Duration) (bool, error) {
