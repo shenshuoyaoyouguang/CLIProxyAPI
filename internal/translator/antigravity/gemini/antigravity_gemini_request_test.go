@@ -40,7 +40,7 @@ func TestConvertGeminiRequestToAntigravity_ReplacesClientSignatureOnFunctionCall
 	}
 }
 
-func TestConvertGeminiRequestToAntigravity_ReplacesClientSignatureOnTextPart(t *testing.T) {
+func TestConvertGeminiRequestToAntigravity_DropsIncompatibleClientSignatureOnTextPart(t *testing.T) {
 	validSignature := "abc123validSignature1234567890123456789012345678901234567890"
 	inputJSON := []byte(fmt.Sprintf(`{
 		"model": "gemini-3-pro-preview",
@@ -55,16 +55,12 @@ func TestConvertGeminiRequestToAntigravity_ReplacesClientSignatureOnTextPart(t *
 	}`, validSignature))
 
 	output := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
-	outputStr := string(output)
-
-	sig := gjson.Get(outputStr, "request.contents.0.parts.0.thoughtSignature").String()
-	expectedSig := "skip_thought_signature_validator"
-	if sig != expectedSig {
-		t.Errorf("Expected thoughtSignature '%s', got '%s'", expectedSig, sig)
+	if signature := gjson.GetBytes(output, "request.contents.0.parts.0.thoughtSignature"); signature.Exists() {
+		t.Fatalf("incompatible text signature should be dropped, got %s", signature.Raw)
 	}
 }
 
-func TestConvertGeminiRequestToAntigravity_AddsSkipSentinelToStringThoughtPart(t *testing.T) {
+func TestConvertGeminiRequestToAntigravity_LeavesUnsignedThoughtPartUnsigned(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "gemini-3-pro-preview",
 		"contents": [
@@ -78,12 +74,8 @@ func TestConvertGeminiRequestToAntigravity_AddsSkipSentinelToStringThoughtPart(t
 	}`)
 
 	output := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
-	outputStr := string(output)
-
-	sig := gjson.Get(outputStr, "request.contents.0.parts.0.thoughtSignature").String()
-	expectedSig := "skip_thought_signature_validator"
-	if sig != expectedSig {
-		t.Errorf("Expected thoughtSignature '%s', got '%s'", expectedSig, sig)
+	if signature := gjson.GetBytes(output, "request.contents.0.parts.0.thoughtSignature"); signature.Exists() {
+		t.Fatalf("unsigned thought should remain unsigned, got %s", signature.Raw)
 	}
 }
 
@@ -277,8 +269,7 @@ func testAntigravityGeminiClaudeSignature(t *testing.T) string {
 	return base64.StdEncoding.EncodeToString(payload)
 }
 
-func TestConvertGeminiRequestToAntigravity_ParallelFunctionCalls(t *testing.T) {
-	// Multiple functionCalls should all get skip_thought_signature_validator
+func TestConvertGeminiRequestToAntigravity_ParallelFunctionCallsOnlyFirstGetsSentinel(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "gemini-3-pro-preview",
 		"contents": [
@@ -293,19 +284,15 @@ func TestConvertGeminiRequestToAntigravity_ParallelFunctionCalls(t *testing.T) {
 	}`)
 
 	output := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
-	outputStr := string(output)
-
-	parts := gjson.Get(outputStr, "request.contents.0.parts").Array()
+	parts := gjson.GetBytes(output, "request.contents.0.parts").Array()
 	if len(parts) != 2 {
 		t.Fatalf("Expected 2 parts, got %d", len(parts))
 	}
-
-	expectedSig := "skip_thought_signature_validator"
-	for i, part := range parts {
-		sig := part.Get("thoughtSignature").String()
-		if sig != expectedSig {
-			t.Errorf("Part %d: Expected '%s', got '%s'", i, expectedSig, sig)
-		}
+	if got := parts[0].Get("thoughtSignature").String(); got != signature.GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("first call signature = %q, want sentinel", got)
+	}
+	if parts[1].Get("thoughtSignature").Exists() {
+		t.Fatalf("second parallel call should remain unsigned: %s", parts[1].Raw)
 	}
 }
 
@@ -640,6 +627,118 @@ func TestFixCLIToolResponse_MultipleGroupsFIFO(t *testing.T) {
 	}
 }
 
+// TestFixCLIToolResponse_MatchesResponsesByNameNotFIFO 验证当 response 顺序与 call 顺序不一致时，
+// 按 functionResponse.name 匹配而非 FIFO-by-count，避免错误关联（issue #26）。
+func TestFixCLIToolResponse_MatchesResponsesByNameNotFIFO(t *testing.T) {
+	// 两个并行 call: A, B。但 response 顺序为 B, A（与 call 顺序相反）。
+	// FIFO-by-count 会把 B 的 response 关联到 A，A 的 response 关联到 B（错误）。
+	// 按 name 匹配应正确关联。
+	input := `{
+		"model": "gemini-3-pro-preview",
+		"request": {
+			"contents": [
+				{
+					"role": "model",
+					"parts": [
+						{"functionCall": {"name": "FuncA", "args": {}}},
+						{"functionCall": {"name": "FuncB", "args": {}}}
+					]
+				},
+				{
+					"role": "function",
+					"parts": [
+						{"functionResponse": {"name": "FuncB", "response": {"result": "B-result"}}},
+						{"functionResponse": {"name": "FuncA", "response": {"result": "A-result"}}}
+					]
+				}
+			]
+		}
+	}`
+
+	result, err := fixCLIToolResponse(input)
+	if err != nil {
+		t.Fatalf("fixCLIToolResponse failed: %v", err)
+	}
+
+	contents := gjson.Get(result, "request.contents").Array()
+	var funcContent gjson.Result
+	for _, c := range contents {
+		if c.Get("role").String() == "function" {
+			funcContent = c
+			break
+		}
+	}
+	if !funcContent.Exists() {
+		t.Fatal("function role content should exist in output")
+	}
+
+	parts := funcContent.Get("parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("Expected 2 function response parts, got %d: %s", len(parts), result)
+	}
+	// 按 name 匹配：第一个 part 应对应 FuncA，第二个对应 FuncB
+	if got := parts[0].Get("functionResponse.name").String(); got != "FuncA" {
+		t.Errorf("Expected first response name 'FuncA' (matched by name), got '%s'", got)
+	}
+	if got := parts[1].Get("functionResponse.name").String(); got != "FuncB" {
+		t.Errorf("Expected second response name 'FuncB' (matched by name), got '%s'", got)
+	}
+	// 验证 response 内容也正确关联
+	if got := parts[0].Get("functionResponse.response.result").String(); got != "A-result" {
+		t.Errorf("Expected first response result 'A-result', got '%s'", got)
+	}
+	if got := parts[1].Get("functionResponse.response.result").String(); got != "B-result" {
+		t.Errorf("Expected second response result 'B-result', got '%s'", got)
+	}
+}
+
+// TestFixCLIToolResponse_PreservesSurplusResponseWithoutMatchingCall 验证
+// 无匹配 pending call 的 surplus response 不被错误关联到后续 group（issue #26）。
+func TestFixCLIToolResponse_PreservesSurplusResponseWithoutMatchingCall(t *testing.T) {
+	// group1: call A。response: A + extra(name="Unknown")。
+	// group2: call B。response: B。
+	// 按 name 匹配：A→group1，extra(Unknown) 无匹配应保留不消费，B→group2。
+	input := `{
+		"model": "gemini-3-pro-preview",
+		"request": {
+			"contents": [
+				{"role": "model", "parts": [{"functionCall": {"name": "FuncA", "args": {}}}]},
+				{"role": "function", "parts": [
+					{"functionResponse": {"name": "FuncA", "response": {"result": "A-result"}}},
+					{"functionResponse": {"name": "Unknown", "response": {"result": "extra"}}}
+				]},
+				{"role": "model", "parts": [{"functionCall": {"name": "FuncB", "args": {}}}]},
+				{"role": "function", "parts": [{"functionResponse": {"name": "FuncB", "response": {"result": "B-result"}}}]}
+			]
+		}
+	}`
+
+	result, err := fixCLIToolResponse(input)
+	if err != nil {
+		t.Fatalf("fixCLIToolResponse failed: %v", err)
+	}
+
+	// group1 应正确关联 FuncA
+	contents := gjson.Get(result, "request.contents").Array()
+	var funcContents []gjson.Result
+	for _, c := range contents {
+		if c.Get("role").String() == "function" {
+			funcContents = append(funcContents, c)
+		}
+	}
+	// "Unknown" response 无匹配 pending call，应被丢弃（无 group 可关联），
+	// 不应错误关联到 group2 的 FuncB。
+	if len(funcContents) != 2 {
+		t.Fatalf("Expected 2 function contents (A and B), got %d: %s", len(funcContents), result)
+	}
+	if got := funcContents[0].Get("parts.0.functionResponse.name").String(); got != "FuncA" {
+		t.Errorf("Expected first group name 'FuncA', got '%s'", got)
+	}
+	if got := funcContents[1].Get("parts.0.functionResponse.name").String(); got != "FuncB" {
+		t.Errorf("Expected second group name 'FuncB' (not 'Unknown'), got '%s'", got)
+	}
+}
+
 func TestConvertGeminiRequestToAntigravityDeduplicatesRequestWideAndDisambiguatesTools(t *testing.T) {
 	first := "mcp__plugin_cloudflare_cloudflare-builds__workers_builds_get_build"
 	second := "mcp__plugin_cloudflare_cloudflare-builds__workers_builds_get_build_logs"
@@ -716,5 +815,79 @@ func TestConvertGeminiRequestToAntigravityMapsSnakeCaseFunctionReferences(t *tes
 		if got := gjson.GetBytes(out, path).String(); got != mapped {
 			t.Fatalf("%s = %q, want %q. Output: %s", path, got, mapped, out)
 		}
+	}
+}
+
+func TestSanitizeAntigravityClaudeGeminiRequestSignatures_PreservesNumberPrecision(t *testing.T) {
+	inputJSON := []byte(`{
+		"project": "",
+		"model": "claude-sonnet-4-6",
+		"request": {
+			"contents": [
+				{
+					"role": "model",
+					"parts": [
+						{
+							"text": "thinking",
+							"thought": true,
+							"thoughtSignature": "invalid"
+						},
+						{
+							"functionCall": {
+								"name": "calc",
+								"args": {
+									"n": 12345678901234567890,
+									"big": 9007199254740993
+								}
+							}
+						}
+					]
+				}
+			]
+		}
+	}`)
+
+	output := SanitizeAntigravityClaudeGeminiRequestSignatures("claude-sonnet-4-6", inputJSON)
+	outputStr := string(output)
+
+	bigVal := gjson.Get(outputStr, "request.contents.0.parts.0.functionCall.args.big").Raw
+	nVal := gjson.Get(outputStr, "request.contents.0.parts.0.functionCall.args.n").Raw
+
+	if bigVal != "9007199254740993" {
+		t.Errorf("Precision lost for big: got %s, want 9007199254740993", bigVal)
+	}
+	if nVal != "12345678901234567890" {
+		t.Errorf("Precision lost for n: got %s, want 12345678901234567890", nVal)
+	}
+}
+
+func TestSanitizeAntigravityClaudeGeminiRequestSignatures_StripsFunctionCallSignatureForClaudeModel(t *testing.T) {
+	inputJSON := []byte(`{
+		"project": "",
+		"model": "claude-sonnet-4-6",
+		"request": {
+			"contents": [
+				{
+					"role": "model",
+					"parts": [
+						{
+							"functionCall": {
+								"name": "calc",
+								"args": {}
+							},
+							"thoughtSignature": "skip_thought_signature_validator"
+						}
+					]
+				}
+			]
+		}
+	}`)
+
+	output := SanitizeAntigravityClaudeGeminiRequestSignatures("claude-sonnet-4-6", inputJSON)
+	outputStr := string(output)
+
+	sig := gjson.Get(outputStr, "request.contents.0.parts.0.thoughtSignature")
+	if sig.Exists() {
+		t.Fatalf("expected functionCall thoughtSignature to be stripped for Claude target model, got %s", sig.Raw)
 	}
 }

@@ -103,6 +103,25 @@ func lastStopReason(events []sseEvent) string {
 
 const streamReq = `{"stream":true}`
 
+func TestStreaming_LateUsageOnlyDoesNotEmitAfterMessageStop(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+		`{"id":"c1","model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+	)
+
+	if got := countByType(events, "message_delta"); got != 1 {
+		t.Fatalf("expected exactly one message_delta, got %d (events=%+v)", got, events)
+	}
+	if got := countByType(events, "message_stop"); got != 1 {
+		t.Fatalf("expected exactly one message_stop, got %d (events=%+v)", got, events)
+	}
+	if len(events) == 0 || events[len(events)-1].Type != "message_stop" {
+		t.Fatalf("message_stop must be the last semantic event (events=%+v)", events)
+	}
+}
+
 func TestConvertOpenAIResponseToClaude_StreamIgnoresNullToolNameDelta(t *testing.T) {
 	originalRequest := []byte(streamReq)
 	var param any
@@ -362,5 +381,71 @@ func TestStreamingTool_StopReasonMixedSuppressedAndValid(t *testing.T) {
 	)
 	if got := lastStopReason(events); got != "tool_use" {
 		t.Fatalf("stop_reason = %q, want %q", got, "tool_use")
+	}
+}
+
+// messageDeltaPayload returns the payload of the (last) message_delta event, or
+// fails the test if none was emitted.
+func messageDeltaPayload(t *testing.T, events []sseEvent) string {
+	t.Helper()
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == "message_delta" {
+			return events[i].Payload
+		}
+	}
+	t.Fatalf("no message_delta event found (events=%+v)", events)
+	return ""
+}
+
+// TestStreaming_UsageBeforeFinishReason_EmitsBoth guards P2 #17: usage must not
+// be gated on FinishReason. When the upstream streams a usage-only chunk BEFORE
+// the finish_reason chunk, the single message_delta must still carry both the
+// correct stop_reason and the usage (previously usage was dropped).
+func TestStreaming_UsageBeforeFinishReason_EmitsBoth(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`,
+		`{"id":"c1","model":"m","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}`,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	if got := countByType(events, "message_delta"); got != 1 {
+		t.Fatalf("expected exactly one message_delta, got %d (events=%+v)", got, events)
+	}
+	md := messageDeltaPayload(t, events)
+	if sr := gjson.Get(md, "delta.stop_reason").String(); sr != "end_turn" {
+		t.Fatalf("stop_reason = %q, want %q (event=%s)", sr, "end_turn", md)
+	}
+	if in := gjson.Get(md, "usage.input_tokens").Int(); in != 5 {
+		t.Fatalf("usage.input_tokens = %d, want 5 (event=%s)", in, md)
+	}
+	if out := gjson.Get(md, "usage.output_tokens").Int(); out != 3 {
+		t.Fatalf("usage.output_tokens = %d, want 3 (event=%s)", out, md)
+	}
+}
+
+// TestStreaming_DoneWithoutFinishReason_Terminates guards P2 #17: [DONE] must
+// unconditionally emit message_delta so the Anthropic stream terminates. When
+// the upstream ends with [DONE] and never sends a finish_reason, the original
+// code omitted message_delta entirely, leaving the client hanging.
+func TestStreaming_DoneWithoutFinishReason_Terminates(t *testing.T) {
+	events := runStream(t, streamReq,
+		`{"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+	)
+
+	if got := countByType(events, "message_delta"); got != 1 {
+		t.Fatalf("expected exactly one message_delta, got %d (events=%+v)", got, events)
+	}
+	if got := countByType(events, "message_stop"); got != 1 {
+		t.Fatalf("expected exactly one message_stop, got %d (events=%+v)", got, events)
+	}
+	if events[len(events)-1].Type != "message_stop" {
+		t.Fatalf("message_stop must be the last semantic event (events=%+v)", events)
+	}
+	md := messageDeltaPayload(t, events)
+	// No finish_reason was ever seen, so the default mapping ("") -> "end_turn"
+	// applies. The key guarantee is that message_delta IS emitted so the stream
+	// terminates; the exact stop_reason in this degenerate case is the default.
+	if sr := gjson.Get(md, "delta.stop_reason").String(); sr != "end_turn" {
+		t.Fatalf("stop_reason = %q, want %q default (event=%s)", sr, "end_turn", md)
 	}
 }

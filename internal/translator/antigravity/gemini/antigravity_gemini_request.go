@@ -6,6 +6,7 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -149,7 +150,7 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	rawJSON = rewriteGeminiFunctionNames(rawJSON, functionNameMap)
 
 	if strings.Contains(strings.ToLower(modelName), "claude") {
-		rawJSON = sanitizeAntigravityClaudeGeminiRequestSignatures(modelName, rawJSON)
+		rawJSON = SanitizeAntigravityClaudeGeminiRequestSignatures(modelName, rawJSON)
 	} else {
 		rawJSON = signature.SanitizeGeminiRequestThoughtSignatures(rawJSON, "request.contents")
 	}
@@ -292,9 +293,11 @@ func rewriteGeminiFunctionNames(rawJSON []byte, functionNameMap map[string]strin
 	return rawJSON
 }
 
-func sanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON []byte) []byte {
+func SanitizeAntigravityClaudeGeminiRequestSignatures(modelName string, rawJSON []byte) []byte {
 	var root map[string]any
-	if err := json.Unmarshal(rawJSON, &root); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(rawJSON))
+	decoder.UseNumber()
+	if err := decoder.Decode(&root); err != nil {
 		log.WithError(err).Debug("antigravity gemini translator: failed to parse request for Claude signature sanitize")
 		return rawJSON
 	}
@@ -496,6 +499,58 @@ type FunctionCallGroup struct {
 	CallNames       []string // ordered function call names for backfilling empty response names
 }
 
+// matchGroupResponsesByName 按 CallNames 顺序从 collected 中匹配 functionResponse。
+// 优先按 functionResponse.name 精确匹配；name 为空的 response 视为通配符，按出现顺序回退匹配。
+// 返回与 CallNames 顺序对齐的 matched 切片；若任一 CallName 未匹配到 response，返回 nil 和原 collected。
+// 这避免了原 FIFO-by-count 实现在 response 顺序/数量与 call 不一致时的错误关联与丢弃。
+func matchGroupResponsesByName(collected []gjson.Result, callNames []string) (matched []gjson.Result, remaining []gjson.Result) {
+	if len(callNames) == 0 {
+		return nil, collected
+	}
+	used := make([]bool, len(collected))
+	matched = make([]gjson.Result, 0, len(callNames))
+	for _, callName := range callNames {
+		found := false
+		// 第一轮：精确 name 匹配
+		for i, resp := range collected {
+			if used[i] {
+				continue
+			}
+			if resp.Get("functionResponse.name").String() == callName {
+				matched = append(matched, resp)
+				used[i] = true
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		// 第二轮：空 name 通配符（按出现顺序回退）
+		for i, resp := range collected {
+			if used[i] {
+				continue
+			}
+			if strings.TrimSpace(resp.Get("functionResponse.name").String()) == "" {
+				matched = append(matched, resp)
+				used[i] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, collected
+		}
+	}
+	remaining = make([]gjson.Result, 0, len(collected)-len(matched))
+	for i, resp := range collected {
+		if !used[i] {
+			remaining = append(remaining, resp)
+		}
+	}
+	return matched, remaining
+}
+
 // parseFunctionResponseRaw attempts to normalize a function response part into a JSON object string.
 // Falls back to a minimal "functionResponse" object when parsing fails.
 // fallbackName is used when the response's own name is empty.
@@ -617,16 +672,16 @@ func fixCLIToolResponse(input string) (string, error) {
 		if len(responsePartsInThisContent) > 0 {
 			collectedResponses = append(collectedResponses, responsePartsInThisContent...)
 
-			// Check if pending groups can be satisfied (FIFO: oldest group first)
-			for len(pendingGroups) > 0 && len(collectedResponses) >= pendingGroups[0].ResponsesNeeded {
-				group := pendingGroups[0]
+			// 按 functionResponse.name 匹配 pending group（空 name 视为通配符），
+			// 避免按 count 切片导致 response 关联到错误的 call。
+			for len(pendingGroups) > 0 {
+				matched, remaining := matchGroupResponsesByName(collectedResponses, pendingGroups[0].CallNames)
+				if matched == nil {
+					break // 等待更多 response
+				}
+				appendFunctionResponses(matched, pendingGroups[0].CallNames)
+				collectedResponses = remaining
 				pendingGroups = pendingGroups[1:]
-
-				// Take the needed responses for this group
-				groupResponses := collectedResponses[:group.ResponsesNeeded]
-				collectedResponses = collectedResponses[group.ResponsesNeeded:]
-
-				appendFunctionResponses(groupResponses, group.CallNames)
 			}
 
 			return true // Skip adding this content, responses are merged
@@ -677,13 +732,14 @@ func fixCLIToolResponse(input string) (string, error) {
 	})
 
 	// Handle any remaining pending groups with remaining responses
-	for _, group := range pendingGroups {
-		if len(collectedResponses) >= group.ResponsesNeeded {
-			groupResponses := collectedResponses[:group.ResponsesNeeded]
-			collectedResponses = collectedResponses[group.ResponsesNeeded:]
-
-			appendFunctionResponses(groupResponses, group.CallNames)
+	for len(pendingGroups) > 0 {
+		matched, remaining := matchGroupResponsesByName(collectedResponses, pendingGroups[0].CallNames)
+		if matched == nil {
+			break
 		}
+		appendFunctionResponses(matched, pendingGroups[0].CallNames)
+		collectedResponses = remaining
+		pendingGroups = pendingGroups[1:]
 	}
 
 	// Update the original JSON with the new contents

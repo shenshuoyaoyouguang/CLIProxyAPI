@@ -364,3 +364,43 @@ func TestResponseTranslatorThinkingOutput_NoSignature(t *testing.T) {
 		}
 	}
 }
+
+// TestMultiTurnThinkingLift_RespectsDisabledThinking verifies that when the
+// client explicitly disables thinking (Claude top-level thinking.type=disabled),
+// historical thinking blocks are NOT lifted into reasoning_content. This keeps
+// the translator lift symmetric with the executor-side hard-off gate
+// (thinking.DeepSeekThinkingActive) so user intent to turn thinking off is
+// honored and no CoT is uploaded for a non-thinking request.
+func TestMultiTurnThinkingLift_RespectsDisabledThinking(t *testing.T) {
+	const thinkingText = "CoT from a previous enabled turn."
+	inputJSON := `{
+		"model": "deepseek-v4-pro",
+		"thinking": {"type": "disabled"},
+		"messages": [
+			{
+				"role": "user",
+				"content": [{"type": "text", "text": "hi"}]
+			},
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "thinking", "thinking": "` + thinkingText + `"},
+					{"type": "text", "text": "ok"}
+				]
+			}
+		]
+	}`
+
+	result := ConvertClaudeRequestToOpenAI("deepseek-v4-pro", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+
+	assistantMsg := resultJSON.Get("messages.1")
+	if got := assistantMsg.Get("reasoning_content"); got.Exists() {
+		t.Errorf("thinking.type=disabled must not lift thinking into reasoning_content, got %q", got.String())
+	}
+	// The thinking block is consumed without lifting (it never appears in the
+	// OpenAI-format content array); only reasoning_content must stay absent.
+	if got := assistantMsg.Get("content.0.thinking"); got.Exists() {
+		t.Errorf("thinking block should not survive in content, got %q", got.String())
+	}
+}

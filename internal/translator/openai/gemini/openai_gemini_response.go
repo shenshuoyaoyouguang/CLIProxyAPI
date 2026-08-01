@@ -27,12 +27,8 @@ type ConvertOpenAIResponseToGeminiParams struct {
 	IsFirstChunk bool
 }
 
-// ToolCallAccumulator holds the state for accumulating tool call data
-type ToolCallAccumulator struct {
-	ID        string
-	Name      string
-	Arguments strings.Builder
-}
+// ToolCallAccumulator 别名到 common.ToolCallAccumulator，统一三处重复定义。
+type ToolCallAccumulator = translatorcommon.ToolCallAccumulator
 
 // ConvertOpenAIResponseToGemini converts OpenAI Chat Completions streaming response format to Gemini API format.
 // This function processes OpenAI streaming chunks and transforms them into Gemini-compatible JSON responses.

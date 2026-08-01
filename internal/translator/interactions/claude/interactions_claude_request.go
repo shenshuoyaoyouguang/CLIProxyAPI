@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"fmt"
 	"strings"
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
@@ -227,9 +228,19 @@ func claudeToolResultToInteractions(part gjson.Result) []byte {
 		case result.IsArray():
 			contentItems := make([][]byte, 0, 4)
 			result.ForEach(func(_, item gjson.Result) bool {
-				if item.Get("type").String() == "text" {
+				switch item.Get("type").String() {
+				case "text":
 					contentPart := []byte(`{"type":"text","text":""}`)
 					contentPart, _ = sjson.SetBytes(contentPart, "text", item.Get("text").String())
+					contentItems = append(contentItems, contentPart)
+				case "image", "document", "file":
+					// 非文本部分降级为 text 占位，保证 tool_result 不丢失。
+					text := item.Get("text").String()
+					if text == "" {
+						text = fmt.Sprintf("[%s payload omitted]", item.Get("type").String())
+					}
+					contentPart := []byte(`{"type":"text","text":""}`)
+					contentPart, _ = sjson.SetBytes(contentPart, "text", text)
 					contentItems = append(contentItems, contentPart)
 				}
 				return true

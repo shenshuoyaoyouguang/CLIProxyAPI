@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"strconv"
 
 	"github.com/tidwall/gjson"
@@ -105,4 +106,21 @@ func AppendSSEEventBytes(out []byte, event string, payload []byte, trailingNewli
 		out = append(out, '\n')
 	}
 	return out
+}
+
+// SSEDataPayload 从 SSE 行中提取 `data:` 后的 payload。
+// 要求行首（去除首尾空白后）为 `data:` 前缀，其后可选跟恰好一个空格；
+// 返回去掉前缀与首尾空白的 payload。非 `data:` 行返回 (nil, false)。
+// 该 helper 统一了原先各处 `bytes.HasPrefix(line, []byte("data:"))` + 裸切片的写法，
+// 避免误匹配 `data:payload`（无空格）之外的子串前缀。
+func SSEDataPayload(line []byte) ([]byte, bool) {
+	line = bytes.TrimSpace(line)
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return nil, false
+	}
+	rest := line[len("data:"):]
+	if len(rest) > 0 && rest[0] == ' ' {
+		rest = rest[1:]
+	}
+	return bytes.TrimSpace(rest), true
 }

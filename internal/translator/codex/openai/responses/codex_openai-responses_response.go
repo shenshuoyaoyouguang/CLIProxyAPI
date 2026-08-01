@@ -1,9 +1,9 @@
 package responses
 
 import (
-	"bytes"
 	"context"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 )
 
@@ -11,11 +11,10 @@ import (
 // to OpenAI Responses SSE events (response.*).
 
 func ConvertCodexResponseToOpenAIResponses(_ context.Context, _ string, _, _, rawJSON []byte, _ *any) [][]byte {
-	if bytes.HasPrefix(rawJSON, []byte("data:")) {
-		rawJSON = bytes.TrimSpace(rawJSON[5:])
-		out := make([]byte, 0, len(rawJSON)+len("data: "))
+	if payload, ok := translatorcommon.SSEDataPayload(rawJSON); ok {
+		out := make([]byte, 0, len(payload)+len("data: "))
 		out = append(out, []byte("data: ")...)
-		out = append(out, rawJSON...)
+		out = append(out, payload...)
 		return [][]byte{out}
 	}
 	return [][]byte{rawJSON}

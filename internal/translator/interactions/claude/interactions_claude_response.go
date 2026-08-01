@@ -310,14 +310,13 @@ func interactionsSSEPayload(rawJSON []byte) []byte {
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) {
 		return trimmed
 	}
-	if bytes.HasPrefix(trimmed, []byte("data:")) {
-		return bytes.TrimSpace(trimmed[len("data:"):])
+	if payload, ok := translatorcommon.SSEDataPayload(trimmed); ok {
+		return payload
 	}
 	var dataLines [][]byte
 	for _, line := range bytes.Split(trimmed, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if bytes.HasPrefix(line, []byte("data:")) {
-			dataLines = append(dataLines, bytes.TrimSpace(line[len("data:"):]))
+		if payload, ok := translatorcommon.SSEDataPayload(line); ok {
+			dataLines = append(dataLines, payload)
 		}
 	}
 	if len(dataLines) > 0 {

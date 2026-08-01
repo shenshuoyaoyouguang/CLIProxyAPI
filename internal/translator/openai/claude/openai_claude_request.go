@@ -142,6 +142,11 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 	// Process Anthropic messages
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
+		// Top-level thinking.type=disabled is a hard-off: historical thinking
+		// blocks must not be lifted into reasoning_content. Symmetric with the
+		// executor-side hard-off gate (thinking.DeepSeekThinkingActive) so a
+		// client that turns thinking off does not upload prior CoT.
+		thinkingDisabled := strings.EqualFold(strings.TrimSpace(root.Get("thinking.type").String()), "disabled")
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
@@ -167,7 +172,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					switch partType {
 					case "thinking":
 						// Only map thinking to reasoning_content for assistant messages (security: prevent injection)
-						if role == "assistant" {
+						if role == "assistant" && !thinkingDisabled {
 							if !shouldMapClaudeThinkingToReasoning(part, modelName) {
 								return true
 							}
@@ -391,6 +396,14 @@ func shouldMapClaudeThinkingToGPTReasoning(part gjson.Result) bool {
 //
 // The lift is still gated by `role == "assistant"` at the call site, so
 // user/system thinking blocks remain ignored (AC4).
+//
+// Constraint: the bypass is driven by the client-supplied model name
+// (RequiresDeepSeekReasoningPassback), not by the actual upstream. Mapping a
+// deepseek-v4* alias to a strict non-DeepSeek upstream would lift unsigned
+// thinking blocks into reasoning_content, which strict upstreams may reject.
+// Model-name routing is the same assumption the executor-side passback makes,
+// so the two sides never drift; clients choosing deepseek-v4* models are
+// declaring DeepSeek-family upstream capability.
 func shouldMapClaudeThinkingToReasoning(part gjson.Result, targetModel string) bool {
 	// Shared allowlist with thinking.EnsureMultiTurnReasoningPassback so translator
 	// lift and last-mile passback never drift (see thinking.RequiresDeepSeekReasoningPassback).

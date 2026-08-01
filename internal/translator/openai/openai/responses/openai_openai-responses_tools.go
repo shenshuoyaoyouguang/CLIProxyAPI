@@ -220,17 +220,38 @@ func responsesSingleCustomToolName(requestRawJSON []byte) (string, bool) {
 	return "", false
 }
 
-// unwrapCustomToolInput extracts the freeform input from the {"input": "..."}
-// function-call arguments produced for a converted custom tool; it falls back
-// to the raw arguments when the wrapper is absent.
-func unwrapCustomToolInput(arguments string) string {
+// unwrapCustomToolInputRaw extracts the freeform input from the {"input": ...}
+// wrapper produced for a converted custom tool. It reports whether the unwrapped
+// value is a JSON literal (object/array/number/bool/null) that must be embedded
+// via sjson.SetRawBytes to avoid re-escaping; string values are returned with
+// raw=false so callers can embed them via sjson.SetBytes. It falls back to the
+// raw arguments when the wrapper is absent.
+func unwrapCustomToolInputRaw(arguments string) (string, bool) {
 	if v := gjson.Get(arguments, "input"); v.Exists() {
 		if v.Type == gjson.String {
-			return v.String()
+			return v.String(), false
 		}
-		return v.Raw
+		return v.Raw, true
 	}
-	return arguments
+	// 无包装时：对象/数组参数按 raw JSON 处理，其余按纯文本处理。
+	parsed := gjson.Parse(arguments)
+	if parsed.IsObject() || parsed.IsArray() {
+		return arguments, true
+	}
+	return arguments, false
+}
+
+// setCustomToolInputBytes 写入 custom_tool_call 的 freeform input 到指定 sjson
+// 路径。结构化 input 以 raw JSON 嵌入（与 function-tool parameters 写法一致），
+// 纯字符串以 JSON string 嵌入，避免对结构化 input 的二次转义。
+func setCustomToolInputBytes(item []byte, path, arguments string) []byte {
+	value, raw := unwrapCustomToolInputRaw(arguments)
+	if raw {
+		item, _ = sjson.SetRawBytes(item, path, []byte(value))
+	} else {
+		item, _ = sjson.SetBytes(item, path, value)
+	}
+	return item
 }
 
 func qualifyResponsesNamespaceToolName(namespaceName, childName string) string {

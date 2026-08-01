@@ -162,3 +162,55 @@ func findClaudeEventPayload(events [][]byte, eventName string) []byte {
 	}
 	return nil
 }
+
+// TestClaudeToolResultToInteractions_DegradesImageAndDocumentToText 验证 tool_result
+// 数组 content 中的 image/document/file 部分被降级为 text 占位，而非丢弃（issue #19）。
+func TestClaudeToolResultToInteractions_DegradesImageAndDocumentToText(t *testing.T) {
+	part := gjson.ParseBytes([]byte(`{
+		"type": "tool_result",
+		"tool_use_id": "toolu_123",
+		"content": [
+			{"type": "text", "text": "visible text"},
+			{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0K"}},
+			{"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0K"}},
+			{"type": "file", "file_data": "data:text/plain;base64,aGVsbG8K", "text": "file caption"}
+		]
+	}`))
+	out := claudeToolResultToInteractions(part)
+	resultArr := gjson.GetBytes(out, "result").Array()
+	if len(resultArr) != 4 {
+		t.Fatalf("expected 4 result parts (text + 3 degraded), got %d: %s", len(resultArr), string(out))
+	}
+	want := []string{"visible text", "[image payload omitted]", "[document payload omitted]", "file caption"}
+	for i, w := range want {
+		if got := resultArr[i].Get("type").String(); got != "text" {
+			t.Fatalf("part %d type = %q, want text", i, got)
+		}
+		if got := resultArr[i].Get("text").String(); got != w {
+			t.Fatalf("part %d text = %q, want %q", i, got, w)
+		}
+	}
+}
+
+// TestClaudeToolResultToInteractions_PreservesTextOnlyArray 验证纯 text 数组行为不变。
+func TestClaudeToolResultToInteractions_PreservesTextOnlyArray(t *testing.T) {
+	part := gjson.ParseBytes([]byte(`{
+		"type": "tool_result",
+		"tool_use_id": "toolu_456",
+		"content": [
+			{"type": "text", "text": "first"},
+			{"type": "text", "text": "second"}
+		]
+	}`))
+	out := claudeToolResultToInteractions(part)
+	resultArr := gjson.GetBytes(out, "result").Array()
+	if len(resultArr) != 2 {
+		t.Fatalf("expected 2 result parts, got %d: %s", len(resultArr), string(out))
+	}
+	if got := resultArr[0].Get("text").String(); got != "first" {
+		t.Fatalf("part 0 text = %q, want first", got)
+	}
+	if got := resultArr[1].Get("text").String(); got != "second" {
+		t.Fatalf("part 1 text = %q, want second", got)
+	}
+}
