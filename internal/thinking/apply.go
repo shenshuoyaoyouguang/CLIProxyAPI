@@ -50,6 +50,10 @@ func GetProviderApplier(provider string) ProviderApplier {
 }
 
 // RegisterProvider registers a provider applier by name.
+//
+// Native registrations always win over plugin registrations at lookup time
+// (see GetProvider). Shadowing a plugin-owned applier is therefore a silent
+// behaviour change for that plugin, so it is reported explicitly.
 func RegisterProvider(name string, applier ProviderApplier) {
 	name = normalizedProviderName(name)
 	if name == "" {
@@ -57,6 +61,9 @@ func RegisterProvider(name string, applier ProviderApplier) {
 	}
 	providerAppliersMu.Lock()
 	defer providerAppliersMu.Unlock()
+	if plugin, shadowed := pluginProviderAppliers[name]; shadowed {
+		log.Warnf("thinking: native provider applier %q shadows plugin applier owned by %q; the plugin applier will no longer be used", name, plugin.owner)
+	}
 	nativeProviderAppliers[name] = applier
 }
 
@@ -84,7 +91,7 @@ func RegisterPluginProvider(owner string, name string, priority int, applier Pro
 	return true
 }
 
-// UnregisterPluginProviders removes all provider appliers owned by one plugin.
+// UnregisterPluginProviders removes all provider appliers and extractors owned by one plugin.
 func UnregisterPluginProviders(owner string) {
 	owner = strings.TrimSpace(owner)
 	if owner == "" {
@@ -97,6 +104,11 @@ func UnregisterPluginProviders(owner string) {
 			delete(pluginProviderAppliers, provider)
 		}
 	}
+	for provider, record := range pluginProviderExtractors {
+		if record.owner == owner {
+			delete(pluginProviderExtractors, provider)
+		}
+	}
 }
 
 // ClearPluginProviders removes all plugin-owned provider appliers.
@@ -104,6 +116,88 @@ func ClearPluginProviders() {
 	providerAppliersMu.Lock()
 	defer providerAppliersMu.Unlock()
 	pluginProviderAppliers = map[string]pluginProviderApplier{}
+	pluginProviderExtractors = map[string]pluginProviderExtractor{}
+}
+
+type pluginProviderExtractor struct {
+	owner     string
+	priority  int
+	extractor func(body []byte) ThinkingConfig
+}
+
+// nativeProviderExtractors maps built-in provider names to their body config extractors.
+var nativeProviderExtractors = map[string]func(body []byte) ThinkingConfig{
+	"claude":       extractClaudeConfig,
+	"gemini":       func(body []byte) ThinkingConfig { return extractGeminiConfig(body, "gemini") },
+	"antigravity":  func(body []byte) ThinkingConfig { return extractGeminiConfig(body, "antigravity") },
+	"interactions": extractInteractionsConfig,
+	"openai":       extractOpenAIConfig,
+	"codex":        extractCodexConfig,
+	"xai":          extractCodexConfig,
+	"deepseek":     extractDeepSeekConfig,
+	"kimi":         extractKimiConfig,
+	"nvidia":       extractNvidiaConfig,
+	"zai":          extractOpenAIConfig,
+}
+
+// pluginProviderExtractors maps plugin-owned provider names to their body config extractors.
+var pluginProviderExtractors = map[string]pluginProviderExtractor{}
+
+// GetProviderExtractor returns the body config extractor for the given provider name.
+// Returns nil if the provider is not registered.
+func GetProviderExtractor(provider string) func(body []byte) ThinkingConfig {
+	provider = normalizedProviderName(provider)
+	if provider == "" {
+		return nil
+	}
+	providerAppliersMu.RLock()
+	defer providerAppliersMu.RUnlock()
+	if nativeExtractor, okNative := nativeProviderExtractors[provider]; okNative {
+		return nativeExtractor
+	}
+	return pluginProviderExtractors[provider].extractor
+}
+
+// RegisterProviderExtractor registers a body config extractor by provider name.
+//
+// Native registrations always win over plugin registrations at lookup time
+// (see GetProviderExtractor). Shadowing a plugin-owned extractor is therefore a
+// silent behaviour change for that plugin, so it is reported explicitly.
+func RegisterProviderExtractor(name string, extractor func(body []byte) ThinkingConfig) {
+	name = normalizedProviderName(name)
+	if name == "" || extractor == nil {
+		return
+	}
+	providerAppliersMu.Lock()
+	defer providerAppliersMu.Unlock()
+	if plugin, shadowed := pluginProviderExtractors[name]; shadowed {
+		log.Warnf("thinking: native provider extractor %q shadows plugin extractor owned by %q; the plugin extractor will no longer be used", name, plugin.owner)
+	}
+	nativeProviderExtractors[name] = extractor
+}
+
+// RegisterPluginProviderExtractor registers a plugin-owned body config extractor.
+func RegisterPluginProviderExtractor(owner string, name string, priority int, extractor func(body []byte) ThinkingConfig) bool {
+	owner = strings.TrimSpace(owner)
+	name = normalizedProviderName(name)
+	if owner == "" || name == "" || extractor == nil {
+		return false
+	}
+	providerAppliersMu.Lock()
+	defer providerAppliersMu.Unlock()
+	if _, native := nativeProviderExtractors[name]; native {
+		return false
+	}
+	current, exists := pluginProviderExtractors[name]
+	if exists && (current.priority > priority || (current.priority == priority && current.owner <= owner)) {
+		return false
+	}
+	pluginProviderExtractors[name] = pluginProviderExtractor{
+		owner:     owner,
+		priority:  priority,
+		extractor: extractor,
+	}
+	return true
 }
 
 func normalizedProviderName(provider string) string {
@@ -410,31 +504,20 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return ThinkingConfig{}
 	}
-
-	switch provider {
-	case "claude":
-		return extractClaudeConfig(body)
-	case "gemini", "antigravity":
-		return extractGeminiConfig(body, provider)
-	case "interactions":
-		return extractInteractionsConfig(body)
-	case "openai":
-		return extractOpenAIConfig(body)
-	case "codex", "xai":
-		return extractCodexConfig(body)
-	case "deepseek":
-		return extractDeepSeekConfig(body)
-	case "kimi":
-		return extractKimiConfig(body)
-	case "nvidia":
-		return extractNvidiaConfig(body)
-	default:
+	extractor := GetProviderExtractor(provider)
+	if extractor == nil {
 		return ThinkingConfig{}
 	}
+	return extractor(body)
 }
 
+// hasThinkingConfig reports whether the extracted config carries any thinking
+// intent. The zero ThinkingConfig is {Mode: ModeBudget, Budget: 0, Level: ""}
+// because ModeBudget is the iota zero value, so "no config found" is exactly
+// that triple; anything else means at least one field was populated.
 func hasThinkingConfig(config ThinkingConfig) bool {
-	return config.Mode != ModeBudget || config.Budget != 0 || config.Level != ""
+	isZeroValue := config.Mode == ModeBudget && config.Budget == 0 && config.Level == ""
+	return !isZeroValue
 }
 
 // ExtractReasoningEffort returns the request's thinking setting as a canonical
@@ -467,11 +550,19 @@ func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 	config := extractThinkingConfig(body, provider)
 	if !hasThinkingConfig(config) {
 		switch provider {
-		case "openai", "openai-response":
+		case "openai-response":
+			// No native extractor is registered for "openai-response", so probe
+			// both payload shapes: Responses API (reasoning.effort) first, then
+			// Chat Completions (reasoning_effort).
 			config = extractCodexConfig(body)
 			if !hasThinkingConfig(config) {
 				config = extractOpenAIConfig(body)
 			}
+		case "openai":
+			// extractThinkingConfig already ran extractOpenAIConfig for this
+			// provider and it is deterministic, so only the Responses-style
+			// reasoning.effort shape is still worth probing.
+			config = extractCodexConfig(body)
 		case "deepseek":
 			config = extractOpenAIConfig(body)
 		}
@@ -506,6 +597,16 @@ func reasoningEffortFromConfig(config ThinkingConfig) string {
 	default:
 		return ""
 	}
+}
+
+// fieldNonNil reports whether the gjson Result represents a present,
+// non-null JSON value. gjson.Result.Exists() returns true for JSON null,
+// which causes callers that then read .Int()/.String() to misinterpret a
+// null field as 0/"none"/"" and apply an unintended thinking mode (e.g.
+// "enabled" silently becoming disabled, or a 400 rejection). Guard every
+// optional-field presence check with fieldNonNil.
+func fieldNonNil(r gjson.Result) bool {
+	return r.Exists() && r.Type != gjson.Null
 }
 
 // extractClaudeConfig extracts thinking configuration from Claude format request body.
@@ -544,7 +645,7 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 	}
 
 	// Check budget_tokens
-	if budget := gjson.GetBytes(body, "thinking.budget_tokens"); budget.Exists() {
+	if budget := gjson.GetBytes(body, "thinking.budget_tokens"); fieldNonNil(budget) {
 		value := int(budget.Int())
 		switch value {
 		case 0:
@@ -586,7 +687,7 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 		// Google official Gemini Python SDK sends snake_case field names
 		level = gjson.GetBytes(body, prefix+".thinking_level")
 	}
-	if level.Exists() {
+	if fieldNonNil(level) {
 		value := level.String()
 		switch value {
 		case "none":
@@ -604,7 +705,7 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 		// Google official Gemini Python SDK sends snake_case field names
 		budget = gjson.GetBytes(body, prefix+".thinking_budget")
 	}
-	if budget.Exists() {
+	if fieldNonNil(budget) {
 		value := int(budget.Int())
 		switch value {
 		case 0:
@@ -678,7 +779,7 @@ func extractInteractionsConfig(body []byte) ThinkingConfig {
 // The "none" value is treated specially to return ModeNone.
 func extractOpenAIConfig(body []byte) ThinkingConfig {
 	// Check reasoning_effort (OpenAI Chat Completions format)
-	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+	if effort := gjson.GetBytes(body, "reasoning_effort"); fieldNonNil(effort) {
 		value := effort.String()
 		if value == "none" {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
@@ -741,7 +842,7 @@ func extractKimiConfig(body []byte) ThinkingConfig {
 // This is similar to OpenAI but uses nested field "reasoning.effort" instead of "reasoning_effort".
 func extractCodexConfig(body []byte) ThinkingConfig {
 	// Check reasoning.effort (Codex / OpenAI Responses API format)
-	if effort := gjson.GetBytes(body, "reasoning.effort"); effort.Exists() {
+	if effort := gjson.GetBytes(body, "reasoning.effort"); fieldNonNil(effort) {
 		value := effort.String()
 		if value == "none" {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
@@ -777,14 +878,17 @@ func extractDeepSeekConfig(body []byte) ThinkingConfig {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
 		case "enabled":
 			thinkingEnabled = true
-			if !gjson.GetBytes(body, "reasoning_effort").Exists() {
+			// A JSON null reasoning_effort is treated exactly like a missing
+			// field (gjson.Exists() reports true for null, so check the type):
+			// the upstream then receives thinking.type=enabled without effort.
+			if effort := gjson.GetBytes(body, "reasoning_effort"); !effort.Exists() || effort.Type == gjson.Null {
 				return ThinkingConfig{}
 			}
 		}
 	}
 
 	// Check reasoning_effort (OpenAI-compatible top-level field)
-	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() && effort.Type != gjson.Null {
 		value := strings.ToLower(strings.TrimSpace(effort.String()))
 		switch value {
 		case "":

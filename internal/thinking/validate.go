@@ -147,7 +147,10 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	if strictBudget && config.Mode == ModeBudget && !budgetDerivedFromLevel {
 		min, max := support.Min, support.Max
 		if min != 0 || max != 0 {
-			if config.Budget < min || config.Budget > max || (config.Budget == 0 && !support.ZeroAllowed) {
+			// Budget == 0 is unreachable here: it was normalized to ModeNone
+			// above, and nothing between that point and here reassigns Mode.
+			// Only the range check remains meaningful.
+			if config.Budget < min || config.Budget > max {
 				message := fmt.Sprintf("budget %d out of range [%d,%d]", config.Budget, min, max)
 				return nil, NewThinkingError(ErrBudgetOutOfRange, message)
 			}

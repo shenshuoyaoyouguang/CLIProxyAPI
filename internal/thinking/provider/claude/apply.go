@@ -11,6 +11,7 @@ package claude
 import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -193,8 +194,19 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 		minBudget = modelInfo.Thinking.Min
 	}
 	if minBudget > 0 && adjustedBudget > 0 && adjustedBudget < minBudget {
-		// If enforcing the max_tokens constraint would push the budget below the model minimum,
-		// leave the request unchanged.
+		// The two constraints cannot both be satisfied: honouring
+		// budget_tokens < max_tokens would push the budget below the model
+		// minimum. Leaving the request untouched would forward the original
+		// budget_tokens (>= max_tokens), which Anthropic rejects with a 400.
+		// Disable thinking instead so the request stays valid, and leave a trace
+		// because this is a silent capability downgrade.
+		log.Warnf("claude thinking: budget %d cannot satisfy both max_tokens=%d and model minimum=%d; disabling thinking for this request", budgetTokens, effectiveMax, minBudget)
+		body, _ = sjson.SetBytes(body, "thinking.type", "disabled")
+		body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
+		body, _ = sjson.DeleteBytes(body, "output_config.effort")
+		if oc := gjson.GetBytes(body, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
+			body, _ = sjson.DeleteBytes(body, "output_config")
+		}
 		return body
 	}
 

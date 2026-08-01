@@ -6,7 +6,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestNormalizeDeepSeekModelID(t *testing.T) {
+func TestNormalizeProviderModelID(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
@@ -17,8 +17,8 @@ func TestNormalizeDeepSeekModelID(t *testing.T) {
 		{"", ""},
 	}
 	for _, tc := range cases {
-		if got := NormalizeDeepSeekModelID(tc.in); got != tc.want {
-			t.Errorf("NormalizeDeepSeekModelID(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := NormalizeProviderModelID(tc.in); got != tc.want {
+			t.Errorf("NormalizeProviderModelID(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -141,25 +141,6 @@ func TestDeepSeekThinkingActive(t *testing.T) {
 				t.Errorf("DeepSeekThinkingActive = %v, want %v", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestShouldReplaceDeepSeekReasoningContent(t *testing.T) {
-	missing := gjson.Get(`{}`, "reasoning_content")
-	if !ShouldReplaceDeepSeekReasoningContent(missing) {
-		t.Error("missing should replace")
-	}
-	empty := gjson.Get(`{"reasoning_content":""}`, "reasoning_content")
-	if !ShouldReplaceDeepSeekReasoningContent(empty) {
-		t.Error("empty should replace")
-	}
-	ws := gjson.Get(`{"reasoning_content":"  "}`, "reasoning_content")
-	if !ShouldReplaceDeepSeekReasoningContent(ws) {
-		t.Error("whitespace should replace")
-	}
-	keep := gjson.Get(`{"reasoning_content":"real"}`, "reasoning_content")
-	if ShouldReplaceDeepSeekReasoningContent(keep) {
-		t.Error("non-empty must not replace")
 	}
 }
 

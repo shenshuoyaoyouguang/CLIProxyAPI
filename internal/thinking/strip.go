@@ -46,7 +46,11 @@ func StripThinkingConfig(body []byte, provider string) []byte {
 			"generation_config.thinking_config",
 			"generation_config.thinkingConfig",
 		}
-	case "openai":
+	case "openai", "zai":
+		// Z.ai reuses the OpenAI-compatible reasoning_effort shape (see
+		// thinking/provider/zai.Applier embedding openai.Applier), so it must be
+		// stripped the same way; otherwise the field is forwarded verbatim to a
+		// model that does not support thinking.
 		paths = []string{"reasoning_effort"}
 	case "deepseek":
 		paths = []string{"reasoning_effort", "thinking"}

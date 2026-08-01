@@ -72,6 +72,13 @@ const (
 //   - 8193-24576 → high
 //   - 24577+    → xhigh
 //
+// Round-trip is intentionally lossy and NOT conservative in either direction:
+// budgets are bucketed into levels, so ConvertLevelToBudget(ConvertBudgetToLevel(b))
+// generally returns the bucket's upper bound rather than b (e.g. 2000 → "medium" → 8192).
+// The "max" level is one-way only: ConvertLevelToBudget("max") = 128000, but
+// ConvertBudgetToLevel(128000) returns "xhigh" because "max" has no threshold
+// range of its own. Callers must not rely on round-trip equality.
+//
 // Returns:
 //   - level: The converted thinking level string
 //   - ok: true if budget is valid, false for invalid negatives (< -1)

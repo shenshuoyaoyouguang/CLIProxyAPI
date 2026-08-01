@@ -6,9 +6,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// NormalizeDeepSeekModelID trims, lowercases, strips thinking suffixes like
+// NormalizeProviderModelID trims, lowercases, strips thinking suffixes like
 // "(high)", and strips optional provider prefixes (e.g. "deepseek/deepseek-v4-pro").
-func NormalizeDeepSeekModelID(model string) string {
+// It is shared by the DeepSeek and NVIDIA model routing paths.
+func NormalizeProviderModelID(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" {
 		return ""
@@ -29,7 +30,7 @@ func NormalizeDeepSeekModelID(model string) string {
 // and must not receive passback injection. models.json also omits the thinking
 // block for this id so ApplyThinking does not advertise levels for chat mode.
 func RequiresDeepSeekReasoningPassback(model string) bool {
-	m := NormalizeDeepSeekModelID(model)
+	m := NormalizeProviderModelID(model)
 	if m == "" {
 		return false
 	}
@@ -52,16 +53,6 @@ func IsInactiveReasoningEffort(effort string) bool {
 	default:
 		return false
 	}
-}
-
-// ShouldReplaceDeepSeekReasoningContent is true when reasoning_content is
-// missing or empty/whitespace so real CoT may be lifted into it. Non-empty
-// values must never be overwritten.
-func ShouldReplaceDeepSeekReasoningContent(rc gjson.Result) bool {
-	if !rc.Exists() {
-		return true
-	}
-	return strings.TrimSpace(rc.String()) == ""
 }
 
 // LiftDeepSeekReasoningText extracts chain-of-thought text from shapes that may

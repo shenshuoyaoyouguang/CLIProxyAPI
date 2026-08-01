@@ -1,6 +1,7 @@
 package thinking
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -38,6 +39,9 @@ func TestEnsureMultiTurnReasoningPassback_V4WithToolCalls(t *testing.T) {
 }
 
 func TestEnsureMultiTurnReasoningPassback_V4WithoutToolCalls(t *testing.T) {
+	// Review M1: plain-text assistant turns (no tool_calls) must not receive an
+	// injected reasoning_content placeholder, even when the gate is open. Only
+	// tool-call turns need the field for DeepSeek multi-turn continuity.
 	body := []byte(`{"model":"deepseek-v4-pro","reasoning_effort":"high","messages":[
 		{"role":"user","content":"Hello"},
 		{"role":"assistant","content":"Hi there!"},
@@ -47,9 +51,31 @@ func TestEnsureMultiTurnReasoningPassback_V4WithoutToolCalls(t *testing.T) {
 	result := EnsureMultiTurnReasoningPassback(body, "deepseek-v4-pro")
 	for _, idx := range []int{1, 3} {
 		path := gjson.GetBytes(result, fmt.Sprintf("messages.%d.reasoning_content", idx))
-		if !path.Exists() {
-			t.Errorf("messages[%d].reasoning_content missing", idx)
+		if path.Exists() {
+			t.Errorf("messages[%d].reasoning_content injected for plain-text assistant (M1)", idx)
 		}
+	}
+}
+
+func TestEnsureMultiTurnReasoningPassback_NoPlaceholderForPlainTextAssistant(t *testing.T) {
+	// Review M1: a gate-open request with a mixed history must only back-fill
+	// assistant turns that carry tool_calls; plain-text turns stay untouched so
+	// the upstream prompt cache sees a stable message shape.
+	body := []byte(`{"model":"deepseek-v4-pro","reasoning_effort":"high","messages":[
+		{"role":"user","content":"Weather?"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"sunny"},
+		{"role":"assistant","content":"It is sunny in NYC."}
+	]}`)
+	result := EnsureMultiTurnReasoningPassback(body, "deepseek-v4-pro")
+	if !gjson.GetBytes(result, "messages.1.reasoning_content").Exists() {
+		t.Error("tool-call assistant turn must receive reasoning_content placeholder")
+	}
+	if got := gjson.GetBytes(result, "messages.1.reasoning_content").String(); got != "" {
+		t.Errorf("messages[1].reasoning_content = %q, want empty placeholder", got)
+	}
+	if gjson.GetBytes(result, "messages.3.reasoning_content").Exists() {
+		t.Error("plain-text assistant turn must not receive reasoning_content (M1)")
 	}
 }
 
@@ -100,7 +126,7 @@ func TestEnsureMultiTurnReasoningPassback_DeprecatedReasoner(t *testing.T) {
 }
 
 func TestEnsureMultiTurnReasoningPassback_ModelSuffix(t *testing.T) {
-	body := []byte(`{"model":"deepseek-v4-pro","reasoning_effort":"high","messages":[{"role":"assistant","content":"hello"}]}`)
+	body := []byte(`{"model":"deepseek-v4-pro","reasoning_effort":"high","messages":[{"role":"assistant","content":"hello","tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]}]}`)
 	result := EnsureMultiTurnReasoningPassback(body, "deepseek-v4-pro(high)")
 	if !gjson.GetBytes(result, "messages.0.reasoning_content").Exists() {
 		t.Error("suffix model: not back-filled")
@@ -151,7 +177,7 @@ func TestEnsureMultiTurnReasoningPassback_ReasoningEffortNone_WithHistory_NoInje
 
 func TestEnsureMultiTurnReasoningPassback_ThinkingEnabledWinsOverEffortNone(t *testing.T) {
 	body := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"},"reasoning_effort":"none","messages":[
-		{"role":"assistant","content":"hello"}
+		{"role":"assistant","content":"hello","tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]}
 	]}`)
 	result := EnsureMultiTurnReasoningPassback(body, "deepseek-v4-pro")
 	if !gjson.GetBytes(result, "messages.0.reasoning_content").Exists() {
@@ -243,7 +269,7 @@ func TestEnsureMultiTurnReasoningPassback_LiftActivatesGateWithoutRequestFlag(t 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[
 		{"role":"assistant","content":"","thinking_blocks":[{"type":"thinking","thinking":"first CoT"}],"tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]},
 		{"role":"tool","tool_call_id":"c1","content":"ok"},
-		{"role":"assistant","content":"done"}
+		{"role":"assistant","content":"","tool_calls":[{"id":"c2","type":"function","function":{"name":"x","arguments":"{}"}}]}
 	]}`)
 	result := EnsureMultiTurnReasoningPassback(body, "deepseek-v4-pro")
 	if got := gjson.GetBytes(result, "messages.0.reasoning_content").String(); got != "first CoT" {
@@ -295,17 +321,18 @@ func TestEnsureMultiTurnReasoningPassback_InactiveEffortMultiToolPassback(t *tes
 
 // TestEnsureMultiTurnReasoningPassback_EmptyRCWithToolCalls (issue #5) verifies
 // that empty-string reasoning_content in history triggers the gate for
-// subsequent tool-call turns even without an explicit reasoning_effort.
+// subsequent tool-call turns even without an explicit reasoning_effort. The
+// placeholder is only back-filled for tool-call turns (review M1).
 func TestEnsureMultiTurnReasoningPassback_EmptyRCWithToolCalls(t *testing.T) {
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[
 		{"role":"user","content":"hi"},
 		{"role":"assistant","content":"","reasoning_content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"x","arguments":"{}"}}]},
 		{"role":"tool","tool_call_id":"c1","content":"ok"},
-		{"role":"assistant","content":"follow-up"}
+		{"role":"assistant","content":"follow-up","tool_calls":[{"id":"c2","type":"function","function":{"name":"x","arguments":"{}"}}]}
 	]}`)
 	result := EnsureMultiTurnReasoningPassback(body, "deepseek-v4-pro")
 	if !gjson.GetBytes(result, "messages.3.reasoning_content").Exists() {
-		t.Error("issue #5: empty rc + tool calls should trigger gate for later turns")
+		t.Error("issue #5: empty rc + tool calls should trigger gate for later tool-call turns")
 	}
 }
 
@@ -352,5 +379,51 @@ func TestEnsureMultiTurnReasoningPassback_NullReasoningContentStandardized(t *te
 	}
 	if rc1.String() != "" {
 		t.Errorf("issue #4: messages[1].reasoning_content = %q, want empty string", rc1.String())
+	}
+}
+
+// buildDeepSeekPassbackHistory builds a chat-completions body with numAssistant
+// assistant turns (each missing reasoning_content so the passback placeholder
+// path runs) and per-message text of ~textBytes.
+func buildDeepSeekPassbackHistory(numAssistant, textBytes int) []byte {
+	msgs := make([]map[string]any, 0, numAssistant*2)
+	for i := 0; i < numAssistant; i++ {
+		text := make([]byte, textBytes)
+		for j := range text {
+			text[j] = 'a' + byte(j%26)
+		}
+		msgs = append(msgs, map[string]any{"role": "assistant", "content": string(text)})
+		msgs = append(msgs, map[string]any{"role": "user", "content": "next"})
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":            "deepseek-v4-pro",
+		"reasoning_effort": "high",
+		"messages":         msgs,
+	})
+	return body
+}
+
+// BenchmarkEnsureMultiTurnReasoningPassback tracks the cost of the DeepSeek
+// multi-turn passback on growing histories. Regression guard for review M2:
+// per-message sjson.SetBytes rebuilds make the old implementation quadratic.
+func BenchmarkEnsureMultiTurnReasoningPassback(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		msgs     int
+		textSize int
+	}{
+		{"msgs=10_text=512", 10, 512},
+		{"msgs=50_text=2048", 50, 2048},
+	} {
+		body := buildDeepSeekPassbackHistory(tc.msgs, tc.textSize)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				out := EnsureMultiTurnReasoningPassback(body, "deepseek-v4-pro")
+				if len(out) == 0 {
+					b.Fatal("empty output")
+				}
+			}
+		})
 	}
 }

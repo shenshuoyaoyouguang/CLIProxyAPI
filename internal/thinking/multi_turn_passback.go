@@ -1,7 +1,8 @@
 package thinking
 
 import (
-	"fmt"
+	"bytes"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -86,55 +87,84 @@ func (deepSeekMultiTurnPassback) Ensure(body []byte, model string) []byte {
 		return body
 	}
 
-	result := body
-	modified := false
-
-	// Phase 1: lift real CoT into missing/empty reasoning_content.
-	for i, msg := range messages.Array() {
-		if msg.Get("role").String() != "assistant" {
-			continue
-		}
-		if !ShouldReplaceDeepSeekReasoningContent(msg.Get("reasoning_content")) {
-			continue
-		}
-		lifted, ok := LiftDeepSeekReasoningText(msg)
-		if !ok {
-			continue
-		}
-		path := fmt.Sprintf("messages.%d.reasoning_content", i)
-		updated, err := sjson.SetBytes(result, path, lifted)
-		if err != nil {
-			log.Errorf("deepseek reasoning: failed to lift reasoning_content at %s: %v", path, err)
-			continue
-		}
-		result = updated
-		modified = true
-	}
-
-	// Phase 2: placeholder for assistants still missing the field.
-	// JSON null reasoning_content is treated as missing and standardized to ""
-	// so the upstream never receives a bare null (which would yield HTTP 400).
-	messages = gjson.GetBytes(result, "messages")
+	// Single pass: compute the target reasoning_content for every assistant
+	// message. Collecting updates first keeps the rebuild O(body) instead of
+	// O(numMessages * body) (review M2).
+	updates := make(map[int]string)
 	for i, msg := range messages.Array() {
 		if msg.Get("role").String() != "assistant" {
 			continue
 		}
 		rc := msg.Get("reasoning_content")
-		if rc.Exists() && rc.Type != gjson.Null {
+		if rc.Exists() && rc.Type != gjson.Null && strings.TrimSpace(rc.String()) != "" {
+			// Non-empty chain-of-thought is never overwritten.
 			continue
 		}
-		path := fmt.Sprintf("messages.%d.reasoning_content", i)
-		updated, err := sjson.SetBytes(result, path, "")
-		if err != nil {
-			log.Errorf("deepseek reasoning: failed to back-fill reasoning_content at %s: %v", path, err)
+		// Lift real CoT from translated shapes (thinking_blocks / content
+		// thinking) into missing or empty reasoning_content.
+		if lifted, ok := LiftDeepSeekReasoningText(msg); ok {
+			updates[i] = lifted
 			continue
 		}
-		result = updated
-		modified = true
+		if rc.Exists() && rc.Type == gjson.Null {
+			// JSON null reasoning_content is illegal upstream (HTTP 400);
+			// standardize it to "" (issue #4).
+			updates[i] = ""
+			continue
+		}
+		if !rc.Exists() && assistantHasToolCalls(msg) {
+			// DeepSeek multi-turn tool calls require the field; missing it
+			// yields HTTP 400, so back-fill an empty placeholder. Plain-text
+			// assistant turns stay untouched to keep the message shape stable
+			// for upstream prompt caching (review M1).
+			updates[i] = ""
+		}
+	}
+	if len(updates) == 0 {
+		return body
 	}
 
-	if !modified {
+	// Rebuild the messages array once instead of re-parsing the whole body per
+	// updated message.
+	var buf bytes.Buffer
+	buf.Grow(len(messages.Raw) + 32)
+	buf.WriteByte('[')
+	first := true
+	for i, msg := range messages.Array() {
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		if value, ok := updates[i]; ok {
+			updated, err := sjson.SetBytes([]byte(msg.Raw), "reasoning_content", value)
+			if err != nil {
+				// Expected failure path: the original message is kept verbatim,
+				// so the request stays valid and only CoT continuity is lost.
+				log.Warnf("deepseek reasoning: failed to set reasoning_content at messages.%d, keeping original message: %v", i, err)
+				buf.WriteString(msg.Raw)
+				continue
+			}
+			buf.Write(updated)
+		} else {
+			buf.WriteString(msg.Raw)
+		}
+	}
+	buf.WriteByte(']')
+
+	result, err := sjson.SetRawBytes(body, "messages", buf.Bytes())
+	if err != nil {
+		// Expected failure path: the untouched body is returned, so the request
+		// still succeeds without reasoning_content passback.
+		log.Warnf("deepseek reasoning: failed to replace messages array, sending body unchanged: %v", err)
 		return body
 	}
 	return result
+}
+
+// assistantHasToolCalls reports whether an assistant message carries a non-empty
+// tool_calls array. Only such turns need reasoning_content passback for DeepSeek
+// multi-turn tool continuity.
+func assistantHasToolCalls(msg gjson.Result) bool {
+	tc := msg.Get("tool_calls")
+	return tc.Exists() && tc.IsArray() && len(tc.Array()) > 0
 }

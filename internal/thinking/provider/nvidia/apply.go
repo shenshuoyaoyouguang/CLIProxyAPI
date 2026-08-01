@@ -159,6 +159,13 @@ func applyEnabledLevel(body []byte, level string) ([]byte, error) {
 
 	switch level {
 	case string(thinking.LevelLow):
+		// reasoning_budget and medium_effort are mutually exclusive upstream;
+		// a budget request clamped to low must not leave the original budget
+		// field behind (mirrors applyBudget clearing medium_effort).
+		result, err = sjson.DeleteBytes(result, "reasoning_budget")
+		if err != nil {
+			return body, fmt.Errorf("nvidia thinking: failed to clear reasoning_budget: %w", err)
+		}
 		result, err = sjson.SetBytes(result, "medium_effort", true)
 		if err != nil {
 			return body, fmt.Errorf("nvidia thinking: failed to set medium_effort: %w", err)
@@ -167,6 +174,13 @@ func applyEnabledLevel(body []byte, level string) ([]byte, error) {
 		result, err = sjson.DeleteBytes(result, "medium_effort")
 		if err != nil {
 			return body, fmt.Errorf("nvidia thinking: failed to clear medium_effort: %w", err)
+		}
+		// reasoning_budget and medium_effort are mutually exclusive upstream. A
+		// level request must not leave a previously supplied reasoning_budget
+		// behind, mirroring the low branch above.
+		result, err = sjson.DeleteBytes(result, "reasoning_budget")
+		if err != nil {
+			return body, fmt.Errorf("nvidia thinking: failed to clear reasoning_budget: %w", err)
 		}
 	}
 

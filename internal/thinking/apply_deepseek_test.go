@@ -70,3 +70,25 @@ func TestExtractDeepSeekConfig_EnabledWithEffortAuto(t *testing.T) {
 		t.Errorf("enabled+effort=auto: expected ModeAuto, got Mode=%v", cfg.Mode)
 	}
 }
+
+// TestExtractDeepSeekConfig_NullReasoningEffort verifies that a JSON null
+// reasoning_effort is treated exactly like a missing field (passthrough),
+// symmetric with the reasoning_content null standardization: gjson.Exists()
+// reports true for null, so the type must be checked explicitly.
+func TestExtractDeepSeekConfig_NullReasoningEffort(t *testing.T) {
+	body := []byte(`{"reasoning_effort":null}`)
+	cfg := extractDeepSeekConfig(body)
+	if hasThinkingConfig(cfg) {
+		t.Errorf("reasoning_effort=null: expected passthrough (empty config), got Mode=%v Level=%q", cfg.Mode, cfg.Level)
+	}
+}
+
+// TestExtractDeepSeekConfig_EnabledWithNullEffort verifies thinking.type=enabled
+// with a null effort behaves like enabled without effort: passthrough.
+func TestExtractDeepSeekConfig_EnabledWithNullEffort(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"enabled"},"reasoning_effort":null}`)
+	cfg := extractDeepSeekConfig(body)
+	if hasThinkingConfig(cfg) {
+		t.Errorf("enabled + effort=null: expected passthrough, got Mode=%v Level=%q", cfg.Mode, cfg.Level)
+	}
+}
