@@ -173,8 +173,12 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 
 	var readCh chan codexWebsocketRead
+	var readToken uint64
 	if sess != nil {
 		readCh = sess.activate(conn)
+		// Snapshot the read counter before writing so the reader pump drops any
+		// trailing event from the previous turn on this reused connection.
+		readToken = sess.currentReadToken(conn)
 		defer func() {
 			sess.clearActive(conn, readCh)
 		}()
@@ -212,6 +216,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 					return resp, errBind
 				}
 				readCh = sess.activate(conn)
+				readToken = sess.currentReadToken(conn)
 				wsReqBodyRetry := buildCodexWebsocketRequestBody(upstreamBody)
 				helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 					URL:       wsURL,
@@ -251,7 +256,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if ctx != nil && ctx.Err() != nil {
 			return resp, ctx.Err()
 		}
-		msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+		msgType, payload, errRead := e.readMessage(ctx, sess, conn, readCh, readToken)
 		if errRead != nil {
 			mappedErr := mapCodexWebsocketReadError(errRead)
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)

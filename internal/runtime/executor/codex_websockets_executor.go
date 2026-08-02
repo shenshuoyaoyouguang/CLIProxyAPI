@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -21,13 +22,27 @@ import (
 type CodexWebsocketsExecutor struct {
 	*CodexExecutor
 
-	store *codexWebsocketSessionStore
+	*websocketSessionRuntime
 }
 
 func NewCodexWebsocketsExecutor(cfg *config.Config) *CodexWebsocketsExecutor {
-	return &CodexWebsocketsExecutor{
+	exec := &CodexWebsocketsExecutor{
 		CodexExecutor: NewCodexExecutor(cfg),
-		store:         globalCodexWebsocketSessionStore,
+	}
+	exec.websocketSessionRuntime = newCodexWebsocketSessionRuntime(exec)
+	return exec
+}
+
+func newCodexWebsocketSessionRuntime(exec *CodexWebsocketsExecutor) *websocketSessionRuntime {
+	return &websocketSessionRuntime{
+		store:            globalCodexWebsocketSessionStore,
+		defaultStore:     globalCodexWebsocketSessionStore,
+		dial:             exec.dialCodexWebsocket,
+		logConnected:     logCodexWebsocketConnected,
+		logDisconnected:  logCodexWebsocketDisconnected,
+		pongWriteTimeout: 10 * time.Second,
+		readDeadline:     codexResponsesWebsocketIdleTimeout,
+		executorName:     "codex websockets executor",
 	}
 }
 

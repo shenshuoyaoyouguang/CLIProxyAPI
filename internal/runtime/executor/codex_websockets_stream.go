@@ -186,8 +186,12 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	var readCh chan codexWebsocketRead
+	var readToken uint64
 	if sess != nil {
 		readCh = sess.activate(conn)
+		// Snapshot the read counter before writing so the reader pump drops any
+		// trailing event from the previous turn on this reused connection.
+		readToken = sess.currentReadToken(conn)
 	}
 
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
@@ -229,6 +233,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, errBind
 			}
 			readCh = sess.activate(conn)
+			readToken = sess.currentReadToken(conn)
 			wsReqBodyRetry := buildCodexWebsocketRequestBody(upstreamBody)
 			helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 				URL:       wsURL,
@@ -303,7 +308,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 				return
 			}
-			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+			msgType, payload, errRead := e.readMessage(ctx, sess, conn, readCh, readToken)
 			if errRead != nil {
 				if sess != nil && ctx != nil && ctx.Err() != nil {
 					terminateReason = "context_done"
