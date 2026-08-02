@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -17,6 +18,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
+
+// pluginLoadTimeout bounds how long ApplyConfig waits for a plugin to load and
+// register while holding the applyMu slot. Without it a hung plugin Register
+// would freeze every plugin lifecycle operation (config reload, plugin unload,
+// and full shutdown) indefinitely.
+const pluginLoadTimeout = 30 * time.Second
 
 type loadedPlugin struct {
 	id         string
@@ -278,8 +285,11 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 			h.mu.Unlock()
 			h.startPluginLoad(ctx, file, item, request)
 
-			loadResult, completed := h.waitForPluginLoad(ctx, file.ID, request)
+			loadCtx, cancelLoad := context.WithTimeout(ctx, pluginLoadTimeout)
+			loadResult, completed := h.waitForPluginLoad(loadCtx, file.ID, request)
+			cancelLoad()
 			if !completed {
+				log.Warnf("pluginhost: plugin %s from %s did not finish loading within %s; abandoning load", file.ID, file.Path, pluginLoadTimeout)
 				return
 			}
 			if loadResult.err != nil {
@@ -867,8 +877,4 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.UsagePlugin != nil ||
 		caps.CommandLinePlugin != nil ||
 		caps.ManagementAPI != nil
-}
-
-func typeName(v any) string {
-	return fmt.Sprintf("%T", v)
 }

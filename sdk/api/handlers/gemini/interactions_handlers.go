@@ -159,7 +159,11 @@ func (h *GeminiAPIHandler) handleInteractionsStream(c *gin.Context, cliCtx conte
 				return
 			}
 			if len(chunk.Payload) > 0 {
-				data <- chunk.Payload
+				select {
+				case <-cliCtx.Done():
+					return
+				case data <- chunk.Payload:
+				}
 			}
 		}
 	}()

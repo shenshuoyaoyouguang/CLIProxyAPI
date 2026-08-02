@@ -163,7 +163,11 @@ func (s *Service) Run(ctx context.Context) error {
 		}
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case errStart := <-s.serverErr:
+		return errStart // bind failure surfaces immediately
+	case <-time.After(100 * time.Millisecond):
+	}
 	fmt.Printf("API server started successfully on: %s:%d\n", s.cfg.Host, s.cfg.Port)
 
 	s.applyPprofConfig(s.cfg)
@@ -239,7 +243,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			s.homeConfigCommitMu.Lock()
 			supervisor.cancel()
 			s.homeConfigCommitMu.Unlock()
-			<-supervisor.done
+			select {
+			case <-supervisor.done:
+			case <-ctx.Done(): // respect the shutdown budget
+				log.Warnf("home subscriber did not stop within the shutdown budget; continuing shutdown")
+			}
 		}
 		s.homeMu.Lock()
 		homeCancel := s.homeCancel
