@@ -1,15 +1,7 @@
 // Package deepseek implements thinking configuration for DeepSeek models.
 //
-// DeepSeek models use the reasoning_effort format with discrete levels
-// (low/medium/high/xhigh/max), compatible with the OpenAI API format.
-// The special value "auto" is also supported for dynamic effort selection.
-// See: https://api-docs.deepseek.com/guides/thinking_mode
-//
-// DeepSeek-specific behavior:
-//   - Output format: reasoning_effort (string: low/medium/high/xhigh/max, or "auto")
-//   - Level-only mode: no native numeric budget support (converted via thresholds)
-//   - Server-side mapping: low/medium → high, xhigh → max
-//   - Supports thinking.type: "enabled"/"disabled" for explicit control
+// DeepSeek uses the OpenAI-compatible reasoning_effort format for enabled thinking
+// levels, but relies on thinking.type=disabled when thinking is explicitly turned off.
 package deepseek
 
 import (
@@ -24,18 +16,21 @@ import (
 // Applier implements thinking.ProviderApplier for DeepSeek models.
 //
 // DeepSeek-specific behavior:
-//   - Output format: reasoning_effort (string, top-level) + thinking.type
-//   - Level-only mode: no native numeric budget support
-//   - Enabled thinking: sets reasoning_effort and thinking.type="enabled"
-//   - Disabled thinking: removes reasoning_effort and sets thinking.type="disabled"
+//   - Enabled thinking: reasoning_effort (string levels)
+//   - Disabled thinking: thinking.type="disabled"
+//   - Supports budget-to-level conversion
+//   - "xhigh" level is mapped to "max" (DeepSeek does not accept "xhigh")
 type Applier struct{}
 
 var _ thinking.ProviderApplier = (*Applier)(nil)
 
+// SupportsNativeDisabled reports whether DeepSeek honors an explicit
+// thinking.type="disabled" marker for ModeNone. DeepSeek emits the disabled marker
+// (see applyDisabledThinking), so thinking stays fully off.
+func (a *Applier) SupportsNativeDisabled() bool { return true }
+
 // NewApplier creates a new DeepSeek thinking applier.
-func NewApplier() *Applier {
-	return &Applier{}
-}
+func NewApplier() *Applier { return &Applier{} }
 
 func init() {
 	thinking.RegisterProvider("deepseek", NewApplier())
@@ -43,28 +38,18 @@ func init() {
 
 // Apply applies thinking configuration to DeepSeek request body.
 //
-// DeepSeek uses both reasoning_effort and thinking.type for thinking control.
-// The thinking.type defaults to "enabled" when reasoning_effort is set.
-// We explicitly set both for robustness.
-//
 // Expected output format (enabled):
 //
 //	{
-//	  "thinking": { "type": "enabled" },
 //	  "reasoning_effort": "high"
 //	}
 //
 // Expected output format (disabled):
 //
 //	{
-//	  "thinking": { "type": "disabled" }
-//	}
-//
-// Expected output format (auto):
-//
-//	{
-//	  "thinking": { "type": "enabled" },
-//	  "reasoning_effort": "auto"
+//	  "thinking": {
+//	    "type": "disabled"
+//	  }
 //	}
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
 	if thinking.IsUserDefinedModel(modelInfo) {
@@ -74,34 +59,41 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		return body, nil
 	}
 
-	// Only handle ModeLevel, ModeNone, and ModeAuto; other modes pass through unchanged.
-	if config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto {
-		return body, nil
-	}
-
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		body = []byte(`{}`)
 	}
 
+	var effort string
 	switch config.Mode {
 	case thinking.ModeLevel:
 		if config.Level == "" {
 			return body, nil
 		}
-		return applyEnabledThinking(body, string(config.Level))
-
+		effort = normalizeDeepSeekEffort(string(config.Level))
 	case thinking.ModeNone:
 		// Respect clamped fallback level for models that cannot disable thinking.
 		if config.Level != "" && config.Level != thinking.LevelNone {
-			return applyEnabledThinking(body, string(config.Level))
+			effort = normalizeDeepSeekEffort(string(config.Level))
+			break
 		}
 		return applyDisabledThinking(body)
-
+	case thinking.ModeBudget:
+		// Convert budget to level using threshold mapping.
+		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
+		if !ok {
+			return body, thinking.NewThinkingError(thinking.ErrBudgetOutOfRange, "invalid budget for deepseek thinking conversion")
+		}
+		effort = normalizeDeepSeekEffort(level)
 	case thinking.ModeAuto:
-		return applyEnabledThinking(body, "auto")
+		return applyDefaultThinking(body)
+	default:
+		return body, nil
 	}
 
-	return body, nil
+	if effort == "" {
+		return body, nil
+	}
+	return applyReasoningEffort(body, effort)
 }
 
 // applyCompatibleDeepSeek applies thinking config for user-defined DeepSeek models.
@@ -116,56 +108,79 @@ func applyCompatibleDeepSeek(body []byte, config thinking.ThinkingConfig) ([]byt
 		if config.Level == "" {
 			return body, nil
 		}
-		effort = string(config.Level)
+		effort = normalizeDeepSeekEffort(string(config.Level))
 	case thinking.ModeNone:
-		if config.Level == "" || config.Level == thinking.LevelNone {
-			return applyDisabledThinking(body)
+		if config.Level != "" && config.Level != thinking.LevelNone {
+			effort = normalizeDeepSeekEffort(string(config.Level))
+			break
 		}
-		if config.Level != "" {
-			effort = string(config.Level)
-		}
+		return applyDisabledThinking(body)
 	case thinking.ModeAuto:
-		effort = "auto"
+		return applyDefaultThinking(body)
 	case thinking.ModeBudget:
-		// Convert budget to level using threshold mapping
+		// Convert budget to level.
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
 		if !ok {
-			return body, nil
+			return body, thinking.NewThinkingError(thinking.ErrBudgetOutOfRange, "invalid budget for deepseek thinking conversion")
 		}
-		effort = level
+		effort = normalizeDeepSeekEffort(level)
 	default:
 		return body, nil
 	}
 
-	if effort == "" {
-		return body, nil
-	}
-
-	return applyEnabledThinking(body, effort)
+	return applyReasoningEffort(body, effort)
 }
 
-// applyEnabledThinking sets thinking.type="enabled" and reasoning_effort to the given level.
-func applyEnabledThinking(body []byte, effort string) ([]byte, error) {
-	result, err := sjson.SetBytes(body, "thinking.type", "enabled")
-	if err != nil {
-		return body, fmt.Errorf("deepseek thinking: failed to set thinking.type: %w", err)
+// clearThinkingFields removes the thinking object and reasoning_effort key,
+// returning the trimmed body or a wrapped error.
+func clearThinkingFields(body []byte) ([]byte, error) {
+	result, errDeleteThinking := sjson.DeleteBytes(body, "thinking")
+	if errDeleteThinking != nil {
+		return body, fmt.Errorf("deepseek thinking: failed to clear thinking object: %w", errDeleteThinking)
 	}
-	result, err = sjson.SetBytes(result, "reasoning_effort", effort)
-	if err != nil {
-		return body, fmt.Errorf("deepseek thinking: failed to set reasoning_effort: %w", err)
+	result, errDeleteEffort := sjson.DeleteBytes(result, "reasoning_effort")
+	if errDeleteEffort != nil {
+		return body, fmt.Errorf("deepseek thinking: failed to clear reasoning_effort: %w", errDeleteEffort)
 	}
 	return result, nil
 }
 
-// applyDisabledThinking sets thinking.type to "disabled" and removes reasoning_effort.
-func applyDisabledThinking(body []byte) ([]byte, error) {
-	result, err := sjson.DeleteBytes(body, "reasoning_effort")
-	if err != nil {
-		return body, fmt.Errorf("deepseek thinking: failed to clear reasoning_effort: %w", err)
+func applyDefaultThinking(body []byte) ([]byte, error) {
+	return clearThinkingFields(body)
+}
+
+// normalizeDeepSeekEffort maps internal thinking levels to DeepSeek-accepted values.
+// DeepSeek accepts "high" and "max", but not "xhigh". When budget > 24576,
+// ConvertBudgetToLevel returns "xhigh", which must be mapped to "max" for DeepSeek.
+func normalizeDeepSeekEffort(effort string) string {
+	switch effort {
+	case "xhigh":
+		return "max"
+	default:
+		return effort
 	}
-	result, err = sjson.SetBytes(result, "thinking.type", "disabled")
+}
+
+func applyReasoningEffort(body []byte, effort string) ([]byte, error) {
+	result, err := clearThinkingFields(body)
 	if err != nil {
-		return body, fmt.Errorf("deepseek thinking: failed to set thinking.type: %w", err)
+		return body, err
+	}
+	result, errSetEffort := sjson.SetBytes(result, "reasoning_effort", effort)
+	if errSetEffort != nil {
+		return body, fmt.Errorf("deepseek thinking: failed to set reasoning_effort: %w", errSetEffort)
+	}
+	return result, nil
+}
+
+func applyDisabledThinking(body []byte) ([]byte, error) {
+	result, err := clearThinkingFields(body)
+	if err != nil {
+		return body, err
+	}
+	result, errSetType := sjson.SetBytes(result, "thinking.type", "disabled")
+	if errSetType != nil {
+		return body, fmt.Errorf("deepseek thinking: failed to set thinking.type: %w", errSetType)
 	}
 	return result, nil
 }

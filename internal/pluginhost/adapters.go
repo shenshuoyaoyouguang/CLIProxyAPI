@@ -499,3 +499,11 @@ func (h *Host) callModelsForAuth(ctx context.Context, record capabilityRecord, p
 		HTTPClient:   h.newHTTPClient(auth),
 	})
 }
+
+// SupportsNativeDisabled reports whether the underlying plugin applier emits a
+// native explicit disable marker for ModeNone. The plugin SDK's ThinkingApplier
+// interface does not yet expose this capability, so we default to false. This
+// preserves the previous behavior where plugin providers were never in the
+// hardcoded disabled-capable list and ModeNone clamped to the lowest level
+// rather than being treated as fully disabled.
+func (a *thinkingAdapter) SupportsNativeDisabled() bool { return false }

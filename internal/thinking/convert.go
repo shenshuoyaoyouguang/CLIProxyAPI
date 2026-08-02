@@ -41,12 +41,15 @@ var levelToBudgetMap = map[string]int{
 //   - budget: The converted budget value
 //   - ok: true if level is valid, false otherwise
 func ConvertLevelToBudget(level string) (int, bool) {
-	budget, ok := levelToBudgetMap[strings.ToLower(level)]
+	budget, ok := levelToBudgetMap[strings.ToLower(strings.TrimSpace(level))]
 	return budget, ok
 }
 
 // BudgetThreshold constants define the upper bounds for each thinking level.
 // These are used by ConvertBudgetToLevel for range-based mapping.
+// Their values intentionally match the corresponding entries in levelToBudgetMap
+// (the level's representative budget equals its upper-bound), so the two must be
+// kept in sync if either is changed.
 const (
 	// ThresholdMinimal is the upper bound for "minimal" level (1-512)
 	ThresholdMinimal = 512
@@ -105,8 +108,10 @@ func ConvertBudgetToLevel(budget int) (string, bool) {
 }
 
 // HasLevel reports whether the given target level exists in the levels slice.
-// Matching is case-insensitive with leading/trailing whitespace trimmed.
+// Matching is case-insensitive with leading/trailing whitespace trimmed on
+// both the target and each list entry.
 func HasLevel(levels []string, target string) bool {
+	target = strings.TrimSpace(target)
 	for _, level := range levels {
 		if strings.EqualFold(strings.TrimSpace(level), target) {
 			return true

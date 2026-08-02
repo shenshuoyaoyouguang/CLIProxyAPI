@@ -3,6 +3,7 @@ package helps
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 )
 
@@ -38,7 +39,7 @@ type OpenAICompatChatPrepareInput struct {
 func openAICompatThinkingRoute(baseModel, toFormat, providerKey string) (thinkingTo, thinkingProvider string) {
 	thinkingTo = toFormat
 	thinkingProvider = providerKey
-	if thinking.RequiresDeepSeekReasoningPassback(baseModel) {
+	if thinking.RequiresDeepSeekReasoningPassback(baseModel) || modelkind.IsDeepSeekModel(baseModel) {
 		thinkingTo = "deepseek"
 		thinkingProvider = "deepseek"
 	}

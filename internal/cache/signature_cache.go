@@ -326,13 +326,23 @@ func HasValidSignature(modelName, signature string) bool {
 	return (signature != "" && len(signature) >= MinValidSignatureLen) || (signature == "skip_thought_signature_validator" && GetModelGroup(modelName) == "gemini")
 }
 
+// GetModelGroup maps a model name to a signature-cache bucket.
+// Brand tokens are matched on path/separator boundaries to avoid substring
+// false positives such as "engpt-helper" matching "gpt".
 func GetModelGroup(modelName string) string {
-	if strings.Contains(modelName, "gpt") {
-		return "gpt"
-	} else if strings.Contains(modelName, "claude") {
-		return "claude"
-	} else if strings.Contains(modelName, "gemini") {
-		return "gemini"
+	lower := strings.ToLower(strings.TrimSpace(modelName))
+	parts := strings.FieldsFunc(lower, func(r rune) bool {
+		return r == '/' || r == '-' || r == '_' || r == '.' || r == ' '
+	})
+	for _, p := range parts {
+		switch {
+		case strings.HasPrefix(p, "gpt"):
+			return "gpt"
+		case strings.HasPrefix(p, "claude"):
+			return "claude"
+		case strings.HasPrefix(p, "gemini"):
+			return "gemini"
+		}
 	}
 	return modelName
 }

@@ -28,6 +28,95 @@ func TestNewKimiExecutorInitializesDelegatedClaudeConfig(t *testing.T) {
 	}
 }
 
+func TestKimiExecutorClaudePathDoesNotMutateSharedAuthAttributes(t *testing.T) {
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_test","type":"message","role":"assistant","model":"k2.5","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		}, nil
+	}))
+
+	executor := NewKimiExecutor(&config.Config{})
+	sharedAttrs := map[string]string{"custom": "keep"}
+	auth := &cliproxyauth.Auth{
+		Attributes: sharedAttrs,
+		Metadata:   map[string]any{"access_token": "test-token"},
+	}
+	payload := []byte(`{"model":"kimi-k2.5","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`)
+
+	if _, err := executor.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "kimi-k2.5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatClaude,
+		OriginalRequest: payload,
+	}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if _, ok := sharedAttrs["base_url"]; ok {
+		t.Fatalf("shared Attributes mutated with base_url: %#v", sharedAttrs)
+	}
+	if got := sharedAttrs["custom"]; got != "keep" {
+		t.Fatalf("shared Attributes custom = %q, want keep", got)
+	}
+}
+
+func TestKimiClaudeThinkingProviderKeyUsesKimiNotClaude(t *testing.T) {
+	executor := NewKimiExecutor(&config.Config{})
+	// Embedded ClaudeExecutor methods must resolve thinking providerKey to kimi.
+	if got := executor.ClaudeExecutor.thinkingProviderKey(); got != "kimi" {
+		t.Fatalf("ClaudeExecutor.thinkingProviderKey() = %q, want kimi", got)
+	}
+	if got := executor.Identifier(); got != "kimi" {
+		t.Fatalf("KimiExecutor.Identifier() = %q, want kimi", got)
+	}
+	// Pure Claude executor stays claude.
+	if got := NewClaudeExecutor(&config.Config{}).thinkingProviderKey(); got != "claude" {
+		t.Fatalf("ClaudeExecutor.thinkingProviderKey() = %q, want claude", got)
+	}
+}
+
+func TestKimiExecutorClaudePathHandlesNilAttributesWithoutPanic(t *testing.T) {
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_test","type":"message","role":"assistant","model":"k2.5","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		}, nil
+	}))
+
+	executor := NewKimiExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Attributes: nil,
+		Metadata:   map[string]any{"access_token": "test-token"},
+	}
+	payload := []byte(`{"model":"kimi-k2.5","max_tokens":32,"messages":[{"role":"user","content":"hello"}]}`)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Execute() panicked on nil Attributes: %v", r)
+		}
+	}()
+	if _, err := executor.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "kimi-k2.5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatClaude,
+		OriginalRequest: payload,
+	}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if auth.Attributes != nil {
+		t.Fatalf("caller auth.Attributes should stay nil, got %#v", auth.Attributes)
+	}
+}
+
 func TestKimiExecutorClaudeRequestPreservesInternalModelSemantics(t *testing.T) {
 	var upstreamBody []byte
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {

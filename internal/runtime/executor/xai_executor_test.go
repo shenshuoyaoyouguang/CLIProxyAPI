@@ -2582,6 +2582,11 @@ func TestXAIExecutorExecuteNormalizesReasoningOutputForNonStreamTranslation(t *t
 
 func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.T) {
 	const requestedModel = "grok-imagine-image-quality"
+	// ttftDelay makes the first response byte arrive a measurable time after the
+	// request is sent. Without it, a localhost round trip can complete inside the
+	// same clock tick, leaving TTFT at exactly 0 and making the assertion below
+	// flaky. Asserting TTFT >= ttftDelay mirrors the robust aistudio pattern.
+	const ttftDelay = 20 * time.Millisecond
 
 	var gotPath string
 	var gotAuth string
@@ -2600,6 +2605,7 @@ func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.
 		if errRead != nil {
 			t.Fatalf("read body: %v", errRead)
 		}
+		time.Sleep(ttftDelay)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"created":123,"data":[{"b64_json":"AA=="}],"usage":{"cost_in_usd_ticks":250000}}`))
 	}))
@@ -2665,8 +2671,8 @@ func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.
 	if record.Detail != (usage.Detail{}) {
 		t.Fatalf("detail = %+v, want zero token usage", record.Detail)
 	}
-	if record.TTFT <= 0 {
-		t.Fatalf("ttft = %v, want positive duration", record.TTFT)
+	if record.TTFT < ttftDelay {
+		t.Fatalf("ttft = %v, want >= %v", record.TTFT, ttftDelay)
 	}
 	assertNoAdditionalXAIUsageRecord(t, plugin.records)
 }
@@ -3800,6 +3806,102 @@ func TestXAIExecutorComposerReusesClaudeCodeSession(t *testing.T) {
 	}
 }
 
+func TestXAIExecutorClaudeCodeSessionPinsNonComposerPromptCacheKey(t *testing.T) {
+	exec := NewXAIExecutor(&config.Config{})
+	payload := []byte(`{"model":"grok-4.5","metadata":{"user_id":"{\"session_id\":\"cache-session-45\"}"},"input":"hello"}`)
+	req := cliproxyexecutor.Request{Model: "grok-4.5", Payload: payload}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Stream: true}
+
+	first, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest first error: %v", err)
+	}
+	second, err := exec.prepareResponsesRequest(context.Background(), req, opts, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest second error: %v", err)
+	}
+
+	firstKey := gjson.GetBytes(first.body, "prompt_cache_key").String()
+	secondKey := gjson.GetBytes(second.body, "prompt_cache_key").String()
+	if firstKey == "" {
+		t.Fatalf("first prompt_cache_key is empty; body=%s", string(first.body))
+	}
+	if secondKey != firstKey {
+		t.Fatalf("same Claude Code session produced different prompt_cache_key: first=%q second=%q", firstKey, secondKey)
+	}
+	if first.sessionID != firstKey {
+		t.Fatalf("sessionID = %q, want prompt_cache_key %q", first.sessionID, firstKey)
+	}
+}
+
+func TestPrepareResponsesRequestInjectsServiceTierOnPrimaryCodexPath(t *testing.T) {
+	exec := NewXAIExecutor(&config.Config{})
+	prepared, err := exec.prepareResponsesRequest(context.Background(), cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":[{"type":"message","role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Metadata: map[string]any{
+			cliproxyexecutor.ServiceTierMetadataKey: "priority",
+		},
+	}, true)
+	if err != nil {
+		t.Fatalf("prepareResponsesRequest() error = %v", err)
+	}
+	if prepared.to != sdktranslator.FormatCodex {
+		t.Fatalf("primary path to = %q, want codex", prepared.to)
+	}
+	if got := gjson.GetBytes(prepared.body, "service_tier").String(); got != "priority" {
+		t.Fatalf("primary path service_tier = %q, want priority; body=%s", got, prepared.body)
+	}
+}
+
+func TestXAIExecutorHTTPStreamTreatsResponseDoneAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_done","status":"in_progress"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.done\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.done","response":{"id":"resp_done","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID: "xai-http-done",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+			"api_key":  "test-key",
+		},
+	}
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":[{"type":"message","role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:         true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	var sawDone bool
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v (response.done must be terminal, not incomplete-stream)", chunk.Err)
+		}
+		if strings.Contains(string(chunk.Payload), "response.done") || gjson.GetBytes(bytes.TrimSpace(chunk.Payload), "type").String() == "response.done" {
+			sawDone = true
+		}
+	}
+	if !sawDone {
+		// Some translators may rewrite event names; absence of incomplete-stream error is the contract.
+		// Keep assertion soft on payload shape, hard on no error above.
+		t.Log("stream finished without explicit response.done payload after translation")
+	}
+}
+
 func TestSanitizeXAIInputEncryptedContent_DropsInvalidReasoningBlob(t *testing.T) {
 	body := []byte(`{"model":"grok-4.3","input":[{"type":"reasoning","summary":[],"encrypted_content":"bad"},{"type":"reasoning","summary":[],"encrypted_content":"gAAAAABinvalid-gpt-shape"},{"role":"user","content":"hi"}]}`)
 	got := sanitizeXAIInputEncryptedContent(body)
@@ -4348,6 +4450,31 @@ func TestCacheXAIReasoningReplayFromCompletedClearsPreviousEntryWhenStoreBackend
 
 	if _, ok := internalcache.GetXAIReasoningReplayItems(modelName, sessionKey); ok {
 		t.Fatal("expected previous replay entry to be cleared after store backend error")
+	}
+}
+
+func TestCacheXAIReasoningReplaySkipsIncompleteTerminal(t *testing.T) {
+	internalcache.ClearXAIReasoningReplayCache()
+	t.Cleanup(internalcache.ClearXAIReasoningReplayCache)
+
+	modelName := "grok-4.5"
+	sessionKey := "caller:test:prompt-cache:incomplete-skip"
+	encryptedContent := testValidGrokEncryptedContentForSeed(31)
+	scope := xaiReasoningReplayScope{modelName: modelName, sessionKey: sessionKey}
+
+	incomplete := []byte(`{"type":"response.incomplete","response":{"id":"resp-inc","status":"incomplete","output":[{"type":"reasoning","summary":[],"encrypted_content":""},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}}`)
+	incomplete, _ = sjson.SetBytes(incomplete, "response.output.0.encrypted_content", encryptedContent)
+
+	cacheXAIReasoningReplayFromCompleted(context.Background(), scope, incomplete)
+	if _, ok := internalcache.GetXAIReasoningReplayItems(modelName, sessionKey); ok {
+		t.Fatal("incomplete terminal must not populate reasoning replay cache")
+	}
+
+	completed := []byte(`{"type":"response.completed","response":{"id":"resp-ok","status":"completed","output":[{"type":"reasoning","summary":[],"encrypted_content":""},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"full"}]}]}}`)
+	completed, _ = sjson.SetBytes(completed, "response.output.0.encrypted_content", encryptedContent)
+	cacheXAIReasoningReplayFromCompleted(context.Background(), scope, completed)
+	if _, ok := internalcache.GetXAIReasoningReplayItems(modelName, sessionKey); !ok {
+		t.Fatal("completed terminal must still populate reasoning replay cache")
 	}
 }
 
@@ -5022,4 +5149,31 @@ func testValidGrokEncryptedContent() string {
 		buf = append(buf, sum[:]...)
 	}
 	return base64.RawStdEncoding.EncodeToString(buf[:256])
+}
+
+func TestXAIExecutorNonStreamAcceptsResponseDoneAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"response.done","response":{"id":"resp_nonstream_done","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID: "xai-nonstream-done",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+			"api_key":  "test-key",
+		},
+	}
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.5",
+		Payload: []byte(`{"model":"grok-4.5","input":[{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute() non-stream with response.done returned error: %v (response.done must be accepted as terminal, not 502)", err)
+	}
 }

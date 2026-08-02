@@ -25,6 +25,11 @@ type Applier struct{}
 
 var _ thinking.ProviderApplier = (*Applier)(nil)
 
+// SupportsNativeDisabled reports whether Kimi honors an explicit
+// thinking.type="disabled" marker for ModeNone. Kimi emits the disabled marker
+// (see applyDisabledThinking), so thinking stays fully off.
+func (a *Applier) SupportsNativeDisabled() bool { return true }
+
 // NewApplier creates a new Kimi thinking applier.
 func NewApplier() *Applier {
 	return &Applier{}
@@ -83,7 +88,7 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		// Convert budget to level using threshold mapping
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
 		if !ok {
-			return body, nil
+			return body, thinking.NewThinkingError(thinking.ErrBudgetOutOfRange, "invalid budget for kimi thinking conversion")
 		}
 		effort = level
 	case thinking.ModeAuto:
@@ -125,7 +130,7 @@ func applyCompatibleKimi(body []byte, config thinking.ThinkingConfig) ([]byte, e
 		// Convert budget to level
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
 		if !ok {
-			return body, nil
+			return body, thinking.NewThinkingError(thinking.ErrBudgetOutOfRange, "invalid budget for kimi thinking conversion")
 		}
 		effort = level
 	default:

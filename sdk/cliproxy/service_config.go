@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/ratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -153,6 +154,12 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
+	// Rebuild the DeepSeek gateway hook before executors are (re)bound so
+	// OpenAI-compat executors attach the current hook.
+	s.applyDeepSeekGateway(cfg)
+	if errContext := ctx.Err(); errContext != nil {
+		return false
+	}
 	var auths []*coreauth.Auth
 	if s.coreManager != nil {
 		auths = s.coreManager.List()
@@ -181,6 +188,46 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	}
 	s.syncPluginModelRuntime(registrationCtx)
 	return ctx.Err() == nil
+}
+
+// applyDeepSeekGateway (re)builds the DeepSeek gateway hook from cfg so
+// OpenAI-compat executors bound afterwards attach it. Safe to call with
+// Enabled=false (clears the hook). The limiter manager is reused across
+// enabled reloads to preserve in-flight accounting.
+func (s *Service) applyDeepSeekGateway(cfg *config.Config) {
+	if s == nil {
+		return
+	}
+	if cfg != nil {
+		cfg.DeepSeekGateway.NormalizeDeepSeekGateway()
+	}
+
+	var hook *ratelimit.DeepSeekGatewayHook
+	if cfg != nil && cfg.DeepSeekGateway.Enabled {
+		limits := ratelimit.DeepSeekLimiterConfig{
+			GlobalMaxConcurrency:    cfg.DeepSeekGateway.GlobalMaxConcurrency,
+			PerUserIDMaxConcurrency: cfg.DeepSeekGateway.PerUserIDMaxConcurrency,
+		}
+		var mgr *ratelimit.DeepSeekLimiterManager
+		if current := s.deepSeekGatewayHook; current != nil && current.Enabled() && current.LimiterManager() != nil {
+			mgr = current.LimiterManager()
+			mgr.SetLimits(limits)
+		} else {
+			mgr = ratelimit.NewDeepSeekLimiterManager(limits)
+		}
+		strategy := ratelimit.ParseUserIDStrategy(cfg.DeepSeekGateway.UserIDStrategy)
+		userIDResolver := ratelimit.NewUserIDResolver(
+			strategy,
+			cfg.DeepSeekGateway.UserIDHeaderName,
+			cfg.DeepSeekGateway.UserIDFixedValue,
+			cfg.DeepSeekGateway.UserIDPrefix,
+		)
+		for credID, userID := range cfg.DeepSeekGateway.CredentialMappings {
+			userIDResolver.SetCredentialMapping(credID, userID)
+		}
+		hook = ratelimit.NewDeepSeekGatewayHook(cfg.DeepSeekGateway, mgr, userIDResolver)
+	}
+	s.deepSeekGatewayHook = hook
 }
 
 func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) bool {

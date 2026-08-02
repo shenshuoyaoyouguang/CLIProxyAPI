@@ -3,21 +3,36 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/ratelimit"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+type openAICompatRewriteRoundTripper struct {
+	target *url.URL
+}
+
+func (rt openAICompatRewriteRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.URL.Scheme = rt.target.Scheme
+	req.URL.Host = rt.target.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
 
 func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	var gotPath string
@@ -103,6 +118,397 @@ func TestOpenAICompatExecutorPayloadOverrideWinsOverThinkingSuffix(t *testing.T)
 	}
 	if got := gjson.GetBytes(gotBody, "reasoning_effort").String(); got != "low" {
 		t.Fatalf("reasoning_effort = %q, want %q; body=%s", got, "low", string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekInjectsStableUser(t *testing.T) {
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	authA := &cliproxyauth.Auth{
+		ID: "deepseek-auth-a",
+		Attributes: map[string]string{
+			"base_url": server.URL + "/v1",
+			"api_key":  "key-a",
+		},
+	}
+	authB := &cliproxyauth.Auth{
+		ID: "deepseek-auth-b",
+		Attributes: map[string]string{
+			"base_url": server.URL + "/v1",
+			"api_key":  "key-b",
+		},
+	}
+	payload := []byte(`{"model":"deepseek-r1","messages":[{"role":"user","content":"hi"}]}`)
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai"), Stream: false}
+
+	if _, err := executor.Execute(context.Background(), authA, cliproxyexecutor.Request{Model: "deepseek-r1", Payload: payload}, opts); err != nil {
+		t.Fatalf("execute A: %v", err)
+	}
+	if _, err := executor.Execute(context.Background(), authA, cliproxyexecutor.Request{Model: "deepseek-r1", Payload: payload}, opts); err != nil {
+		t.Fatalf("execute A again: %v", err)
+	}
+	if _, err := executor.Execute(context.Background(), authB, cliproxyexecutor.Request{Model: "deepseek-r1", Payload: payload}, opts); err != nil {
+		t.Fatalf("execute B: %v", err)
+	}
+
+	if len(bodies) != 3 {
+		t.Fatalf("got %d bodies, want 3", len(bodies))
+	}
+	userA1 := gjson.GetBytes(bodies[0], "user").String()
+	userA2 := gjson.GetBytes(bodies[1], "user").String()
+	userB := gjson.GetBytes(bodies[2], "user").String()
+	if userA1 == "" || !strings.HasPrefix(userA1, "cliproxy-") {
+		t.Fatalf("user A = %q, want cliproxy- prefix", userA1)
+	}
+	if userA1 != userA2 {
+		t.Fatalf("same auth user must be stable: %q vs %q", userA1, userA2)
+	}
+	if userA1 == userB {
+		t.Fatalf("different auth keys must produce different user values: %q", userA1)
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekPreservesClientUser(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	// Use an auth with an ID so deepSeekUserID returns a non-empty value.
+	// This ensures the test verifies that the existing client "user" field
+	// is preserved even when an injectable userID is available, rather than
+	// passing simply because no userID could be generated.
+	auth := &cliproxyauth.Auth{
+		ID: "deepseek-auth-preserve",
+		Attributes: map[string]string{
+			"base_url": server.URL + "/v1",
+			"api_key":  "test",
+		},
+	}
+	payload := []byte(`{"model":"deepseek-r1","user":"client-user","messages":[{"role":"user","content":"hi"}]}`)
+	if _, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-r1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "user").String(); got != "client-user" {
+		t.Fatalf("user = %q, want client-user; body=%s", got, gotBody)
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekGatewayOverridesClientUser(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	targetURL, errParse := url.Parse(server.URL)
+	if errParse != nil {
+		t.Fatalf("parse server URL: %v", errParse)
+	}
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: targetURL})
+	mgr := ratelimit.NewDeepSeekLimiterManager(ratelimit.DeepSeekLimiterConfig{
+		GlobalMaxConcurrency:    1,
+		PerUserIDMaxConcurrency: 1,
+	})
+	hook := ratelimit.NewDeepSeekGatewayHook(config.DeepSeekGatewayConfig{Enabled: true}, mgr, ratelimit.NewUserIDResolver(ratelimit.StrategyFixed, "", "gateway-user", ""))
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{}).WithDeepSeekGatewayHook(hook)
+	auth := &cliproxyauth.Auth{
+		ID: "deepseek-auth-gateway",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com/v1",
+			"api_key":  "test",
+		},
+	}
+	payload := []byte(`{"model":"deepseek-r1","user":"client-user","messages":[{"role":"user","content":"hi"}]}`)
+	if _, errExecute := executor.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "deepseek-r1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	}); errExecute != nil {
+		t.Fatalf("Execute error: %v", errExecute)
+	}
+	if got := gjson.GetBytes(gotBody, "user").String(); got != "gateway-user" {
+		t.Fatalf("user = %q, want gateway-user; body=%s", got, gotBody)
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekGatewayStreamHoldsSlotUntilStreamEnds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	targetURL, errParse := url.Parse(server.URL)
+	if errParse != nil {
+		t.Fatalf("parse server URL: %v", errParse)
+	}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: targetURL}))
+	defer cancel()
+
+	mgr := ratelimit.NewDeepSeekLimiterManager(ratelimit.DeepSeekLimiterConfig{
+		GlobalMaxConcurrency:    1,
+		PerUserIDMaxConcurrency: 1,
+	})
+	hook := ratelimit.NewDeepSeekGatewayHook(config.DeepSeekGatewayConfig{Enabled: true}, mgr, ratelimit.NewUserIDResolver(ratelimit.StrategyFixed, "", "gateway-user", ""))
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{}).WithDeepSeekGatewayHook(hook)
+	auth := &cliproxyauth.Auth{
+		ID: "deepseek-auth-gateway-stream",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com/v1",
+			"api_key":  "test",
+		},
+	}
+	payload := []byte(`{"model":"deepseek-r1","messages":[{"role":"user","content":"hi"}]}`)
+	result, errExecute := executor.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "deepseek-r1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       true,
+	})
+	if errExecute != nil {
+		t.Fatalf("ExecuteStream error: %v", errExecute)
+	}
+	if result == nil || result.Chunks == nil {
+		t.Fatalf("ExecuteStream returned nil result")
+	}
+
+	verifyStats := func(expectedActive int, msg string) {
+		deadline := time.Now().Add(time.Second)
+		for {
+			stats, ok := mgr.GetShardStats("gateway-user")
+			if ok && stats.Active == expectedActive {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: expected Active=%d, got stats=%+v ok=%v", msg, expectedActive, stats, ok)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	verifyStats(1, "slot must remain held while stream is active")
+
+	cancel()
+
+	verifyStats(0, "slot must be released after stream ends")
+}
+
+func TestOpenAICompatExecutorNonDeepSeekSkipsUserInjection(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`)
+	if _, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-4o-mini",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gjson.GetBytes(gotBody, "user").Exists() {
+		t.Fatalf("non-DeepSeek requests must not inject user: %s", gotBody)
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekThinkingAndHistoryFilter(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{
+		"model":"deepseek-r1",
+		"thinking":{"type":"enabled","effort":"max"},
+		"messages":[
+			{"role":"user","content":"q1"},
+			{"role":"assistant","content":"a1","reasoning_content":"plain thought","tool_calls":[]},
+			{"role":"user","content":"q2"},
+			{"role":"assistant","content":"","reasoning_content":"tool thought","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"result"},
+			{"role":"user","content":"q3"}
+		]
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-r1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gjson.GetBytes(gotBody, "thinking").Exists() {
+		t.Fatalf("native thinking object must be translated away: %s", gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "reasoning_effort").String(); got != "max" {
+		t.Fatalf("reasoning_effort = %q, want max. body=%s", got, gotBody)
+	}
+	if gjson.GetBytes(gotBody, "messages.1.reasoning_content").Exists() {
+		t.Fatalf("plain assistant reasoning_content must be stripped: %s", gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "messages.3.reasoning_content").String(); got != "tool thought" {
+		t.Fatalf("tool assistant reasoning_content = %q, want tool thought. body=%s", got, gotBody)
+	}
+}
+
+func TestOpenAICompatExecutorDeepSeekNormalizesNestedFunctionToolChoice(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup_number","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{
+		"model":"DeepSeek-V4-Flash",
+		"messages":[{"role":"user","content":"call lookup"}],
+		"tools":[{"type":"function","function":{"name":"lookup_number","parameters":{"type":"object"}}}],
+		"tool_choice":{"type":"function","function":{"name":"lookup_number"}}
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "DeepSeek-V4-Flash",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "tool_choice.type").String(); got != "function" {
+		t.Fatalf("tool_choice.type = %q, want function. body=%s", got, gotBody)
+	}
+	// DeepSeek expects the standard OpenAI nested format: tool_choice.function.name
+	// 验证嵌套格式：{"type":"function","function":{"name":"lookup_number"}}
+	if got := gjson.GetBytes(gotBody, "tool_choice.function.name").String(); got != "lookup_number" {
+		t.Fatalf("tool_choice.function.name = %q, want lookup_number (nested form per DeepSeek API docs). body=%s", got, gotBody)
+	}
+	// 扁平化字段不应存在
+	if gjson.GetBytes(gotBody, "tool_choice.name").Exists() {
+		t.Fatalf("tool_choice.name must NOT exist at top level; DeepSeek requires nested function.name. body=%s", gotBody)
+	}
+	// function 嵌套对象必须保留
+	if !gjson.GetBytes(gotBody, "tool_choice.function").Exists() {
+		t.Fatalf("tool_choice.function must exist (nested form per DeepSeek API docs). body=%s", gotBody)
+	}
+}
+
+// TestOpenAICompatExecutorDeepSeekPreservesNestedToolChoice 验证 DeepSeek
+// tool_choice 保持标准 OpenAI 嵌套格式，符合 DeepSeek 官方 API 文档要求。
+//
+// 官方文档格式（https://api-docs.deepseek.com/api/create-chat-completion）：
+//
+//	{"type": "function", "function": {"name": "my_function"}}
+//
+// 扁平化格式 {"type":"function","name":"x"} 不被 DeepSeek 接受。
+func TestOpenAICompatExecutorDeepSeekPreservesNestedToolChoice(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup_number","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{
+		"model":"DeepSeek-V4-Flash",
+		"messages":[{"role":"user","content":"call lookup"}],
+		"tools":[{"type":"function","function":{"name":"lookup_number","parameters":{"type":"object"}}}],
+		"tool_choice":{"type":"function","function":{"name":"lookup_number"}}
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "DeepSeek-V4-Flash",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	// 验证 tool_choice 保持嵌套格式：{"type":"function","function":{"name":"lookup_number"}}
+	if got := gjson.GetBytes(gotBody, "tool_choice.type").String(); got != "function" {
+		t.Fatalf("tool_choice.type = %q, want function. body=%s", got, gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "tool_choice.function.name").String(); got != "lookup_number" {
+		t.Fatalf("tool_choice.function.name = %q, want lookup_number (nested form per DeepSeek API docs). body=%s", got, gotBody)
+	}
+
+	// 扁平化字段不应存在 —— DeepSeek 不接受 {"type":"function","name":"x"}
+	if gjson.GetBytes(gotBody, "tool_choice.name").Exists() {
+		t.Fatalf("tool_choice.name must NOT exist at top level; DeepSeek requires nested function.name. body=%s", gotBody)
+	}
+
+	// function 嵌套对象必须保留
+	if !gjson.GetBytes(gotBody, "tool_choice.function").Exists() {
+		t.Fatalf("tool_choice.function must exist (nested form per DeepSeek API docs). body=%s", gotBody)
 	}
 }
 
@@ -441,4 +847,171 @@ func TestOpenAICompatExecutorStreamSkipsKeepAliveUntilDataLine(t *testing.T) {
 	if gjson.Get(got.String(), "choices.0.delta.content").String() != "hello" {
 		t.Fatalf("stream payload = %s", got.String())
 	}
+}
+
+func TestOpenAICompatHttpRequestAcquiresDeepSeekGatewaySlot(t *testing.T) {
+	hook := newTestDeepSeekGatewayHook(t, 1, 1)
+	release, err := hook.AcquireSlot(context.Background(), "cred:ds-auth")
+	if err != nil {
+		t.Fatalf("seed AcquireSlot: %v", err)
+	}
+	defer release()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`ok`))
+	}))
+	defer server.Close()
+
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	ctx = context.WithValue(ctx, "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: target})
+
+	exec := NewOpenAICompatExecutor("deepseek", &config.Config{}).WithDeepSeekGatewayHook(hook)
+	auth := &cliproxyauth.Auth{
+		ID: "ds-auth",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com",
+			"api_key":  "k",
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.deepseek.com/v1/chat/completions", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	_, err = exec.HttpRequest(ctx, auth, req)
+	if err == nil {
+		t.Fatal("HttpRequest should block on gateway slot and fail when context expires")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context") {
+		t.Fatalf("HttpRequest error = %v, want context deadline/cancel from AcquireSlot", err)
+	}
+}
+
+func TestOpenAICompatHttpRequestHoldsDeepSeekGatewaySlotUntilBodyClosed(t *testing.T) {
+	hook := newTestDeepSeekGatewayHook(t, 1, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`ok`))
+	}))
+	defer server.Close()
+
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+
+	auth := &cliproxyauth.Auth{
+		ID: "ds-auth-hold",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com",
+			"api_key":  "k",
+		},
+	}
+	makeRequest := func(ctx context.Context) (*http.Response, error) {
+		ctx = context.WithValue(ctx, "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: target})
+		exec := NewOpenAICompatExecutor("deepseek", &config.Config{}).WithDeepSeekGatewayHook(hook)
+		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.deepseek.com/v1/chat/completions", strings.NewReader(`{}`))
+		if errReq != nil {
+			return nil, errReq
+		}
+		return exec.HttpRequest(ctx, auth, req)
+	}
+
+	// First request acquires the slot; it must stay held until Body.Close.
+	resp1, err := makeRequest(context.Background())
+	if err != nil {
+		t.Fatalf("first HttpRequest: %v", err)
+	}
+
+	// Second request: slot still held by the open body → must time out on AcquireSlot.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel2()
+	if _, errSecond := makeRequest(ctx2); errSecond == nil {
+		_ = resp1.Body.Close()
+		t.Fatal("second HttpRequest should block while first response body is open")
+	}
+
+	// Close the first body to release the slot.
+	if errClose := resp1.Body.Close(); errClose != nil {
+		t.Fatalf("close first body: %v", errClose)
+	}
+
+	// Third request: slot free again → must succeed.
+	resp3, err := makeRequest(context.Background())
+	if err != nil {
+		t.Fatalf("third HttpRequest after body closed: %v", err)
+	}
+	_ = resp3.Body.Close()
+}
+
+func TestOpenAICompatExecuteImagesAcquiresDeepSeekGatewaySlot(t *testing.T) {
+	hook := newTestDeepSeekGatewayHook(t, 1, 1)
+	release, err := hook.AcquireSlot(context.Background(), "cred:ds-auth-img")
+	if err != nil {
+		t.Fatalf("seed AcquireSlot: %v", err)
+	}
+	defer release()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	ctx = context.WithValue(ctx, "cliproxy.roundtripper", openAICompatRewriteRoundTripper{target: target})
+
+	exec := NewOpenAICompatExecutor("deepseek", &config.Config{}).WithDeepSeekGatewayHook(hook)
+	auth := &cliproxyauth.Auth{
+		ID: "ds-auth-img",
+		Attributes: map[string]string{
+			"base_url": "https://api.deepseek.com",
+			"api_key":  "k",
+		},
+	}
+	_, err = exec.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "deepseek-image",
+		Payload: []byte(`{"model":"deepseek-image","prompt":"a cat"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString(openAICompatImageHandlerType),
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/images/generations",
+		},
+	})
+	if err == nil {
+		t.Fatal("Execute images should block on gateway slot and fail when context expires")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context") {
+		t.Fatalf("Execute images error = %v, want context deadline/cancel from AcquireSlot", err)
+	}
+}
+
+func newTestDeepSeekGatewayHook(t *testing.T, globalMax, perUserMax int) *ratelimit.DeepSeekGatewayHook {
+	t.Helper()
+	mgr := ratelimit.NewDeepSeekLimiterManager(ratelimit.DeepSeekLimiterConfig{
+		GlobalMaxConcurrency:    globalMax,
+		PerUserIDMaxConcurrency: perUserMax,
+	})
+	resolver := ratelimit.NewUserIDResolver(ratelimit.StrategyPerCredential, "", "", "cred")
+	hook := ratelimit.NewDeepSeekGatewayHook(config.DeepSeekGatewayConfig{
+		Enabled:                 true,
+		GlobalMaxConcurrency:    globalMax,
+		PerUserIDMaxConcurrency: perUserMax,
+		RetryMaxAttempts:        1,
+		UserIDStrategy:          "per_credential",
+	}, mgr, resolver)
+	if !hook.Enabled() {
+		t.Fatal("hook should be enabled")
+	}
+	return hook
 }

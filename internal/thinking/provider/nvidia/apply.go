@@ -110,6 +110,10 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	return body, nil
 }
 
+// SupportsNativeDisabled reports whether NVIDIA honors an explicit
+// disable marker (enable_thinking=false) for ModeNone.
+func (a *Applier) SupportsNativeDisabled() bool { return true }
+
 // applyCompatibleNvidia applies thinking config for user-defined NVIDIA models.
 func applyCompatibleNvidia(body []byte, config thinking.ThinkingConfig) ([]byte, error) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {

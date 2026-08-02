@@ -267,7 +267,10 @@ func (s *session) cleanup(cause error) {
 		close(s.closed)
 		s.pending.Range(func(key, value any) bool {
 			req := value.(*pendingRequest)
-			msg := Message{ID: key.(string), Type: MessageTypeError, Payload: map[string]any{"error": cause.Error()}}
+			msg := Message{ID: key.(string), Type: MessageTypeError}
+			if cause != nil {
+				msg.Payload = map[string]any{"error": cause.Error()}
+			}
 			req.forceDeliver(msg)
 			req.close()
 			s.pending.Delete(key)

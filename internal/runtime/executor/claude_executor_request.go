@@ -254,7 +254,7 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	}
 	r.Header.Set("Content-Type", "application/json")
 
-	if incomingHeaders == nil {
+	if incomingHeaders == nil || len(incomingHeaders) == 0 {
 		if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 			incomingHeaders = ginCtx.Request.Header
 		}

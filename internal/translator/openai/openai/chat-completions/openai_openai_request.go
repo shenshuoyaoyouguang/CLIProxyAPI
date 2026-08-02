@@ -3,6 +3,8 @@
 package chat_completions
 
 import (
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelkind"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -20,6 +22,11 @@ import (
 func ConvertOpenAIRequestToOpenAI(modelName string, inputRawJSON []byte, _ bool) []byte {
 	currentModel := gjson.GetBytes(inputRawJSON, "model")
 	if currentModel.Type == gjson.String && currentModel.String() == modelName {
+		// The model already matches; avoid a payload copy. DeepSeek history still
+		// needs reasoning_content hygiene applied even when the model is unchanged.
+		if modelkind.IsDeepSeekModel(modelName) {
+			return thinking.FilterDeepSeekReasoningContentFromHistory(inputRawJSON)
+		}
 		return inputRawJSON
 	}
 
@@ -31,6 +38,9 @@ func ConvertOpenAIRequestToOpenAI(modelName string, inputRawJSON []byte, _ bool)
 		// For now, we'll return the original, but in a real scenario, logging or a more robust error
 		// handling mechanism would be needed.
 		return inputRawJSON
+	}
+	if modelkind.IsDeepSeekModel(modelName) {
+		updatedJSON = thinking.FilterDeepSeekReasoningContentFromHistory(updatedJSON)
 	}
 	return updatedJSON
 }

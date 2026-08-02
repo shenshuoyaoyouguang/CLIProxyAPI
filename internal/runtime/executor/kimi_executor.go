@@ -48,26 +48,27 @@ func NewKimiExecutor(cfg *config.Config) *KimiExecutor {
 // Identifier returns the executor identifier.
 func (e *KimiExecutor) Identifier() string { return "kimi" }
 
-// setKimiBaseURLAttr writes the Kimi upstream base_url into auth.Attributes,
-// which the shared ClaudeExecutor reads when proxying Claude-format requests.
-// Kimi OAuth credentials are created with only Metadata populated, so
-// Attributes may be nil; assigning to a nil map panics
-// ("assignment to entry in nil map"), and a nil auth would dereference
-// fatally. Guard both before writing.
-func setKimiBaseURLAttr(auth *cliproxyauth.Auth) {
+// withKimiClaudeBaseURL returns a shallow Auth copy whose Attributes include
+// the Kimi Claude coding base URL. The shared Auth from the pool is never
+// mutated, and nil/missing Attributes maps no longer panic. An explicitly
+// configured endpoint (self-hosted gateway, corporate relay, regional mirror)
+// is preserved; only the Kimi default is filled in when nothing was provided.
+func withKimiClaudeBaseURL(auth *cliproxyauth.Auth) *cliproxyauth.Auth {
 	if auth == nil {
-		return
+		return &cliproxyauth.Auth{
+			Attributes: map[string]string{"base_url": kimiauth.KimiAPIBaseURL},
+		}
 	}
-	if auth.Attributes == nil {
-		auth.Attributes = make(map[string]string)
+	cloned := *auth
+	attrs := make(map[string]string, len(auth.Attributes)+1)
+	for k, v := range auth.Attributes {
+		attrs[k] = v
 	}
-	// Respect an explicitly configured endpoint (self-hosted gateway, corporate
-	// relay, regional mirror). Only fill in the Kimi default when nothing was
-	// provided; overwriting unconditionally silently breaks those deployments.
-	if strings.TrimSpace(auth.Attributes["base_url"]) != "" {
-		return
+	if strings.TrimSpace(attrs["base_url"]) == "" {
+		attrs["base_url"] = kimiauth.KimiAPIBaseURL
 	}
-	auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
+	cloned.Attributes = attrs
+	return &cloned
 }
 
 // PrepareRequest injects Kimi credentials into the outgoing HTTP request.
@@ -107,8 +108,7 @@ func (e *KimiExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		setKimiBaseURLAttr(auth)
-		return e.ClaudeExecutor.Execute(ctx, auth, req, opts)
+		return e.ClaudeExecutor.Execute(ctx, withKimiClaudeBaseURL(auth), req, opts)
 	}
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 
@@ -217,8 +217,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		setKimiBaseURLAttr(auth)
-		return e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
+		return e.ClaudeExecutor.ExecuteStream(ctx, withKimiClaudeBaseURL(auth), req, opts)
 	}
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 
@@ -358,8 +357,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 // CountTokens estimates token count for Kimi requests.
 func (e *KimiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	setKimiBaseURLAttr(auth)
-	return e.ClaudeExecutor.countTokensUpstream(ctx, auth, req, opts)
+	return e.ClaudeExecutor.countTokensUpstream(ctx, withKimiClaudeBaseURL(auth), req, opts)
 }
 
 func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {

@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -305,6 +306,148 @@ func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for completed chunk")
+	}
+}
+
+func TestXAIWebsocketsExecuteStreamStopsOnResponseIncomplete(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			t.Errorf("read upstream websocket message: %v", errRead)
+			return
+		}
+		incomplete := []byte(`{"type":"response.incomplete","response":{"id":"resp-incomplete","status":"incomplete","output":[{"id":"msg-incomplete","type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+		if errWrite := conn.WriteMessage(websocket.TextMessage, incomplete); errWrite != nil {
+			t.Errorf("write incomplete websocket message: %v", errWrite)
+		}
+	}))
+	defer server.Close()
+
+	exec := NewXAIWebsocketsExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "xai-auth-incomplete",
+		Provider: "xai",
+		Attributes: map[string]string{
+			"base_url":   server.URL,
+			"websockets": "true",
+		},
+		Metadata: map[string]any{"access_token": "xai-token"},
+	}
+	req := cliproxyexecutor.Request{
+		Model:   "grok-4.3",
+		Payload: []byte(`{"model":"grok-4.3","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatOpenAIResponse,
+		ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:         true,
+	}
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+
+	result, err := exec.ExecuteStream(ctx, auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	var gotIncomplete bool
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+		if got := gjson.GetBytes(bytes.TrimSpace(chunk.Payload), "type").String(); got == "response.incomplete" {
+			gotIncomplete = true
+		}
+	}
+	if !gotIncomplete {
+		t.Fatal("stream closed without response.incomplete chunk")
+	}
+}
+
+func TestXAIWebsocketIDStateClearForTargetChangeDropsPreviousResponseMap(t *testing.T) {
+	state := &xaiWebsocketIDState{
+		downstreamToUpstream: map[string]string{
+			"resp-down": "resp-up",
+			"resp-up":   "resp-up",
+		},
+		transcriptInput: []json.RawMessage{[]byte(`{"type":"message","role":"user","content":"hi"}`)},
+		sequence:        3,
+	}
+
+	state.clearForTargetChange()
+
+	if got := state.upstreamIDForDownstream("resp-down"); got != "resp-down" {
+		t.Fatalf("after target change upstreamIDForDownstream = %q, want identity mapping", got)
+	}
+	if snap := state.snapshotTranscriptInput(); len(snap) != 0 && string(snap) != "[]" && string(snap) != "null" {
+		// snapshot with empty transcript should be nil/empty
+		if snap != nil && len(gjson.ParseBytes(snap).Array()) != 0 {
+			t.Fatalf("transcript should be cleared, got %s", snap)
+		}
+	}
+	if state.sequence != 0 {
+		t.Fatalf("sequence = %d, want 0 after target change", state.sequence)
+	}
+}
+
+func TestXAIWebsocketIDStateIsKeyedByExecutionSessionID(t *testing.T) {
+	store := &xaiWebsocketIDStateStore{sessions: make(map[string]*xaiWebsocketIDState)}
+	executionSessionID := "execution-session-key"
+	preparedSessionID := "prompt-cache-or-resolved-key"
+
+	// Lifecycle close uses execution session id; idMapper state must share that key.
+	mapper := newXAIWebsocketRequestIDMapper(store, xaiWebsocketStateSessionID(executionSessionID, preparedSessionID), []byte(`{"previous_response_id":"resp-down"}`))
+	if mapper == nil || mapper.state == nil {
+		t.Fatal("expected mapper state")
+	}
+	mapper.state.mapDownstreamToUpstream("resp-down", "resp-up")
+
+	if store.sessions[executionSessionID] == nil {
+		t.Fatalf("id state missing under execution session key %q; keys=%v", executionSessionID, sessionKeys(store))
+	}
+	if store.sessions[preparedSessionID] != nil {
+		t.Fatalf("id state should not be keyed only by prepared session id %q", preparedSessionID)
+	}
+
+	deleteXAIWebsocketIDState(store, executionSessionID)
+	if store.sessions[executionSessionID] != nil {
+		t.Fatal("delete by execution session id should remove id state")
+	}
+}
+
+func sessionKeys(store *xaiWebsocketIDStateStore) []string {
+	if store == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(store.sessions))
+	for k := range store.sessions {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func TestXAIWebsocketIDStateDoesNotRecordTranscriptForIncomplete(t *testing.T) {
+	state := &xaiWebsocketIDState{}
+	reqBody := []byte(`{"input":[{"type":"message","role":"user","content":"hi"}]}`)
+
+	incomplete := []byte(`{"type":"response.incomplete","response":{"status":"incomplete","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}}`)
+	if xaiShouldCommitCompletedTurnState(incomplete) {
+		t.Fatal("incomplete must not commit completed-turn state")
+	}
+
+	completed := []byte(`{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}}`)
+	if !xaiShouldCommitCompletedTurnState(completed) {
+		t.Fatal("completed must commit completed-turn state")
+	}
+	state.recordTranscriptTurn(reqBody, completed, false)
+	if snap := state.snapshotTranscriptInput(); len(snap) == 0 {
+		t.Fatal("completed turn should record transcript when committed")
 	}
 }
 
@@ -1002,7 +1145,7 @@ func TestXAIWebsocketsExecuteStreamRewritesRepeatedResponseIDWithoutPreviousResp
 	}
 }
 
-func TestXAIWebsocketsExecuteStreamReplaysTranscriptWhenAuthChanges(t *testing.T) {
+func TestXAIWebsocketsExecuteStreamClearsTranscriptWhenAuthChanges(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	type capturedRequest struct {
 		authorization string
@@ -1113,11 +1256,11 @@ func TestXAIWebsocketsExecuteStreamReplaysTranscriptWhenAuthChanges(t *testing.T
 		t.Fatalf("previous_response_id was sent after auth switch: %s", secondUpstream.payload)
 	}
 	input := gjson.GetBytes(secondUpstream.payload, "input").Array()
-	if len(input) != 3 {
-		t.Fatalf("replayed input len = %d, want 3: %s", len(input), secondUpstream.payload)
+	if len(input) != 1 {
+		t.Fatalf("input len after auth switch = %d, want only new turn: %s", len(input), secondUpstream.payload)
 	}
-	if input[0].Get("id").String() != "user-1" || input[1].Get("id").String() != "msg-resp-auth-a" || input[2].Get("id").String() != "user-2" {
-		t.Fatalf("unexpected replayed input: %s", secondUpstream.payload)
+	if input[0].Get("id").String() != "user-2" {
+		t.Fatalf("unexpected input after auth switch: %s", secondUpstream.payload)
 	}
 }
 

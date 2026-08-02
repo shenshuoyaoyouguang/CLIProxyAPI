@@ -857,6 +857,27 @@ func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]by
 // cli-chat-proxy ("Usage resets over a rolling 24-hour window").
 const xaiFreeUsageExhaustedCooldown = 24 * time.Hour
 
+// xaiIncompleteStreamMessage describes an xAI stream that closed before the
+// upstream emitted a terminal response event, leaving the reasoning chain
+// truncated.
+const xaiIncompleteStreamMessage = "stream error: xai stream closed before response.completed"
+
+// newXAIIncompleteStreamError reports an xAI stream that ended without a
+// terminal response.completed event. It is deliberately NOT request-scoped:
+// when the truncation happens before any chunk is buffered, the conductor can
+// safely fail over to another auth/upstream; once chunks have been forwarded to
+// the client, bootstrap has already succeeded so the conductor surfaces the
+// error without retrying (which would duplicate output).
+//
+// The status code is 502 BadGateway (matching Gemini's
+// newGeminiIncompleteStreamError) rather than 408 RequestTimeout: although the
+// Codex path uses 408, Codex's error exposes IsRequestScoped()=true, whereas
+// xAI's does not. Reusing 408 here would falsely suggest the same retry
+// semantics, so 502 is used to signal "upstream gave us a truncated response".
+func newXAIIncompleteStreamError() statusErr {
+	return statusErr{code: http.StatusBadGateway, msg: xaiIncompleteStreamMessage}
+}
+
 // xaiStatusErr wraps upstream error bodies so free-tier exhaustion
 // (subscription:free-usage-exhausted) carries a 24h RetryAfter hint for
 // auth cooldown / account rotation. Generic 429s stay without an explicit

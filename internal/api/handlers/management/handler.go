@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/ratelimit"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -60,6 +61,9 @@ type Handler struct {
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
 	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+
+	// DeepSeek Gateway Limiter
+	deepSeekLimiterManager *ratelimit.DeepSeekLimiterManager
 }
 
 type configReloadSnapshot struct {
@@ -157,6 +161,16 @@ func (h *Handler) SetConfigReloadHook(hook func(context.Context, *config.Config)
 	}
 	h.mu.Lock()
 	h.configReloadHook = hook
+	h.mu.Unlock()
+}
+
+// SetDeepSeekLimiterManager sets the DeepSeek limiter manager for management endpoints.
+func (h *Handler) SetDeepSeekLimiterManager(mgr *ratelimit.DeepSeekLimiterManager) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.deepSeekLimiterManager = mgr
 	h.mu.Unlock()
 }
 
@@ -305,6 +319,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		return false, http.StatusForbidden, "remote management disabled"
 	}
 
+	h.mu.Lock()
 	cfg := h.cfg
 	var (
 		allowRemote bool
@@ -314,10 +329,13 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		allowRemote = cfg.RemoteManagement.AllowRemote
 		secretHash = cfg.RemoteManagement.SecretKey
 	}
-	if h.allowRemoteOverride {
+	allowRemoteOverride := h.allowRemoteOverride
+	envSecret := h.envSecret
+	localPassword := h.localPassword
+	h.mu.Unlock()
+	if allowRemoteOverride {
 		allowRemote = true
 	}
-	envSecret := h.envSecret
 
 	now := time.Now()
 	h.attemptsMu.Lock()
@@ -373,8 +391,8 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 
 	if localClient {
-		if lp := h.localPassword; lp != "" {
-			if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
+		if localPassword != "" {
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(localPassword)) == 1 {
 				reset()
 				return true, 0, ""
 			}
@@ -421,7 +439,9 @@ func (h *Handler) persistLocked(c *gin.Context) bool {
 	return true
 }
 
-// Helper methods for simple types
+// Helper methods for simple types.
+// set() runs under h.mu together with persist so concurrent GetConfig /
+// field setters cannot race on *h.cfg.
 func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 	var body struct {
 		Value *bool `json:"value"`
@@ -430,8 +450,14 @@ func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	set(*body.Value)
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
@@ -442,10 +468,17 @@ func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	set(*body.Value)
-	h.persist(c)
+	h.persistLocked(c)
 }
 
+// updateStringField binds a string value, then persists under h.mu.
 func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 	var body struct {
 		Value *string `json:"value"`
@@ -454,6 +487,110 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	set(*body.Value)
-	h.persist(c)
+	h.persistLocked(c)
+}
+
+// updateIntFieldClamped binds an int value, clamps negatives to fallback,
+// then persists. Each caller supplies its own fallback to preserve
+// independent semantics.
+func (h *Handler) updateIntFieldClamped(c *gin.Context, fallback int, set func(int)) {
+	var body struct {
+		Value *int `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	value := *body.Value
+	if value < 0 {
+		value = fallback
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
+	set(value)
+	h.persistLocked(c)
+}
+
+// GetDeepSeekLimiterStats returns stats for all DeepSeek limiter shards.
+func (h *Handler) GetDeepSeekLimiterStats(c *gin.Context) {
+	h.mu.Lock()
+	mgr := h.deepSeekLimiterManager
+	h.mu.Unlock()
+	if mgr == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "deepseek limiter not configured"})
+		return
+	}
+	stats := mgr.AllStats()
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":       true,
+		"global_sem":    mgr.GlobalSemaphoreCap(),
+		"shards":        stats,
+		"total_shards":  len(stats),
+		"total_active":  totalActive(stats),
+		"total_waiting": totalWaiting(stats),
+		"total_429":     total429(stats),
+	})
+}
+
+// GetDeepSeekLimiterShard returns stats for a specific user_id shard.
+func (h *Handler) GetDeepSeekLimiterShard(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id query param required"})
+		return
+	}
+	h.mu.Lock()
+	mgr := h.deepSeekLimiterManager
+	h.mu.Unlock()
+	if mgr == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "deepseek limiter not configured"})
+		return
+	}
+	shardStats, ok := mgr.GetShardStats(userID)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "shard not found"})
+		return
+	}
+	c.JSON(http.StatusOK, shardStats)
+}
+
+// TuneDeepSeekLimiter dynamically adjusts concurrency limits.
+func (h *Handler) TuneDeepSeekLimiter(c *gin.Context) {
+	var req struct {
+		UserID    string `json:"user_id"`
+		NewMax    int    `json:"new_max"`
+		GlobalMax int    `json:"global_max"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json: " + err.Error()})
+		return
+	}
+	h.mu.Lock()
+	mgr := h.deepSeekLimiterManager
+	h.mu.Unlock()
+	if mgr == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "deepseek limiter not configured"})
+		return
+	}
+	if req.UserID != "" {
+		if !mgr.SetShardConcurrency(req.UserID, req.NewMax) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "shard not found"})
+			return
+		}
+	}
+	if req.GlobalMax > 0 {
+		mgr.SetGlobalConcurrency(req.GlobalMax)
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }

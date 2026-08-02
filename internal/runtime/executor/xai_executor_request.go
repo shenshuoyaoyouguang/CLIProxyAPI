@@ -122,6 +122,7 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	if sessionID != "" {
 		body = helps.SetStringIfDifferent(body, "prompt_cache_key", sessionID)
 	}
+	body = ensureXAIServiceTier(body, opts)
 
 	return &xaiPreparedRequest{
 		baseModel:             baseModel,
@@ -327,15 +328,15 @@ func xaiResolveComposerSessionID(ctx context.Context, req cliproxyexecutor.Reque
 	if sessionID := xaiExecutionSessionID(req, opts); sessionID != "" {
 		return sessionID, nil
 	}
-	if !xaiRequiresIsolatedConversation(baseModel) {
-		return "", nil
-	}
 	cached, ok, errCache := helps.ClaudeCodePromptCache(ctx, baseModel, req.Payload, opts.Headers)
 	if errCache != nil {
 		return "", errCache
 	}
 	if ok {
 		return cached.ID, nil
+	}
+	if !xaiRequiresIsolatedConversation(baseModel) {
+		return "", nil
 	}
 	return uuid.NewString(), nil
 }
@@ -357,6 +358,24 @@ func xaiExecutionSessionID(req cliproxyexecutor.Request, opts cliproxyexecutor.O
 
 func xaiRequiresIsolatedConversation(model string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), xaiComposerModelPrefix)
+}
+
+// ensureXAIServiceTier injects a non-auto service_tier from request metadata so
+// clients that only surface the field via handler metadata still reach xAI. An
+// existing body value is preserved, and "auto"/empty metadata values are skipped.
+func ensureXAIServiceTier(body []byte, opts cliproxyexecutor.Options) []byte {
+	if existing := strings.TrimSpace(gjson.GetBytes(body, "service_tier").String()); existing != "" {
+		return body
+	}
+	tier := strings.TrimSpace(xaiMetadataString(opts.Metadata, cliproxyexecutor.ServiceTierMetadataKey))
+	if tier == "" || strings.EqualFold(tier, "auto") {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "service_tier", tier)
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 func xaiImageEndpointPath(opts cliproxyexecutor.Options) string {

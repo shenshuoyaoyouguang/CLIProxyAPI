@@ -25,6 +25,19 @@ func NewApplier() *Applier {
 	return &Applier{}
 }
 
+// Compile-time assertion that Applier satisfies the thinking.ProviderApplier interface.
+var _ thinking.ProviderApplier = (*Applier)(nil)
+
+// SupportsNativeDisabled reports whether Claude honors an explicit
+// thinking.type="disabled" marker for ModeNone. Claude emits the disabled marker
+// (see Apply ModeNone handling), so thinking stays fully off rather than falling
+// back to a minimal level.
+func (a *Applier) SupportsNativeDisabled() bool { return true }
+
+// claudeBudgetMaxGap is the gap enforced between max_tokens and thinking.budget_tokens.
+// Anthropic requires budget_tokens < max_tokens, so the applied budget is capped at max_tokens-1.
+const claudeBudgetMaxGap = 1
+
 func init() {
 	thinking.RegisterProvider("claude", NewApplier())
 }
@@ -135,7 +148,10 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		}
 
 		// Ensure max_tokens > thinking.budget_tokens (Anthropic API constraint).
-		result = a.normalizeClaudeBudget(result, config.Budget, modelInfo)
+		// normalizeClaudeBudget writes the adjusted budget back into
+		// thinking.budget_tokens when it differs from the requested value, so
+		// the caller does not need to set it again here.
+		result, _ = a.normalizeClaudeBudget(result, config.Budget, modelInfo)
 		return result, nil
 
 	case thinking.ModeAuto:
@@ -167,15 +183,20 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 
 // normalizeClaudeBudget applies Claude-specific constraints to ensure max_tokens > budget_tokens.
 // Anthropic API requires this constraint; violating it returns a 400 error.
-func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo *registry.ModelInfo) []byte {
+//
+// It returns the (possibly mutated) body and the final budget that was applied.
+// When the adjusted budget differs from the requested budget, the new value is
+// already written back into thinking.budget_tokens on the returned body, so
+// callers do not need to set it again.
+func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo *registry.ModelInfo) ([]byte, int) {
 	if budgetTokens <= 0 {
-		return body
+		return body, budgetTokens
 	}
 
 	// Ensure the request satisfies Claude constraints:
 	//  1) Determine effective max_tokens (request overrides model default)
 	//  2) If budget_tokens >= max_tokens, reduce budget_tokens to max_tokens-1
-	//  3) If the adjusted budget falls below the model minimum, leave the request unchanged
+	//  3) If the adjusted budget falls below the model minimum, remove thinking
 	//  4) If max_tokens came from model default, write it back into the request
 
 	effectiveMax, setDefaultMax := a.effectiveMaxTokens(body, modelInfo)
@@ -186,7 +207,7 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 	// Compute the budget we would apply after enforcing budget_tokens < max_tokens.
 	adjustedBudget := budgetTokens
 	if effectiveMax > 0 && adjustedBudget >= effectiveMax {
-		adjustedBudget = effectiveMax - 1
+		adjustedBudget = effectiveMax - claudeBudgetMaxGap
 	}
 
 	minBudget := 0
@@ -207,14 +228,14 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 		if oc := gjson.GetBytes(body, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
 			body, _ = sjson.DeleteBytes(body, "output_config")
 		}
-		return body
+		return body, 0
 	}
 
 	if adjustedBudget != budgetTokens {
 		body, _ = sjson.SetBytes(body, "thinking.budget_tokens", adjustedBudget)
 	}
 
-	return body
+	return body, adjustedBudget
 }
 
 // effectiveMaxTokens returns the max tokens to cap thinking:

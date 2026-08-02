@@ -598,3 +598,26 @@ func TestSignatureBypassStrictMode_LogsAtDebugLevel(t *testing.T) {
 		t.Fatalf("expected debug output for basic bypass mode, got: %q", output)
 	}
 }
+
+func TestGetModelGroup_BoundaryMatch(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"gpt-5.2", "gpt"},
+		{"openai/gpt-4o", "gpt"},
+		{"claude-sonnet-4-5", "claude"},
+		{"gemini-3-pro-preview", "gemini"},
+		{"my-claude-proxy", "claude"},
+		{"legacy-gpt-bridge", "gpt"},
+		// Substring inside a token should not match brand groups.
+		{"engpt-helper", "engpt-helper"},
+		{"superclaudex", "superclaudex"},
+		{"custom-model", "custom-model"},
+	}
+	for _, tc := range cases {
+		if got := GetModelGroup(tc.name); got != tc.want {
+			t.Errorf("GetModelGroup(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

@@ -153,8 +153,9 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesReasoningT
 	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
 		t.Fatalf("messages.0.role = %q, want assistant; output=%s", got, out)
 	}
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "first line\nsecond line" {
-		t.Fatalf("messages.0.reasoning_content = %q, want %q; output=%s", got, "first line\nsecond line", out)
+	// DeepSeek plain assistant turns must not keep reasoning_content in history.
+	if gjson.GetBytes(out, "messages.0.reasoning_content").Exists() {
+		t.Fatalf("plain assistant reasoning_content must be stripped; output=%s", out)
 	}
 	if got := gjson.GetBytes(out, "messages.0.content.0.text").String(); got != "answer" {
 		t.Fatalf("messages.0.content.0.text = %q, want answer; output=%s", got, out)
@@ -210,17 +211,94 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_KeepsReasoningBefo
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, false)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
 
-	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
-		t.Fatalf("messages count = %d, want 2; output=%s", got, out)
+	// Reasoning-only assistant messages become empty after DeepSeek filtering and are dropped.
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 1 {
+		t.Fatalf("messages count = %d, want 1; output=%s", got, out)
 	}
-	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
-		t.Fatalf("messages.0.role = %q, want assistant; output=%s", got, out)
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "user" {
+		t.Fatalf("messages.0.role = %q, want user; output=%s", got, out)
 	}
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "[reasoning unavailable]" {
-		t.Fatalf("messages.0.reasoning_content = %q, want placeholder; output=%s", got, out)
+	if got := gjson.GetBytes(out, "messages.0.content").String(); got != "continue" {
+		t.Fatalf("messages.0.content = %q, want continue; output=%s", got, out)
 	}
-	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "user" {
-		t.Fatalf("messages.1.role = %q, want user; output=%s", got, out)
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DeepSeekMultiTurnSplicing(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type": "message", "role": "user", "content": "hi"},
+			{
+				"type": "reasoning",
+				"id": "rs_plain",
+				"summary": [{"type": "summary_text", "text": "plain thought"}]
+			},
+			{
+				"type": "message",
+				"role": "assistant",
+				"content": [{"type": "output_text", "text": "hello"}]
+			},
+			{"type": "message", "role": "user", "content": "search"},
+			{
+				"type": "reasoning",
+				"id": "rs_tool",
+				"summary": [{"type": "summary_text", "text": "need a tool"}]
+			},
+			{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"x\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"result"},
+			{"type": "message", "role": "user", "content": "explain"}
+		]
+	}`)
+	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-r1", raw, false)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 6 {
+		t.Fatalf("messages count = %d, want 6; output=%s", got, out)
+	}
+	if gjson.GetBytes(out, "messages.1.reasoning_content").Exists() {
+		t.Fatalf("plain assistant reasoning_content must be stripped; output=%s", out)
+	}
+	if got := gjson.GetBytes(out, "messages.1.content.0.text").String(); got != "hello" {
+		t.Fatalf("messages.1.content = %q, want hello; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.3.role").String(); got != "assistant" {
+		t.Fatalf("messages.3.role = %q, want assistant; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.3.reasoning_content").String(); got != "need a tool" {
+		t.Fatalf("tool-call reasoning_content = %q, want need a tool; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.3.tool_calls.0.id").String(); got != "call_1" {
+		t.Fatalf("tool call id = %q, want call_1; output=%s", got, out)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_NonDeepSeekLeavesReasoningIntact(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{
+				"type": "reasoning",
+				"id": "rs_1",
+				"summary": [{"type": "summary_text", "text": "keep me"}]
+			},
+			{
+				"type": "message",
+				"role": "assistant",
+				"content": [{"type": "output_text", "text": "answer"}]
+			},
+			{"type": "message", "role": "user", "content": "next"}
+		]
+	}`)
+	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-test", raw, false)
+	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "keep me" {
+		t.Fatalf("messages.0.reasoning_content = %q, want keep me; output=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.content.0.text").String(); got != "answer" {
+		t.Fatalf("messages.0.content.0.text = %q, want answer; output=%s", got, out)
 	}
 }
 

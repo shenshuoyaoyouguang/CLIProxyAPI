@@ -137,6 +137,19 @@ func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor { return &ClaudeExecu
 
 func (e *ClaudeExecutor) Identifier() string { return "claude" }
 
+// thinkingProviderKey is the provider key passed to thinking.ApplyThinking for
+// registry lookups. When ClaudeExecutor is embedded (e.g. Kimi), the embedded
+// provider's key is used so thinking is not mis-attributed as "claude".
+func (e *ClaudeExecutor) thinkingProviderKey() string {
+	if e == nil {
+		return "claude"
+	}
+	if provider := strings.TrimSpace(e.requestLogProvider); provider != "" {
+		return provider
+	}
+	return e.Identifier()
+}
+
 func (e *ClaudeExecutor) upstreamRequestLogProvider() string {
 	if provider := strings.TrimSpace(e.requestLogProvider); provider != "" {
 		return provider

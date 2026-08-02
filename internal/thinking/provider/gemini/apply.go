@@ -35,6 +35,15 @@ func init() {
 	thinking.RegisterProvider("gemini", NewApplier())
 }
 
+// Compile-time assertion that Applier satisfies the thinking.ProviderApplier interface.
+var _ thinking.ProviderApplier = (*Applier)(nil)
+
+// SupportsNativeDisabled reports whether Gemini honors an explicit disable marker
+// for ModeNone. Gemini disables thinking by removing thinkingConfig (or setting a
+// zero budget), not via a disabled marker, so it must not be treated as fully
+// disabled at the ModeNone level.
+func (a *Applier) SupportsNativeDisabled() bool { return false }
+
 // Apply applies thinking configuration to Gemini request body.
 //
 // Expected output format (Gemini 2.5):
@@ -189,11 +198,16 @@ func (a *Applier) applyBudgetFormat(body []byte, config thinking.ThinkingConfig)
 	}
 
 	if !userSetIncludeThoughts {
-		// No explicit setting, use default logic based on mode
+		// No explicit setting, use default logic based on mode. ModeNone is
+		// handled above (includeThoughts=false regardless of clamped budget),
+		// so by this point showing thoughts is only correct when thinking is
+		// actually enabled (auto or a positive budget).
 		switch config.Mode {
 		case thinking.ModeAuto:
 			includeThoughts = true
 		default:
+			// ModeNone is handled above; ModeAuto is handled by the case above.
+			// Remaining modes show thoughts only when a positive budget is set.
 			includeThoughts = budget > 0
 		}
 	}

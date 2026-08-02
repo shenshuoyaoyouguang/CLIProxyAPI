@@ -119,3 +119,61 @@ func TestConvertInteractionsRequestToOpenAIWithToolMessagesDirect(t *testing.T) 
 		t.Fatalf("tool_call_id = %q, want call_1. Output: %s", got, string(out))
 	}
 }
+
+func TestConvertInteractionsRequestToOpenAIDeepSeekStripsPlainReasoning(t *testing.T) {
+	out := ConvertInteractionsRequestToOpenAI("deepseek-r1", []byte(`{"model":"deepseek-r1","input":[{"type":"user_input","content":[{"type":"text","text":"hi"}]},{"type":"thought","content":[{"type":"text","text":"thinking"}]},{"type":"model_output","content":[{"type":"text","text":"hello"}]},{"type":"user_input","content":[{"type":"text","text":"next"}]}]}`), false)
+	if got := gjson.GetBytes(out, "model").String(); got != "deepseek-r1" {
+		t.Fatalf("model = %q, want deepseek-r1. Output: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 3 {
+		t.Fatalf("messages count = %d, want 3. Output: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "assistant" {
+		t.Fatalf("messages.1.role = %q, want assistant. Output: %s", got, string(out))
+	}
+	if gjson.GetBytes(out, "messages.1.reasoning_content").Exists() {
+		t.Fatalf("plain assistant reasoning_content must be stripped. Output: %s", string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.1.content").String(); got != "hello" {
+		t.Fatalf("messages.1.content = %q, want hello. Output: %s", got, string(out))
+	}
+}
+
+func TestConvertInteractionsRequestToOpenAIDeepSeekKeepsToolReasoning(t *testing.T) {
+	// A thought immediately followed by a function_call belongs to the same
+	// assistant turn, so DeepSeek must receive it as tool-call reasoning.
+	out := ConvertInteractionsRequestToOpenAI("deepseek-r1", []byte(`{"model":"deepseek-r1","input":[{"type":"user_input","content":[{"type":"text","text":"search"}]},{"type":"thought","content":[{"type":"text","text":"need tool"}]},{"type":"function_call","name":"lookup","call_id":"call_1","arguments":{"q":"x"}},{"type":"function_result","name":"lookup","call_id":"call_1","result":{"ok":true}},{"type":"user_input","content":[{"type":"text","text":"explain"}]}]}`), false)
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 4 {
+		t.Fatalf("messages count = %d, want 4. Output: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "assistant" {
+		t.Fatalf("messages.1.role = %q, want assistant. Output: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.1.reasoning_content").String(); got != "need tool" {
+		t.Fatalf("messages.1.reasoning_content = %q, want need tool. Output: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.1.tool_calls.0.function.name").String(); got != "lookup" {
+		t.Fatalf("tool call name = %q, want lookup. Output: %s", got, string(out))
+	}
+}
+
+func TestConvertInteractionsRequestToOpenAIJoinsMultipleThoughtsWithNewline(t *testing.T) {
+	// Multiple consecutive thoughts accumulate into a single reasoning_content
+	// block attached to the next model_output. A newline separator keeps the
+	// reasoning text readable instead of concatenating without a boundary.
+	// Uses a non-DeepSeek model so the reasoning_content is not stripped by
+	// FilterDeepSeekReasoningContentFromHistory.
+	out := ConvertInteractionsRequestToOpenAI("gpt-test", []byte(`{"model":"gpt-test","input":[{"type":"user_input","content":[{"type":"text","text":"hi"}]},{"type":"thought","content":[{"type":"text","text":"step one"}]},{"type":"thought","content":[{"type":"text","text":"step two"}]},{"type":"model_output","content":[{"type":"text","text":"answer"}]}]}`), false)
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
+		t.Fatalf("messages count = %d, want 2. Output: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "assistant" {
+		t.Fatalf("messages.1.role = %q, want assistant. Output: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.1.reasoning_content").String(); got != "step one\nstep two" {
+		t.Fatalf("messages.1.reasoning_content = %q, want 'step one\\nstep two'. Output: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.1.content").String(); got != "answer" {
+		t.Fatalf("messages.1.content = %q, want answer. Output: %s", got, string(out))
+	}
+}

@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ const (
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {
-	if h == nil || h.cfg == nil {
+	if h == nil {
 		c.JSON(200, gin.H{})
 		return
 	}
@@ -33,10 +34,24 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	// clone is taken under the writers' lock and serialized outside it. The
 	// previous shallow copy shared map headers with the live config, so a GET
 	// during a PUT could trigger a fatal "concurrent map read and map write".
+	//
+	// Provider and proxy client secrets are redacted on the clone so a stolen
+	// management session cannot bulk-export every API key; dedicated
+	// key-management endpoints remain available for full values when needed.
 	h.mu.Lock()
+	if h.cfg == nil {
+		h.mu.Unlock()
+		c.JSON(200, gin.H{})
+		return
+	}
 	clone := h.cfg.CloneForRuntime()
 	h.mu.Unlock()
-	c.JSON(200, clone)
+	rendered, errMarshal := marshalConfigForManagementJSON(clone)
+	if errMarshal != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode_failed", "message": "failed to encode config"})
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", rendered)
 }
 
 type releaseInfo struct {
@@ -48,8 +63,12 @@ type releaseInfo struct {
 func (h *Handler) GetLatestVersion(c *gin.Context) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	proxyURL := ""
-	if h != nil && h.cfg != nil {
-		proxyURL = strings.TrimSpace(h.cfg.ProxyURL)
+	if h != nil {
+		h.mu.Lock()
+		if h.cfg != nil {
+			proxyURL = strings.TrimSpace(h.cfg.ProxyURL)
+		}
+		h.mu.Unlock()
 	}
 	if proxyURL != "" {
 		sdkCfg := &sdkconfig.SDKConfig{ProxyURL: proxyURL}
@@ -155,19 +174,41 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	// Restore redacted secrets before persisting. The management JSON GET
+	// endpoint returns masked api-keys/proxy-urls/headers so a stolen
+	// management session cannot bulk-export credentials; if that masked
+	// snapshot is round-tripped back through PUT /config.yaml we must undo
+	// the masking against the live config under the lock or every provider
+	// auth on disk gets corrupted. Restoration is structural-preserve and
+	// only substitutes values whose redaction matches the live secret.
+	restored, errRestore := restoreRedactedSecrets(body, h.cfg)
+	if errRestore != nil {
+		h.mu.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "redaction_restore_failed", "message": errRestore.Error()})
+		return
+	}
+	body = restored
 	if WriteConfig(h.configFilePath, body) != nil {
+		h.mu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": "failed to write config"})
 		return
 	}
 	// Reload into handler to keep memory in sync
 	newCfg, err := config.LoadConfig(h.configFilePath)
 	if err != nil {
+		h.mu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": err.Error()})
 		return
 	}
 	h.cfg = newCfg
+	snapshot := h.reloadSnapshotConfigLocked()
+	h.mu.Unlock()
+	var reqCtx context.Context
+	if c != nil && c.Request != nil {
+		reqCtx = c.Request.Context()
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
+	h.reloadConfigAfterManagementSaveAsync(reqCtx, snapshot)
 }
 
 // GetConfigYAML returns the raw config.yaml file bytes without re-encoding.
@@ -190,20 +231,31 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 }
 
 // Debug
-func (h *Handler) GetDebug(c *gin.Context) { c.JSON(200, gin.H{"debug": h.cfg.Debug}) }
+func (h *Handler) GetDebug(c *gin.Context) {
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.Debug
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"debug": v})
+}
 func (h *Handler) PutDebug(c *gin.Context) { h.updateBoolField(c, func(v bool) { h.cfg.Debug = v }) }
 
 // UsageStatisticsEnabled
 func (h *Handler) GetUsageStatisticsEnabled(c *gin.Context) {
-	c.JSON(200, gin.H{"usage-statistics-enabled": h.cfg.UsageStatisticsEnabled})
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.UsageStatisticsEnabled
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"usage-statistics-enabled": v})
 }
 func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
 }
 
-// UsageStatisticsEnabled
+// LoggingToFile
 func (h *Handler) GetLoggingToFile(c *gin.Context) {
-	c.JSON(200, gin.H{"logging-to-file": h.cfg.LoggingToFile})
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.LoggingToFile
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"logging-to-file": v})
 }
 func (h *Handler) PutLoggingToFile(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.LoggingToFile = v })
@@ -211,53 +263,49 @@ func (h *Handler) PutLoggingToFile(c *gin.Context) {
 
 // LogsMaxTotalSizeMB
 func (h *Handler) GetLogsMaxTotalSizeMB(c *gin.Context) {
-	c.JSON(200, gin.H{"logs-max-total-size-mb": h.cfg.LogsMaxTotalSizeMB})
+	h.mu.Lock()
+	v := 0
+	if h.cfg != nil {
+		v = h.cfg.LogsMaxTotalSizeMB
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"logs-max-total-size-mb": v})
 }
 func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
-	var body struct {
-		Value *int `json:"value"`
-	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	value := *body.Value
-	if value < 0 {
-		value = 0
-	}
-	h.cfg.LogsMaxTotalSizeMB = value
-	h.persist(c)
+	h.updateIntFieldClamped(c, 0, func(v int) { h.cfg.LogsMaxTotalSizeMB = v })
 }
 
 // ErrorLogsMaxFiles
 func (h *Handler) GetErrorLogsMaxFiles(c *gin.Context) {
-	c.JSON(200, gin.H{"error-logs-max-files": h.cfg.ErrorLogsMaxFiles})
+	h.mu.Lock()
+	v := 0
+	if h.cfg != nil {
+		v = h.cfg.ErrorLogsMaxFiles
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"error-logs-max-files": v})
 }
 func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
-	var body struct {
-		Value *int `json:"value"`
-	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	value := *body.Value
-	if value < 0 {
-		value = 10
-	}
-	h.cfg.ErrorLogsMaxFiles = value
-	h.persist(c)
+	h.updateIntFieldClamped(c, 10, func(v int) { h.cfg.ErrorLogsMaxFiles = v })
 }
 
 // Request log
-func (h *Handler) GetRequestLog(c *gin.Context) { c.JSON(200, gin.H{"request-log": h.cfg.RequestLog}) }
+func (h *Handler) GetRequestLog(c *gin.Context) {
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.RequestLog
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"request-log": v})
+}
 func (h *Handler) PutRequestLog(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.RequestLog = v })
 }
 
 // Websocket auth
 func (h *Handler) GetWebsocketAuth(c *gin.Context) {
-	c.JSON(200, gin.H{"ws-auth": h.cfg.WebsocketAuth})
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.WebsocketAuth
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"ws-auth": v})
 }
 func (h *Handler) PutWebsocketAuth(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.WebsocketAuth = v })
@@ -265,7 +313,13 @@ func (h *Handler) PutWebsocketAuth(c *gin.Context) {
 
 // Request retry
 func (h *Handler) GetRequestRetry(c *gin.Context) {
-	c.JSON(200, gin.H{"request-retry": h.cfg.RequestRetry})
+	h.mu.Lock()
+	v := 0
+	if h.cfg != nil {
+		v = h.cfg.RequestRetry
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"request-retry": v})
 }
 func (h *Handler) PutRequestRetry(c *gin.Context) {
 	h.updateIntField(c, func(v int) { h.cfg.RequestRetry = v })
@@ -273,7 +327,13 @@ func (h *Handler) PutRequestRetry(c *gin.Context) {
 
 // Max retry interval
 func (h *Handler) GetMaxRetryInterval(c *gin.Context) {
-	c.JSON(200, gin.H{"max-retry-interval": h.cfg.MaxRetryInterval})
+	h.mu.Lock()
+	v := 0
+	if h.cfg != nil {
+		v = h.cfg.MaxRetryInterval
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"max-retry-interval": v})
 }
 func (h *Handler) PutMaxRetryInterval(c *gin.Context) {
 	h.updateIntField(c, func(v int) { h.cfg.MaxRetryInterval = v })
@@ -281,7 +341,10 @@ func (h *Handler) PutMaxRetryInterval(c *gin.Context) {
 
 // ForceModelPrefix
 func (h *Handler) GetForceModelPrefix(c *gin.Context) {
-	c.JSON(200, gin.H{"force-model-prefix": h.cfg.ForceModelPrefix})
+	h.mu.Lock()
+	v := h.cfg != nil && h.cfg.ForceModelPrefix
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"force-model-prefix": v})
 }
 func (h *Handler) PutForceModelPrefix(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.ForceModelPrefix = v })
@@ -301,9 +364,15 @@ func normalizeRoutingStrategy(strategy string) (string, bool) {
 
 // RoutingStrategy
 func (h *Handler) GetRoutingStrategy(c *gin.Context) {
-	strategy, ok := normalizeRoutingStrategy(h.cfg.Routing.Strategy)
+	h.mu.Lock()
+	raw := ""
+	if h.cfg != nil {
+		raw = h.cfg.Routing.Strategy
+	}
+	h.mu.Unlock()
+	strategy, ok := normalizeRoutingStrategy(raw)
 	if !ok {
-		c.JSON(200, gin.H{"strategy": strings.TrimSpace(h.cfg.Routing.Strategy)})
+		c.JSON(200, gin.H{"strategy": strings.TrimSpace(raw)})
 		return
 	}
 	c.JSON(200, gin.H{"strategy": strategy})
@@ -321,16 +390,52 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid strategy"})
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	h.cfg.Routing.Strategy = normalized
-	h.persist(c)
+	h.persistLocked(c)
 }
 
 // Proxy URL
-func (h *Handler) GetProxyURL(c *gin.Context) { c.JSON(200, gin.H{"proxy-url": h.cfg.ProxyURL}) }
+func (h *Handler) GetProxyURL(c *gin.Context) {
+	h.mu.Lock()
+	v := ""
+	if h.cfg != nil {
+		v = h.cfg.ProxyURL
+	}
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"proxy-url": v})
+}
 func (h *Handler) PutProxyURL(c *gin.Context) {
-	h.updateStringField(c, func(v string) { h.cfg.ProxyURL = v })
+	var body struct {
+		Value *string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
+	incoming := strings.TrimSpace(*body.Value)
+	// Restore userinfo when the management UI round-trips a redacted proxy-url.
+	h.cfg.ProxyURL = restoreProxyURLString(incoming, h.cfg.ProxyURL, []string{h.cfg.ProxyURL})
+	h.persistLocked(c)
 }
 func (h *Handler) DeleteProxyURL(c *gin.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "config_unavailable"})
+		return
+	}
 	h.cfg.ProxyURL = ""
-	h.persist(c)
+	h.persistLocked(c)
 }

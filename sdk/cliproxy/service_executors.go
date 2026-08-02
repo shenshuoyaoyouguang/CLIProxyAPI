@@ -260,7 +260,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 				}
 			}
 		}
-		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(compatProviderKey, cfg))
+		s.coreManager.RegisterExecutor(s.newOpenAICompatExecutor(compatProviderKey, cfg))
 		return
 	}
 	switch strings.ToLower(a.Provider) {
@@ -293,7 +293,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		}
 		s.coreManager.RegisterExecutor(executor.NewXAIAutoExecutor(cfg))
 	case "zai":
-		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("zai", cfg))
+		s.coreManager.RegisterExecutor(s.newOpenAICompatExecutor("zai", cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
@@ -311,8 +311,18 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 				return
 			}
 		}
-		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(providerKey, cfg))
+		s.coreManager.RegisterExecutor(s.newOpenAICompatExecutor(providerKey, cfg))
 	}
+}
+
+// newOpenAICompatExecutor creates an OpenAI-compat executor and attaches the
+// DeepSeek gateway hook when one is active.
+func (s *Service) newOpenAICompatExecutor(providerKey string, cfg *config.Config) *executor.OpenAICompatExecutor {
+	openAIExec := executor.NewOpenAICompatExecutor(providerKey, cfg)
+	if s.deepSeekGatewayHook != nil {
+		openAIExec = openAIExec.WithDeepSeekGatewayHook(s.deepSeekGatewayHook)
+	}
+	return openAIExec
 }
 
 func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey string, models []*ModelInfo) {

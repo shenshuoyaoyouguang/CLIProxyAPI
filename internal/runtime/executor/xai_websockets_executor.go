@@ -26,6 +26,16 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const (
+	// xaiResponsesWebsocketIdleTimeout bounds how long a read may block waiting
+	// for the next upstream message. This is an intentional liveness exception
+	// to the project's no-post-connect-timeout rule (see AGENTS.md), aligned
+	// with the Codex websocket liveness deadline so a stalled peer cannot hold
+	// the read goroutine forever.
+	xaiResponsesWebsocketIdleTimeout = 5 * time.Minute
+	xaiResponsesWebsocketReadLimit   = 64 << 20 // 64 MiB, aligned with wsrelay
+)
+
 // XAIWebsocketsExecutor executes xAI Responses requests using a WebSocket transport.
 type XAIWebsocketsExecutor struct {
 	*XAIExecutor
@@ -178,6 +188,29 @@ func (s *xaiWebsocketIDState) prependTranscriptInput(payload []byte) []byte {
 		return payload
 	}
 	return out
+}
+
+// clearForTargetChange resets transcript and previous_response_id map when
+// auth/URL changes so remapped IDs from the previous upstream are not reused.
+func (s *xaiWebsocketIDState) clearForTargetChange() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.transcriptInput = nil
+	s.downstreamToUpstream = make(map[string]string)
+	s.sequence = 0
+	s.mu.Unlock()
+}
+
+// xaiWebsocketStateSessionID selects the key for previous_response_id / transcript
+// state. Prefer the execution session so CloseExecutionSession drops the same entry
+// used by idMapper. Fall back to the prepared session when no execution session is set.
+func xaiWebsocketStateSessionID(executionSessionID, preparedSessionID string) string {
+	if id := strings.TrimSpace(executionSessionID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(preparedSessionID)
 }
 
 func (s *xaiWebsocketIDState) recordTranscriptTurn(requestPayload []byte, completedPayload []byte, reset bool) {
@@ -475,8 +508,16 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		return nil, err
 	}
 
-	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
-	defer reporter.TrackFailure(ctx, &err)
+	// Use the fully resolved session ID from prepareResponsesRequest (which
+	// includes execution session, client prompt_cache_key, and Claude Code
+	// session) for the WebSocket idMapper so multi-turn previous_response_id
+	// remapping and transcript state work consistently with HTTP path.
+	stateSessionID = xaiWebsocketStateSessionID(executionSessionID, prepared.sessionID)
+	idMapper := newXAIWebsocketRequestIDMapper(e.idStore, stateSessionID, req.Payload)
+
+	if xaiInputHasItemType(req.Payload, "compaction_trigger") {
+		return e.executeCompactionTriggerFromWebsocketContext(ctx, auth, req, opts, idMapper)
+	}
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildXAIResponsesWebsocketURL(httpURL)
@@ -498,13 +539,15 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			sess.reqMu.Lock()
 		}
 	}
-	idMapper := newXAIWebsocketRequestIDMapper(e.idStore, stateSessionID, req.Payload)
 	if idMapper != nil {
 		if websocketSessionTargetChanged(sess, authID, wsURL) {
 			idMapper.upstreamPreviousID = ""
+			idMapper.state.clearForTargetChange()
 		}
 		prepared.body = idMapper.upstreamRequestPayload(prepared.body)
 	}
+	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 
 	wsHeaders := applyXAIWebsocketHeaders(http.Header{}, auth, token, prepared.sessionID)
@@ -765,7 +808,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					continue
 				}
 				eventType := gjson.GetBytes(payload, "type").String()
-				isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+				isTerminalEvent := xaiWebsocketTerminalEvent(eventType)
 				warmupCompletedPayload := []byte(nil)
 				switch eventType {
 				case "response.created":
@@ -779,7 +822,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 				case "response.output_item.done":
 					xaiCollectOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
-				case "response.completed":
+				case "response.completed", "response.incomplete", "response.done":
 					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
 					if detail, ok := helps.ParseCodexUsage(payload); ok {
 						reporter.Publish(ctx, detail)
@@ -787,15 +830,6 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					payload = xaiPatchCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
 					payload = xaiNormalizeReasoningSummaryData(payload)
 					cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, payload)
-					if !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
-						idMapper.state.recordTranscriptTurn(wsReqBody, payload, transcriptReset)
-						recordedTranscript = true
-					}
-				case "response.done":
-					logXAIWebsocketTerminalResponse(executionSessionID, authID, wsURL, eventType, payload)
-					if detail, ok := helps.ParseCodexUsage(payload); ok {
-						reporter.Publish(ctx, detail)
-					}
 					if !warmupRequest && idMapper != nil && idMapper.state != nil && !recordedTranscript {
 						idMapper.state.recordTranscriptTurn(wsReqBody, payload, transcriptReset)
 						recordedTranscript = true
@@ -852,7 +886,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 					return
 				}
-				if eventType == "response.completed" || eventType == "response.done" {
+				if xaiWebsocketTerminalEvent(eventType) {
 					return
 				}
 			}
@@ -959,6 +993,15 @@ func xaiWebsocketGenerateFalse(payload []byte) bool {
 	return generate.Exists() && !generate.Bool()
 }
 
+func xaiWebsocketTerminalEvent(eventType string) bool {
+	switch eventType {
+	case "response.completed", "response.incomplete", "response.done", "error":
+		return true
+	default:
+		return false
+	}
+}
+
 func buildXAIWebsocketWarmupCompletedPayload(createdPayload []byte) []byte {
 	completed := []byte(`{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
 	if sequence := gjson.GetBytes(createdPayload, "sequence_number"); sequence.Exists() {
@@ -1049,6 +1092,7 @@ func (e *XAIWebsocketsExecutor) dialXAIWebsocket(ctx context.Context, auth *clip
 	if conn != nil {
 		// Avoid gorilla/websocket flate tail validation issues on some upstreams/Go versions.
 		conn.EnableWriteCompression(false)
+		conn.SetReadLimit(xaiResponsesWebsocketReadLimit)
 	}
 	return conn, closer, resp, err
 }
@@ -1155,7 +1199,8 @@ func configureXAIWebsocketConn(sess *codexWebsocketSession, conn *websocket.Conn
 	conn.SetPingHandler(func(appData string) error {
 		sess.writeMu.Lock()
 		defer sess.writeMu.Unlock()
-		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Time{})
+		// Bound pong write so a stalled peer cannot hold writeMu forever.
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
 	})
 	defaultCloseHandler := conn.CloseHandler()
 	conn.SetCloseHandler(func(code int, text string) error {
@@ -1217,6 +1262,7 @@ func (e *XAIWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, co
 		return
 	}
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(xaiResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
 		if errRead != nil {
 			invalidate := func() {

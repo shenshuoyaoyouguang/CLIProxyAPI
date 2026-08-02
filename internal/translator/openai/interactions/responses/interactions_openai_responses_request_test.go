@@ -79,6 +79,26 @@ func TestConvertOpenAIResponsesRequestToInteractionsPreservesRequestStream(t *te
 	}
 }
 
+func TestConvertOpenAIResponsesRequestDropsEmptyContentShells(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-test",
+		"input":[
+			{"type":"message","role":"assistant","content":[{"type":"unknown_part","data":"x"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"keep-me"}]}
+		]
+	}`)
+	out := ConvertOpenAIResponsesRequestToInteractions("gpt-test", raw, false)
+	if gjson.GetBytes(out, "input.#").Int() != 1 {
+		t.Fatalf("input length = %d, want 1 (empty assistant shell dropped). Output: %s", gjson.GetBytes(out, "input.#").Int(), string(out))
+	}
+	if got := gjson.GetBytes(out, "input.0.type").String(); got != "user_input" {
+		t.Fatalf("input.0.type = %q, want user_input. Output: %s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "input.0.content.0.text").String(); got != "keep-me" {
+		t.Fatalf("kept text = %q, want keep-me. Output: %s", got, string(out))
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToInteractionsPreservesPreviousResponseID(t *testing.T) {
 	out := ConvertOpenAIResponsesRequestToInteractions("gpt-test", []byte(`{"model":"gpt-test","input":"hi","previous_response_id":"resp_123"}`), false)
 	if got := gjson.GetBytes(out, "previous_interaction_id").String(); got != "resp_123" {

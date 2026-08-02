@@ -13,7 +13,9 @@ import (
 const codexInputItemIDLimit = 64
 
 // SanitizeCodexInputItemIDs removes encrypted reasoning items whose IDs exceed
-// the Codex limit and deterministically shortens other overlong input item IDs.
+// the Codex limit and deterministically shortens other overlong input item IDs
+// and any co-located call_id values that share the same overlong string, so
+// tool-call chains remain consistent after truncation.
 func SanitizeCodexInputItemIDs(body []byte) []byte {
 	input := gjson.GetBytes(body, "input")
 	if !input.IsArray() {
@@ -21,19 +23,13 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 	}
 
 	items := input.Array()
-	occupied := make(map[string]struct{}, len(items))
+	occupied := make(map[string]struct{}, len(items)*2)
 	for _, item := range items {
 		if shouldDropCodexEncryptedReasoningItem(item) {
 			continue
 		}
-		itemID := item.Get("id")
-		if itemID.Type != gjson.String {
-			continue
-		}
-		id := itemID.String()
-		if len([]rune(id)) <= codexInputItemIDLimit {
-			occupied[id] = struct{}{}
-		}
+		collectOccupiedCodexID(occupied, item.Get("id"))
+		collectOccupiedCodexID(occupied, item.Get("call_id"))
 	}
 
 	mapped := make(map[string]string, len(items))
@@ -46,29 +42,15 @@ func SanitizeCodexInputItemIDs(body []byte) []byte {
 		}
 
 		raw := item.Raw
-		itemID := item.Get("id")
-		if itemID.Type == gjson.String {
-			id := itemID.String()
-			if len([]rune(id)) > codexInputItemIDLimit {
-				shortened, ok := mapped[id]
-				if !ok {
-					shortened = shortenCodexInputItemID(id)
-					for attempt := 1; ; attempt++ {
-						if _, exists := occupied[shortened]; !exists {
-							break
-						}
-						shortened = shortenCodexInputItemIDWithAttempt(id, attempt)
-					}
-					mapped[id] = shortened
-					occupied[shortened] = struct{}{}
-				}
-
-				next, errSet := sjson.SetBytes([]byte(raw), "id", shortened)
-				if errSet == nil {
-					raw = string(next)
-					changed = true
-				}
-			}
+		nextRaw, idChanged := rewriteCodexIDInRaw(raw, "id", occupied, mapped)
+		if idChanged {
+			raw = nextRaw
+			changed = true
+		}
+		nextRaw, callChanged := rewriteCodexIDInRaw(raw, "call_id", occupied, mapped)
+		if callChanged {
+			raw = nextRaw
+			changed = true
 		}
 		rebuilt = append(rebuilt, raw)
 	}
@@ -93,6 +75,46 @@ func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {
 	}
 	encryptedContent := item.Get("encrypted_content")
 	return encryptedContent.Type == gjson.String && encryptedContent.String() != ""
+}
+
+func collectOccupiedCodexID(occupied map[string]struct{}, value gjson.Result) {
+	if value.Type != gjson.String {
+		return
+	}
+	id := value.String()
+	if len([]rune(id)) <= codexInputItemIDLimit {
+		occupied[id] = struct{}{}
+	}
+}
+
+func rewriteCodexIDInRaw(raw string, field string, occupied map[string]struct{}, mapped map[string]string) (string, bool) {
+	value := gjson.Get(raw, field)
+	if value.Type != gjson.String {
+		return raw, false
+	}
+	id := value.String()
+	if len([]rune(id)) <= codexInputItemIDLimit {
+		return raw, false
+	}
+
+	shortened, ok := mapped[id]
+	if !ok {
+		shortened = shortenCodexInputItemID(id)
+		for attempt := 1; ; attempt++ {
+			if _, exists := occupied[shortened]; !exists {
+				break
+			}
+			shortened = shortenCodexInputItemIDWithAttempt(id, attempt)
+		}
+		mapped[id] = shortened
+		occupied[shortened] = struct{}{}
+	}
+
+	next, errSet := sjson.Set(raw, field, shortened)
+	if errSet != nil {
+		return raw, false
+	}
+	return next, true
 }
 
 func shortenCodexInputItemID(id string) string {

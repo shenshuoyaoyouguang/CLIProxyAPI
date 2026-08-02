@@ -18,24 +18,32 @@ type pluginProviderApplier struct {
 
 var providerAppliersMu sync.RWMutex
 
-// nativeProviderAppliers maps built-in provider names to their implementations.
-var nativeProviderAppliers = map[string]ProviderApplier{
-	"gemini":      nil,
-	"claude":      nil,
-	"openai":      nil,
-	"codex":       nil,
-	"antigravity": nil,
-	"kimi":        nil,
-	"xai":         nil,
-	"deepseek":    nil,
-	"nvidia":      nil,
+// nativeProviderNames reserves built-in provider names so plugins cannot claim
+// them before (or without) RegisterProvider. Appliers live in
+// nativeProviderAppliers; GetProviderApplier looks there only. RegisterProvider
+// adds every successfully registered name here so dynamic natives stay reserved.
+var nativeProviderNames = map[string]bool{
+	"gemini":       true,
+	"claude":       true,
+	"openai":       true,
+	"codex":        true,
+	"antigravity":  true,
+	"kimi":         true,
+	"xai":          true,
+	"deepseek":     true,
+	"interactions": true,
 }
+
+// nativeProviderAppliers maps built-in provider names to their registered appliers.
+var nativeProviderAppliers = map[string]ProviderApplier{}
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.
 var pluginProviderAppliers = map[string]pluginProviderApplier{}
 
 // GetProviderApplier returns the ProviderApplier for the given provider name.
 // Returns nil if the provider is not registered.
+// Lookup order: native map (any RegisterProvider result), then plugin map.
+// The allowlist alone must never hide a successfully registered native applier.
 func GetProviderApplier(provider string) ProviderApplier {
 	provider = normalizedProviderName(provider)
 	if provider == "" {
@@ -43,8 +51,8 @@ func GetProviderApplier(provider string) ProviderApplier {
 	}
 	providerAppliersMu.RLock()
 	defer providerAppliersMu.RUnlock()
-	if nativeApplier, okNative := nativeProviderAppliers[provider]; okNative {
-		return nativeApplier
+	if applier, ok := nativeProviderAppliers[provider]; ok && applier != nil {
+		return applier
 	}
 	return pluginProviderAppliers[provider].applier
 }
@@ -56,7 +64,7 @@ func GetProviderApplier(provider string) ProviderApplier {
 // behaviour change for that plugin, so it is reported explicitly.
 func RegisterProvider(name string, applier ProviderApplier) {
 	name = normalizedProviderName(name)
-	if name == "" {
+	if name == "" || applier == nil {
 		return
 	}
 	providerAppliersMu.Lock()
@@ -64,6 +72,7 @@ func RegisterProvider(name string, applier ProviderApplier) {
 	if plugin, shadowed := pluginProviderAppliers[name]; shadowed {
 		log.Warnf("thinking: native provider applier %q shadows plugin applier owned by %q; the plugin applier will no longer be used", name, plugin.owner)
 	}
+	nativeProviderNames[name] = true
 	nativeProviderAppliers[name] = applier
 }
 
@@ -76,7 +85,11 @@ func RegisterPluginProvider(owner string, name string, priority int, applier Pro
 	}
 	providerAppliersMu.Lock()
 	defer providerAppliersMu.Unlock()
-	if _, native := nativeProviderAppliers[name]; native {
+	// nativeProviderNames covers both the static allowlist and any name that
+	// RegisterProvider has claimed (including dynamic natives). Checking only
+	// nativeProviderAppliers would allow plugins to steal allowlisted names
+	// before native init.
+	if nativeProviderNames[name] {
 		return false
 	}
 	current, exists := pluginProviderAppliers[name]
@@ -427,7 +440,9 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	// Get config: suffix priority over body
 	var config ThinkingConfig
 	if suffixResult.HasSuffix {
-		config = parseSuffixToConfig(suffixResult.RawSuffix, toFormat, modelID)
+		// Suffix parsing is provider-agnostic; pass fromFormat for log consistency
+		// with the body-extraction path's primary source format.
+		config = parseSuffixToConfig(suffixResult.RawSuffix, fromFormat, modelID)
 		log.WithFields(log.Fields{
 			"provider": toFormat,
 			"model":    modelID,
@@ -529,24 +544,20 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 	}
 
 	provider = strings.ToLower(strings.TrimSpace(provider))
-	config := extractThinkingConfig(body, provider)
-	if !hasThinkingConfig(config) {
-		switch provider {
-		case "openai-response":
-			config = extractCodexConfig(body)
-		case "openai":
-			config = extractCodexConfig(body)
-		case "deepseek":
-			config = extractOpenAIConfig(body)
-		}
-	}
-	return reasoningEffortFromConfig(config)
+	return reasoningEffortFromConfig(resolveThinkingConfigForProvider(body, provider))
 }
 
 // ExtractTranslatedReasoningEffort returns the final provider payload's thinking
 // setting as a canonical reasoning_effort label for usage logging.
 func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
+	return reasoningEffortFromConfig(resolveThinkingConfigForProvider(body, provider))
+}
+
+// resolveThinkingConfigForProvider extracts thinking settings for usage labeling.
+// OpenAI family accepts both Chat Completions (reasoning_effort) and Responses
+// (reasoning.effort) shapes; try both when the primary extractor finds nothing.
+func resolveThinkingConfigForProvider(body []byte, provider string) ThinkingConfig {
 	config := extractThinkingConfig(body, provider)
 	if !hasThinkingConfig(config) {
 		switch provider {
@@ -567,7 +578,7 @@ func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 			config = extractOpenAIConfig(body)
 		}
 	}
-	return reasoningEffortFromConfig(config)
+	return config
 }
 
 func reasoningEffortFromSuffix(suffix SuffixResult) string {
@@ -609,6 +620,25 @@ func fieldNonNil(r gjson.Result) bool {
 	return r.Exists() && r.Type != gjson.Null
 }
 
+// configFromLevelName maps a thinking level string
+// ("none"/"auto"/level name) to a canonical ThinkingConfig.
+// Matching is case-insensitive with leading/trailing whitespace trimmed.
+// Non-special levels are stored as lowercase trimmed ThinkingLevel so
+// provider appliers always emit canonical wire enums.
+func configFromLevelName(value string) ThinkingConfig {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "none":
+		return ThinkingConfig{Mode: ModeNone, Budget: 0}
+	case "auto":
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+	case "":
+		return ThinkingConfig{}
+	default:
+		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(normalized)}
+	}
+}
+
 // extractClaudeConfig extracts thinking configuration from Claude format request body.
 //
 // Claude API format:
@@ -619,7 +649,8 @@ func fieldNonNil(r gjson.Result) bool {
 // When type="enabled" without budget_tokens, returns ModeAuto to indicate
 // the user wants thinking enabled but didn't specify a budget.
 func extractClaudeConfig(body []byte) ThinkingConfig {
-	thinkingType := gjson.GetBytes(body, "thinking.type").String()
+	// Normalize type case so clients sending "Disabled"/"ENABLED" match DeepSeek/Kimi.
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
 	if thinkingType == "disabled" {
 		return ThinkingConfig{Mode: ModeNone, Budget: 0}
 	}
@@ -632,14 +663,7 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 			if value == "" {
 				return ThinkingConfig{}
 			}
-			switch value {
-			case "none":
-				return ThinkingConfig{Mode: ModeNone, Budget: 0}
-			case "auto":
-				return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-			default:
-				return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
-			}
+			return configFromLevelName(value)
 		}
 		return ThinkingConfig{}
 	}
@@ -734,14 +758,7 @@ func extractInteractionsConfig(body []byte) ThinkingConfig {
 			continue
 		}
 		value := strings.ToLower(strings.TrimSpace(level.String()))
-		switch value {
-		case "none":
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		case "auto":
-			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
-		default:
-			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
-		}
+		return configFromLevelName(value)
 	}
 
 	for _, path := range []string{
@@ -780,11 +797,7 @@ func extractInteractionsConfig(body []byte) ThinkingConfig {
 func extractOpenAIConfig(body []byte) ThinkingConfig {
 	// Check reasoning_effort (OpenAI Chat Completions format)
 	if effort := gjson.GetBytes(body, "reasoning_effort"); fieldNonNil(effort) {
-		value := effort.String()
-		if value == "none" {
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		}
-		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+		return configFromLevelName(effort.String())
 	}
 
 	return ThinkingConfig{}
@@ -843,11 +856,7 @@ func extractKimiConfig(body []byte) ThinkingConfig {
 func extractCodexConfig(body []byte) ThinkingConfig {
 	// Check reasoning.effort (Codex / OpenAI Responses API format)
 	if effort := gjson.GetBytes(body, "reasoning.effort"); fieldNonNil(effort) {
-		value := effort.String()
-		if value == "none" {
-			return ThinkingConfig{Mode: ModeNone, Budget: 0}
-		}
-		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+		return configFromLevelName(effort.String())
 	}
 
 	return ThinkingConfig{}
@@ -878,6 +887,22 @@ func extractDeepSeekConfig(body []byte) ThinkingConfig {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
 		case "enabled":
 			thinkingEnabled = true
+			// Native thinking.effort takes precedence over the legacy
+			// reasoning_effort field.
+			if effort := gjson.GetBytes(body, "thinking.effort"); fieldNonNil(effort) {
+				value := strings.ToLower(strings.TrimSpace(effort.String()))
+				switch value {
+				case "":
+					// Explicit enabled with empty effort defaults to auto.
+					return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+				case "none":
+					return ThinkingConfig{Mode: ModeNone, Budget: 0}
+				case "auto":
+					return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+				default:
+					return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+				}
+			}
 			// A JSON null reasoning_effort is treated exactly like a missing
 			// field (gjson.Exists() reports true for null, so check the type):
 			// the upstream then receives thinking.type=enabled without effort.
