@@ -70,6 +70,48 @@ func assertClaudeFingerprint(t *testing.T, headers http.Header, userAgent, pkgVe
 	}
 }
 
+func TestApplyClaudeHeaders_FastModeBetaIsConditional(t *testing.T) {
+	const betasWithoutFastMode = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28"
+	const betasWithFastMode = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28"
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "omitted speed excludes fast mode beta",
+			body: `{"model":"claude-opus-5"}`,
+			want: betasWithoutFastMode,
+		},
+		{
+			name: "fast speed includes fast mode beta in default order",
+			body: `{"model":"claude-opus-5","speed":"fast"}`,
+			want: betasWithFastMode,
+		},
+		{
+			name: "explicit body beta preserves fast mode beta in default order",
+			body: `{"model":"claude-opus-5","betas":["fast-mode-2026-02-01"]}`,
+			want: betasWithFastMode,
+		},
+	}
+
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-fast-mode-beta"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			extraBetas, body := extractAndRemoveBetas([]byte(tt.body))
+			extraBetas = appendClaudeFastModeBeta(body, extraBetas)
+			req := newClaudeHeaderTestRequest(t, nil)
+			if errApply := applyClaudeHeaders(req, auth, "key-fast-mode-beta", false, extraBetas, nil, nil); errApply != nil {
+				t.Fatalf("applyClaudeHeaders() error = %v", errApply)
+			}
+			if got := req.Header.Get("Anthropic-Beta"); got != tt.want {
+				t.Fatalf("Anthropic-Beta = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint(t *testing.T) {
 	resetClaudeDeviceProfileCache()
 	stabilize := true
@@ -1622,6 +1664,105 @@ func TestClaudeExecutor_ExecuteOpenAINonStreamConvertsValidClaudeStream(t *testi
 	}
 }
 
+func TestClaudeExecutor_ExecuteTransportMatchesResponseFormat(t *testing.T) {
+	const model = "claude-3-5-sonnet-20241022"
+	streamResponse := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-5-sonnet-20241022"}}`,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"output_tokens":1}}`,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+	jsonResponse := `{"id":"msg_123","type":"message","role":"assistant","model":"claude-3-5-sonnet-20241022","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":2,"output_tokens":1}}`
+
+	tests := []struct {
+		name           string
+		sourceFormat   sdktranslator.Format
+		responseFormat sdktranslator.Format
+		wantStream     bool
+	}{
+		{name: "OpenAI to OpenAI uses SSE", sourceFormat: sdktranslator.FormatOpenAI, responseFormat: sdktranslator.FormatOpenAI, wantStream: true},
+		{name: "OpenAI to Claude uses JSON", sourceFormat: sdktranslator.FormatOpenAI, responseFormat: sdktranslator.FormatClaude, wantStream: false},
+		{name: "Claude to OpenAI uses SSE", sourceFormat: sdktranslator.FormatClaude, responseFormat: sdktranslator.FormatOpenAI, wantStream: true},
+		{name: "Claude to Claude uses JSON", sourceFormat: sdktranslator.FormatClaude, responseFormat: sdktranslator.FormatClaude, wantStream: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var seenBody []byte
+			var seenHeaders http.Header
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seenBody, _ = io.ReadAll(r.Body)
+				seenHeaders = r.Header.Clone()
+				if tt.wantStream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte(streamResponse))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(jsonResponse))
+			}))
+			defer server.Close()
+
+			executor := NewClaudeExecutor(&config.Config{
+				Payload: config.PayloadConfig{
+					Override: []config.PayloadRule{{
+						Models: []config.PayloadModelRule{{Name: model, Protocol: "claude"}},
+						Params: map[string]any{"stream": !tt.wantStream},
+					}},
+				},
+			})
+			attributes := map[string]string{
+				"api_key":  "key-123",
+				"base_url": server.URL,
+			}
+			if tt.wantStream {
+				attributes["header:Accept"] = "application/json"
+				attributes["header:Accept-Encoding"] = "gzip, deflate, br, zstd"
+			}
+			auth := &cliproxyauth.Auth{Attributes: attributes}
+			payload := []byte(`{"model":"claude-3-5-sonnet-20241022","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+
+			_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+				Model:   model,
+				Payload: payload,
+			}, cliproxyexecutor.Options{
+				SourceFormat:   tt.sourceFormat,
+				ResponseFormat: tt.responseFormat,
+				Headers: http.Header{
+					"Anthropic-Beta": []string{"client-beta"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Execute error: %v", err)
+			}
+			stream := gjson.GetBytes(seenBody, "stream")
+			if !stream.Exists() || stream.Bool() != tt.wantStream {
+				t.Fatalf("upstream stream = %s, want %t; body=%s", stream.Raw, tt.wantStream, string(seenBody))
+			}
+			wantAccept := "application/json"
+			wantEncoding := "gzip, deflate, br, zstd"
+			if tt.wantStream {
+				wantAccept = "text/event-stream"
+				wantEncoding = "identity"
+			}
+			if got := seenHeaders.Get("Accept"); got != wantAccept {
+				t.Fatalf("Accept = %q, want %q", got, wantAccept)
+			}
+			if got := seenHeaders.Get("Accept-Encoding"); got != wantEncoding {
+				t.Fatalf("Accept-Encoding = %q, want %q", got, wantEncoding)
+			}
+			if got := seenHeaders.Get("Anthropic-Beta"); !strings.Contains(got, "client-beta") {
+				t.Fatalf("Anthropic-Beta = %q, want client beta preserved", got)
+			}
+		})
+	}
+}
+
 func executeOpenAIChatCompletionThroughClaude(t *testing.T, upstreamBody string) (cliproxyexecutor.Response, error) {
 	t.Helper()
 
@@ -2714,31 +2855,6 @@ func TestApplyCloaking_PreservesConfiguredStrictModeAndSensitiveWordsWhenModeOmi
 	}
 }
 
-// Regression (cloaking #9): when cloaking collects forwarded system
-// instructions but the request has no user message to prepend them to, they
-// must be preserved in the system prompt rather than silently dropped.
-func TestApplyCloaking_PreservesSystemInstructionsWhenNoUserMessage(t *testing.T) {
-	cfg := &config.Config{
-		ClaudeKey: []config.ClaudeKey{{APIKey: "key-123"}},
-	}
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-123", "cloak_mode": "always"}}
-	payload := []byte(`{"system":"do not drop these user instructions","messages":[{"role":"assistant","content":[{"type":"text","text":"hi"}]}]}`)
-
-	out, errCloaking := applyCloaking(context.Background(), cfg, auth, payload, "claude-3-5-sonnet-20241022", "key-123")
-	if errCloaking != nil {
-		t.Fatalf("applyCloaking() error = %v", errCloaking)
-	}
-
-	blocks := gjson.GetBytes(out, "system").Array()
-	if len(blocks) < 4 {
-		t.Fatalf("expected injected 3 Claude Code blocks + preserved user instructions, got %d blocks: %s", len(blocks), out)
-	}
-	last := blocks[len(blocks)-1]
-	if !strings.Contains(last.Get("text").String(), "do not drop these user instructions") {
-		t.Fatalf("user system instructions were silently dropped; system = %s", out)
-	}
-}
-
 func TestNormalizeClaudeSamplingForUpstream_RemovesTemperature(t *testing.T) {
 	payload := []byte(`{"temperature":0,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}`)
 	out := normalizeClaudeSamplingForUpstream(payload)
@@ -3036,45 +3152,6 @@ func TestClaudeExecutor_ExecuteOpenAINonStreamRestoresOAuthToolNames(t *testing.
 	}
 }
 
-func TestEnsureClaudeThinkingDisplay_SetsSummarizedWhenMissing(t *testing.T) {
-	payload := []byte(`{"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`)
-	out := ensureClaudeThinkingDisplay(payload)
-
-	if got := gjson.GetBytes(out, "thinking.display").String(); got != "summarized" {
-		t.Fatalf("thinking.display = %q, want summarized", got)
-	}
-	if got := gjson.GetBytes(out, "thinking.type").String(); got != "adaptive" {
-		t.Fatalf("thinking.type = %q, want adaptive", got)
-	}
-}
-
-func TestEnsureClaudeThinkingDisplay_PreservesExplicitValue(t *testing.T) {
-	payload := []byte(`{"thinking":{"type":"enabled","budget_tokens":2048,"display":"omitted"}}`)
-	out := ensureClaudeThinkingDisplay(payload)
-
-	if got := gjson.GetBytes(out, "thinking.display").String(); got != "omitted" {
-		t.Fatalf("thinking.display = %q, want omitted", got)
-	}
-}
-
-func TestEnsureClaudeThinkingDisplay_SkipsWhenThinkingDisabled(t *testing.T) {
-	payload := []byte(`{"thinking":{"type":"disabled"}}`)
-	out := ensureClaudeThinkingDisplay(payload)
-
-	if gjson.GetBytes(out, "thinking.display").Exists() {
-		t.Fatalf("thinking.display should not be set when thinking is disabled: %s", out)
-	}
-}
-
-func TestEnsureClaudeThinkingDisplay_SkipsWhenThinkingMissing(t *testing.T) {
-	payload := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
-	out := ensureClaudeThinkingDisplay(payload)
-
-	if gjson.GetBytes(out, "thinking").Exists() {
-		t.Fatalf("thinking should remain absent: %s", out)
-	}
-}
-
 func TestPrependToFirstUserMessage_KeepsToolResultBlocksFirst(t *testing.T) {
 	// A conversation that opens on an assistant tool_use makes the first user
 	// message a tool_result carrier. Anthropic requires those blocks to stay at
@@ -3084,7 +3161,7 @@ func TestPrependToFirstUserMessage_KeepsToolResultBlocksFirst(t *testing.T) {
 		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}` +
 		`]}`)
 
-	out, _ := prependToFirstUserMessage(payload, "guidance")
+	out := prependToFirstUserMessage(payload, "guidance")
 
 	blocks := gjson.GetBytes(out, "messages.1.content")
 	if got := blocks.Get("0.type").String(); got != "tool_result" {
@@ -3102,7 +3179,7 @@ func TestPrependToFirstUserMessage_KeepsToolResultBlocksFirst(t *testing.T) {
 func TestPrependToFirstUserMessage_PrependsWhenNoLeadingToolResult(t *testing.T) {
 	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
-	out, _ := prependToFirstUserMessage(payload, "guidance")
+	out := prependToFirstUserMessage(payload, "guidance")
 
 	blocks := gjson.GetBytes(out, "messages.0.content")
 	if got := blocks.Get("0.type").String(); got != "text" {

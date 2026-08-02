@@ -169,7 +169,7 @@ func TestAntigravityExecutorCountTokensSanitizesGeminiToolHistory(t *testing.T) 
 
 	payload := []byte(`{"model":"gemini-3.6-flash-high","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"read","input":{"file":"one"},"signature":"` + nativeSignature + `"},{"type":"tool_use","id":"call-2","name":"read","input":{"file":"two"},"signature":"skip_thought_signature_validator"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-2","content":"two"},{"type":"tool_result","tool_use_id":"call-1","content":"one"}]}]}`)
 	exec := NewAntigravityExecutor(&config.Config{RequestRetry: 1})
-	_, errCount := exec.CountTokens(antigravityReplayTestCtx(), testAntigravityAuth(server.URL), cliproxyexecutor.Request{
+	_, errCount := exec.CountTokens(context.Background(), testAntigravityAuth(server.URL), cliproxyexecutor.Request{
 		Model:   "gemini-3.6-flash-high",
 		Payload: payload,
 	}, cliproxyexecutor.Options{
@@ -213,7 +213,7 @@ func TestAntigravityExecutorCountTokensReconstructsCompactedClaudeToolCall(t *te
 	const nativeArgs = `{"command":"true"}`
 	clientID := util.GeminiClaudeToolUseID(nativeID, "Bash", nativeArgs)
 	item := []byte(`{"type":"function_call_part","contentIndex":0,"partIndex":0,"targetOccurrence":0,"call_id":"` + nativeID + `","name":"Bash","args":` + nativeArgs + `,"thoughtSignature":"` + nativeSignature + `"}`)
-	if !cache.CacheAntigravityReasoningReplayItems("gemini-3.6-flash-high", antigravityReplayTestSessionKey("responses:count-token-replay"), [][]byte{item}) {
+	if !cache.CacheAntigravityReasoningReplayItems("gemini-3.6-flash-high", "responses:count-token-replay", [][]byte{item}) {
 		t.Fatal("failed to cache native tool provenance")
 	}
 
@@ -231,7 +231,7 @@ func TestAntigravityExecutorCountTokensReconstructsCompactedClaudeToolCall(t *te
 
 	payload := []byte(`{"model":"gemini-3.6-flash-high","session_id":"count-token-replay","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + clientID + `","content":"ok"}]}],"tools":[{"name":"Bash","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}]}`)
 	exec := NewAntigravityExecutor(&config.Config{RequestRetry: 1})
-	_, errCount := exec.CountTokens(antigravityReplayTestCtx(), testAntigravityAuth(server.URL), cliproxyexecutor.Request{
+	_, errCount := exec.CountTokens(context.Background(), testAntigravityAuth(server.URL), cliproxyexecutor.Request{
 		Model:   "gemini-3.6-flash-high",
 		Payload: payload,
 	}, cliproxyexecutor.Options{

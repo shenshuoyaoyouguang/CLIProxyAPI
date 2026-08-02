@@ -51,7 +51,7 @@ func StripThinkingConfig(body []byte, provider string) []byte {
 		// thinking/provider/zai.Applier embedding openai.Applier), so it must be
 		// stripped the same way; otherwise the field is forwarded verbatim to a
 		// model that does not support thinking.
-		paths = []string{"reasoning_effort"}
+		paths = []string{"reasoning_effort", "reasoning"}
 	case "deepseek":
 		paths = []string{"reasoning_effort", "thinking"}
 	case "kimi":
@@ -62,7 +62,7 @@ func StripThinkingConfig(body []byte, provider string) []byte {
 	case "nvidia":
 		paths = []string{"reasoning_effort", "enable_thinking", "medium_effort", "reasoning_budget"}
 	case "codex", "xai":
-		paths = []string{"reasoning.effort"}
+		paths = []string{"reasoning"}
 	default:
 		return body
 	}

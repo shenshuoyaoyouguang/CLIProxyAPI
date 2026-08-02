@@ -21,22 +21,11 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
-// resetAntigravityCreditsRetryState clears the package-level retry state maps.
-// It clears in place (Range+Delete) instead of reassigning new sync.Map values:
-// a running credits goroutine may still be reading the variable while a
-// t.Cleanup runs, and variable reassignment would race with that read.
 func resetAntigravityCreditsRetryState() {
-	for _, m := range []*sync.Map{
-		&antigravityCreditsFailureByAuth,
-		&antigravityShortCooldownByAuth,
-		&antigravityCreditsBalanceByAuth,
-		&antigravityCreditsHintRefreshByID,
-	} {
-		m.Range(func(k, _ any) bool {
-			m.Delete(k)
-			return true
-		})
-	}
+	antigravityCreditsFailureByAuth = sync.Map{}
+	antigravityShortCooldownByAuth = sync.Map{}
+	antigravityCreditsBalanceByAuth = sync.Map{}
+	antigravityCreditsHintRefreshByID = sync.Map{}
 }
 
 type closeSignalReadCloser struct {
@@ -769,54 +758,5 @@ func TestParseMetaFloat(t *testing.T) {
 				t.Fatalf("parseMetaFloat() = %f, want %f", got, tt.wantVal)
 			}
 		})
-	}
-}
-
-// TestDecideAntigravity429NonResourceExhaustedHonorsRetryAfter verifies that a
-// non-RESOURCE_EXHAUSTED 429 (e.g. a plain rate limit) with a server-provided
-// Retry-After is honored: the decision must carry the retryAfter and resolve to
-// an instant-retry kind so the caller waits the advised delay instead of
-// discarding it and falling back to a fixed backoff.
-func TestDecideAntigravity429NonResourceExhaustedHonorsRetryAfter(t *testing.T) {
-	body := []byte(`{
-		"error": {
-			"code": 429,
-			"message": "Too many requests. Please retry later.",
-			"status": "OUT_OF_RANGE",
-			"details": [
-				{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "12s"}
-			]
-		}
-	}`)
-	decision := decideAntigravity429(body)
-	if decision.retryAfter == nil {
-		t.Fatal("decideAntigravity429().retryAfter = nil, want the server-provided Retry-After")
-	}
-	if *decision.retryAfter != 12*time.Second {
-		t.Fatalf("decideAntigravity429().retryAfter = %v, want 12s", *decision.retryAfter)
-	}
-	if decision.kind != antigravity429DecisionInstantRetrySameAuth {
-		t.Fatalf("decideAntigravity429().kind = %q, want %q (honor Retry-After via same-auth instant retry)", decision.kind, antigravity429DecisionInstantRetrySameAuth)
-	}
-}
-
-// TestDecideAntigravity429NonResourceExhaustedNoRetryAfterFallsBackToSoftRetry
-// verifies that a non-RESOURCE_EXHAUSTED 429 without a Retry-After keeps the
-// legacy soft-retry behavior (fixed backoff), so the fix only changes behavior
-// when a server delay is actually present.
-func TestDecideAntigravity429NonResourceExhaustedNoRetryAfterFallsBackToSoftRetry(t *testing.T) {
-	body := []byte(`{
-		"error": {
-			"code": 429,
-			"message": "Too many requests.",
-			"status": "OUT_OF_RANGE"
-		}
-	}`)
-	decision := decideAntigravity429(body)
-	if decision.kind != antigravity429DecisionSoftRetry {
-		t.Fatalf("decideAntigravity429().kind = %q, want %q", decision.kind, antigravity429DecisionSoftRetry)
-	}
-	if decision.retryAfter != nil {
-		t.Fatalf("decideAntigravity429().retryAfter = %v, want nil", *decision.retryAfter)
 	}
 }

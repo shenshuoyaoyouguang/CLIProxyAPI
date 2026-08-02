@@ -2,9 +2,12 @@ package executor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -18,7 +21,6 @@ type xaiReasoningReplayScope struct {
 }
 
 var getXAIReasoningReplayItemsRequired = internalcache.GetXAIReasoningReplayItemsRequired
-var storeXAIReasoningReplayItems = internalcache.StoreXAIReasoningReplayItems
 
 func (s xaiReasoningReplayScope) valid() bool {
 	return strings.TrimSpace(s.modelName) != "" && strings.TrimSpace(s.sessionKey) != ""
@@ -58,10 +60,32 @@ func xaiReasoningReplayScopeFromRequest(ctx context.Context, from sdktranslator.
 		return xaiReasoningReplayScope{}
 	}
 	sessionKey := codexReasoningReplaySessionKey(ctx, from, req, opts, body)
+	sessionKey = xaiReasoningReplayIsolateSessionKey(ctx, sessionKey)
 	return xaiReasoningReplayScope{
 		modelName:  thinking.ParseSuffix(req.Model).ModelName,
 		sessionKey: sessionKey,
 	}
+}
+
+// xaiReasoningReplayIsolateSessionKey namespaces client-controlled session keys
+// by the downstream CPA API key so two callers cannot share encrypted reasoning
+// or assistant text by reusing prompt_cache_key / window / session headers.
+// Trusted execution session keys keep their existing form. Client-controlled
+// sessions without a caller API key are disabled rather than shared globally.
+func xaiReasoningReplayIsolateSessionKey(ctx context.Context, sessionKey string) string {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return ""
+	}
+	if strings.HasPrefix(sessionKey, "execution:") {
+		return sessionKey
+	}
+	apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx))
+	if apiKey == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(apiKey))
+	return "caller:" + hex.EncodeToString(sum[:8]) + ":" + sessionKey
 }
 
 func xaiReasoningReplayEnabledForSource(from sdktranslator.Format) bool {
@@ -253,7 +277,7 @@ func cacheXAIReasoningReplayFromCompleted(ctx context.Context, scope xaiReasonin
 			continue
 		}
 	}
-	switch storeXAIReasoningReplayItems(ctx, scope.modelName, scope.sessionKey, items) {
+	switch internalcache.StoreXAIReasoningReplayItems(ctx, scope.modelName, scope.sessionKey, items) {
 	case internalcache.XAIReasoningReplayStored:
 		return
 	case internalcache.XAIReasoningReplayNoReplayableState:
@@ -263,26 +287,7 @@ func cacheXAIReasoningReplayFromCompleted(ctx context.Context, scope xaiReasonin
 			log.Warnf("xai reasoning replay cache delete failed after non-replayable completed output: %v", errDelete)
 		}
 	case internalcache.XAIReasoningReplayStoreBackendError:
-		// Prefer a cache miss over injecting a previous turn's encrypted
-		// reasoning after the conversation has advanced. Validate with a read
-		// first: a transient store error must not trigger a blind destructive
-		// write when there is nothing stale to remove, and when the read itself
-		// fails the backend is unhealthy anyway - the inject path fails open on
-		// read errors, so no stale state can be replayed while it stays broken.
-		existing, found, errGet := getXAIReasoningReplayItemsRequired(ctx, scope.modelName, scope.sessionKey)
-		if errGet != nil {
-			log.Warnf("xai reasoning replay cache read failed after store backend error; leaving previous entry untouched: %v", errGet)
-			return
-		}
-		if !found || len(existing) == 0 {
-			log.Debug("xai reasoning replay cache store backend error; no previous entry to clear")
-			return
-		}
-		if errDelete := internalcache.DeleteXAIReasoningReplayItemRequired(ctx, scope.modelName, scope.sessionKey); errDelete != nil {
-			log.Warnf("xai reasoning replay cache delete failed after store backend error: %v", errDelete)
-		} else {
-			log.Debug("xai reasoning replay cache store backend error; cleared previous entry to avoid stale inject")
-		}
+		log.Debug("xai reasoning replay cache store backend error; retaining previous entry")
 	default:
 		// Invalid args: nothing to store or clear.
 	}

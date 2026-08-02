@@ -554,7 +554,7 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 			Now:         time.Now(),
 			IDGenerator: synthesizer.NewStableIDGenerator(),
 		}
-		if generated := synthesizer.SynthesizeAuthFile(sctx, path, data); len(generated) > 0 && generated[0] != nil {
+		if generated, errSynth := synthesizer.SynthesizeAuthFile(sctx, path, data); errSynth == nil && len(generated) > 0 && generated[0] != nil {
 			auth = generated[0].Clone()
 		}
 	}

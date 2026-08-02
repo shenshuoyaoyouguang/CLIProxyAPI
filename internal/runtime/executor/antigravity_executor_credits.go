@@ -33,6 +33,7 @@ type antigravityCreditsFailureState struct {
 type antigravity429DecisionKind string
 
 const (
+	antigravity429Unknown                         antigravity429Category     = "unknown"
 	antigravity429RateLimited                     antigravity429Category     = "rate_limited"
 	antigravity429QuotaExhausted                  antigravity429Category     = "quota_exhausted"
 	antigravity429SoftRateLimit                   antigravity429Category     = "soft_rate_limit"
@@ -205,11 +206,10 @@ func classifyAntigravity429(body []byte) antigravity429Category {
 		return antigravity429RateLimited
 	case antigravity429DecisionFullQuotaExhausted:
 		return antigravity429QuotaExhausted
-	default:
-		// decideAntigravity429 always returns one of the four decision kinds and
-		// defaults to soft retry for anything it cannot classify, so this branch is
-		// only a compile-time exhaustiveness fallback and must agree with it.
+	case antigravity429DecisionSoftRetry:
 		return antigravity429SoftRateLimit
+	default:
+		return antigravity429Unknown
 	}
 }
 
@@ -225,12 +225,6 @@ func decideAntigravity429(body []byte) antigravity429Decision {
 
 	status := strings.TrimSpace(gjson.GetBytes(body, "error.status").String())
 	if !strings.EqualFold(status, "RESOURCE_EXHAUSTED") {
-		// Non-quota 429 (e.g. a plain rate limit). Honor a server-provided
-		// Retry-After instead of discarding it and falling back to the fixed
-		// soft-rate-limit backoff in the caller.
-		if decision.retryAfter != nil {
-			decision.kind = antigravity429DecisionInstantRetrySameAuth
-		}
 		return decision
 	}
 
@@ -562,6 +556,24 @@ func antigravityShouldRetryNoCapacity(statusCode int, body []byte) bool {
 	return strings.Contains(msg, "no capacity available")
 }
 
+func antigravityShouldRetryTransientResourceExhausted429(statusCode int, body []byte) bool {
+	if statusCode != http.StatusTooManyRequests {
+		return false
+	}
+	if len(body) == 0 {
+		return false
+	}
+	if classifyAntigravity429(body) != antigravity429Unknown {
+		return false
+	}
+	status := strings.TrimSpace(gjson.GetBytes(body, "error.status").String())
+	if !strings.EqualFold(status, "RESOURCE_EXHAUSTED") {
+		return false
+	}
+	msg := strings.ToLower(string(body))
+	return strings.Contains(msg, "resource has been exhausted")
+}
+
 func antigravityShouldRetrySoftRateLimit(statusCode int, body []byte) bool {
 	if statusCode != http.StatusTooManyRequests {
 		return false
@@ -746,6 +758,17 @@ func antigravityNoCapacityRetryDelay(attempt int) time.Duration {
 	delay := time.Duration(attempt+1) * 250 * time.Millisecond
 	if delay > 2*time.Second {
 		delay = 2 * time.Second
+	}
+	return delay
+}
+
+func antigravityTransient429RetryDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	delay := time.Duration(attempt+1) * 100 * time.Millisecond
+	if delay > 500*time.Millisecond {
+		delay = 500 * time.Millisecond
 	}
 	return delay
 }

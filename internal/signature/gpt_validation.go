@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const MaxGPTReasoningSignatureLen = 32 * 1024 * 1024
@@ -70,14 +71,17 @@ func decodeGPTReasoningSignature(sig string) ([]byte, error) {
 	return nil, fmt.Errorf("invalid GPT reasoning signature: base64url decode failed")
 }
 
+// gptReasoningSignatureCharSet is the base64url alphabet, padding included.
+var gptReasoningSignatureCharSet = base64AlphabetSet("-_=")
+
+// firstInvalidGPTReasoningSignatureChar scans bytes against a lookup table for the
+// same reason as its Grok counterpart: every legal character is ASCII, and a
+// comparison chain mispredicts on nearly every byte of a multi-kilobyte reasoning
+// blob. The offending rune is decoded only for the error message.
 func firstInvalidGPTReasoningSignatureChar(sig string) (int, rune, bool) {
-	for index, r := range sig {
-		switch {
-		case r >= 'A' && r <= 'Z':
-		case r >= 'a' && r <= 'z':
-		case r >= '0' && r <= '9':
-		case r == '-' || r == '_' || r == '=':
-		default:
+	for index := 0; index < len(sig); index++ {
+		if !gptReasoningSignatureCharSet[sig[index]] {
+			r, _ := utf8.DecodeRuneInString(sig[index:])
 			return index, r, true
 		}
 	}

@@ -343,7 +343,6 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 		param.UsageInputTokens, param.UsageOutputTokens, param.UsageCachedTokens = extractOpenAIUsage(usage)
 		param.UsageSeen = true
 	}
-
 	// Emit the single message_delta event as soon as we have both a stop
 	// reason and the (possibly already-arrived) usage. Emitting only once, and
 	// only after both are known, keeps the final stop_reason and usage correct

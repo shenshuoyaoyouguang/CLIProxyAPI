@@ -159,6 +159,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
 		systemBlocks := make([][]byte, 0)
 		messageBlocks := make([][]byte, 0)
+		previousRole := ""
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
@@ -268,8 +269,15 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 					msg, _ = sjson.SetBytes(msg, "content.0.content", toolResultContent)
 				}
 				msg = common.AttachMessageCacheControl(msg, message)
-				messageBlocks = append(messageBlocks, msg)
+				if previousRole == "tool" && len(messageBlocks) > 0 {
+					toolResult := gjson.GetBytes(msg, "content.0")
+					lastIdx := len(messageBlocks) - 1
+					messageBlocks[lastIdx], _ = sjson.SetRawBytes(messageBlocks[lastIdx], "content.-1", []byte(toolResult.Raw))
+				} else {
+					messageBlocks = append(messageBlocks, msg)
+				}
 			}
+			previousRole = role
 			return true
 		})
 
@@ -299,9 +307,9 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 
 				// Convert parameters schema for the tool
 				if parameters := function.Get("parameters"); parameters.Exists() {
-					anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", []byte(parameters.Raw))
+					anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", util.NormalizeClaudeToolInputSchema([]byte(parameters.Raw)))
 				} else if parameters := function.Get("parametersJsonSchema"); parameters.Exists() {
-					anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", []byte(parameters.Raw))
+					anthropicTool, _ = sjson.SetRawBytes(anthropicTool, "input_schema", util.NormalizeClaudeToolInputSchema([]byte(parameters.Raw)))
 				}
 				anthropicTool = common.AttachCacheControl(anthropicTool, tool)
 				if !gjson.GetBytes(anthropicTool, "cache_control").Exists() {

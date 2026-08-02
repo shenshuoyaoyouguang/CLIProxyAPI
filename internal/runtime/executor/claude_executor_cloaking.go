@@ -213,32 +213,6 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 		return payload
 	}
 
-	// Collect forwarded user system instructions from the original system prompt
-	// before it is replaced. In non-strict mode these are normally relocated into
-	// the first user message; if no user message exists they are kept in the
-	// system prompt instead of being silently dropped.
-	var userSystemParts []string
-	if !strictMode {
-		if system.IsArray() {
-			system.ForEach(func(_, part gjson.Result) bool {
-				if part.Get("type").String() == "text" {
-					txt := strings.TrimSpace(part.Get("text").String())
-					if txt != "" {
-						userSystemParts = append(userSystemParts, txt)
-					}
-				}
-				return true
-			})
-		} else if system.Type == gjson.String && strings.TrimSpace(system.String()) != "" {
-			userSystemParts = append(userSystemParts, strings.TrimSpace(system.String()))
-		}
-	}
-	combined := strings.Join(userSystemParts, "\n\n")
-	if oauthMode {
-		combined = sanitizeForwardedSystemPrompt(combined)
-	}
-	hasUserMessage := userMessageExists(payload)
-
 	billingText := generateBillingHeader(payload, experimentalCCHSigning, version, messageText, entrypoint, workload)
 	billingBlock := buildTextBlock(billingText, nil)
 
@@ -256,39 +230,38 @@ func checkSystemInstructionsWithSigningMode(payload []byte, strictMode bool, exp
 	}, "\n\n")
 	staticBlock := buildTextBlock(staticPrompt, nil)
 
-	systemBlocks := []string{billingBlock, agentBlock, staticBlock}
-	// No user message to relocate forwarded instructions into: keep them in the
-	// system prompt so they are not silently dropped during cloaking.
-	if !strictMode && strings.TrimSpace(combined) != "" && !hasUserMessage {
-		systemBlocks = append(systemBlocks, buildTextBlock(combined, nil))
-	}
-	systemResult := "[" + strings.Join(systemBlocks, ",") + "]"
+	systemResult := "[" + billingBlock + "," + agentBlock + "," + staticBlock + "]"
 	payload, _ = sjson.SetRawBytes(payload, "system", []byte(systemResult))
 
-	// Relocate forwarded user system instructions to the first user message.
-	if !strictMode && strings.TrimSpace(combined) != "" && hasUserMessage {
-		payload, _ = prependToFirstUserMessage(payload, combined)
+	// Collect user system instructions and prepend to first user message
+	if !strictMode {
+		var userSystemParts []string
+		if system.IsArray() {
+			system.ForEach(func(_, part gjson.Result) bool {
+				if part.Get("type").String() == "text" {
+					txt := strings.TrimSpace(part.Get("text").String())
+					if txt != "" {
+						userSystemParts = append(userSystemParts, txt)
+					}
+				}
+				return true
+			})
+		} else if system.Type == gjson.String && strings.TrimSpace(system.String()) != "" {
+			userSystemParts = append(userSystemParts, strings.TrimSpace(system.String()))
+		}
+
+		if len(userSystemParts) > 0 {
+			combined := strings.Join(userSystemParts, "\n\n")
+			if oauthMode {
+				combined = sanitizeForwardedSystemPrompt(combined)
+			}
+			if strings.TrimSpace(combined) != "" {
+				payload = prependToFirstUserMessage(payload, combined)
+			}
+		}
 	}
 
 	return payload
-}
-
-// userMessageExists reports whether the payload's messages array contains at
-// least one user-role message.
-func userMessageExists(payload []byte) bool {
-	messages := gjson.GetBytes(payload, "messages")
-	if !messages.IsArray() {
-		return false
-	}
-	found := false
-	messages.ForEach(func(_, msg gjson.Result) bool {
-		if strings.EqualFold(msg.Get("role").String(), "user") {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
 }
 
 // sanitizeForwardedSystemPrompt reduces forwarded third-party system context to a
@@ -326,10 +299,10 @@ func buildTextBlock(text string, cacheControl map[string]string) string {
 // prependToFirstUserMessage injects text content into the first user message.
 // This avoids putting non-Claude-Code system instructions in system[] which
 // triggers Anthropic's extra usage billing for OAuth-proxied requests.
-func prependToFirstUserMessage(payload []byte, text string) ([]byte, bool) {
+func prependToFirstUserMessage(payload []byte, text string) []byte {
 	messages := gjson.GetBytes(payload, "messages")
 	if !messages.Exists() || !messages.IsArray() {
-		return payload, false
+		return payload
 	}
 
 	// Find the first user message index
@@ -343,7 +316,7 @@ func prependToFirstUserMessage(payload []byte, text string) ([]byte, bool) {
 	})
 
 	if firstUserIdx < 0 {
-		return payload, false
+		return payload
 	}
 
 	prefixBlock := fmt.Sprintf(`<system-reminder>
@@ -381,7 +354,7 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 		payload, _ = sjson.SetBytes(payload, contentPath, newText)
 	}
 
-	return payload, true
+	return payload
 }
 
 // leadsWithToolResult reports whether a message content array starts with a

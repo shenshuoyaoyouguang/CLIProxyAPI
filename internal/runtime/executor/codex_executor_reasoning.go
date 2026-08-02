@@ -18,7 +18,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
-	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -33,30 +32,25 @@ func (s codexReasoningReplayScope) valid() bool {
 	return strings.TrimSpace(s.modelName) != "" && strings.TrimSpace(s.sessionKey) != ""
 }
 
-// applyCodexReasoningReplayCache injects cached reasoning replay turns into the
-// request body. Cache backend failures degrade to "continue without replay"
-// instead of failing the request: a transient KV fault would otherwise break
-// every session-scoped Codex request and leak backend error text to clients,
-// while running without replay is already handled upstream (an eventual
-// signature rejection is repaired by clearCodexReasoningReplayOnInvalidSignature).
 func applyCodexReasoningReplayCache(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) ([]byte, codexReasoningReplayScope) {
+	updated, scope, _ := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+	return updated, scope
+}
+
+func applyCodexReasoningReplayCacheRequired(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) ([]byte, codexReasoningReplayScope, error) {
 	scope := codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body)
 	if !scope.valid() {
-		return body, scope
+		return body, scope, nil
 	}
 	items, ok, errReplay := internalcache.GetCodexReasoningReplayItemsRequired(ctx, scope.modelName, scope.sessionKey)
-	if errReplay != nil {
-		log.Warnf("codex reasoning replay cache read failed for model %s, continuing without replay: %v", scope.modelName, errReplay)
-		return body, scope
-	}
-	if !ok {
-		return body, scope
+	if errReplay != nil || !ok {
+		return body, scope, errReplay
 	}
 	updated, ok := insertCodexReasoningReplayTurns(body, items)
 	if !ok {
-		return body, scope
+		return body, scope, nil
 	}
-	return updated, scope
+	return updated, scope, nil
 }
 
 func codexReasoningReplayScopeFromRequest(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) codexReasoningReplayScope {
@@ -92,18 +86,6 @@ func codexReasoningReplaySessionKey(ctx context.Context, from sdktranslator.Form
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	key := codexReasoningReplaySessionKeyRaw(ctx, from, req, opts, body)
-	if key == "" {
-		return ""
-	}
-	// Tenant isolation lives here so every consumer (Codex, xAI) shares it:
-	// client-controlled keys (Claude code session / prompt_cache_key / window /
-	// session headers) are namespaced by the caller API key; server-issued
-	// "execution:" keys keep their exact form.
-	return helps.IsolateClientControlledSessionKey(ctx, key)
-}
-
-func codexReasoningReplaySessionKeyRaw(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) string {
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
 		if sessionKey := codexClaudeCodeReplaySessionKey(ctx, req.Payload, opts.Headers); sessionKey != "" {
 			return sessionKey
@@ -265,17 +247,13 @@ func insertCodexReasoningReplayTurns(body []byte, replayItems [][]byte) ([]byte,
 		if !matched {
 			continue
 		}
-		items := filterCodexReasoningReplayTurnItems(inputItems, turn.items)
-		if len(items) == 0 {
-			// Nothing is injected for this turn, so the anchor stays unconsumed on
-			// purpose: an earlier turn may still legitimately claim it. Marking it
-			// used (or moving fallbackAnchorEnd) before the filter result is known
-			// silently drops that turn's replay.
-			continue
-		}
 		usedAnchorIndexes[anchorIndex] = true
 		if turn.requestFingerprint == "" {
 			fallbackAnchorEnd = anchorIndex - 1
+		}
+		items := filterCodexReasoningReplayTurnItems(inputItems, turn.items)
+		if len(items) == 0 {
+			continue
 		}
 		items = codexAlignReasoningReplayToolCallIDs(inputItems, items)
 		insertions[anchorIndex] = append(items, insertions[anchorIndex]...)
