@@ -117,34 +117,40 @@ func (s *GitTokenStore) EnsureRepository() error {
 }
 
 func (s *GitTokenStore) ensureRepositoryLocked() error {
-	s.dirLock.Lock()
 	if s.remote == "" {
-		s.dirLock.Unlock()
 		return fmt.Errorf("git token store: remote not configured")
 	}
-	if s.baseDir == "" {
-		s.dirLock.Unlock()
+	baseDir := s.baseDirSnapshot()
+	if baseDir == "" {
 		return fmt.Errorf("git token store: base directory not configured")
 	}
-	repoDir := s.repoDir
+	// Snapshot the path/config fields up front and derive any missing ones so
+	// dirLock is only held for these brief field reads. The git operations below
+	// run on the local snapshots under s.mu (callers hold it), letting concurrent
+	// AuthDir/ConfigPath readers proceed without blocking on network pulls/pushes.
+	repoDir := s.repoDirSnapshot()
 	if repoDir == "" {
-		repoDir = filepath.Dir(s.baseDir)
+		repoDir = filepath.Dir(baseDir)
 		if repoDir == "" || repoDir == "." {
-			repoDir = s.baseDir
+			repoDir = baseDir
 		}
+		s.dirLock.Lock()
 		s.repoDir = repoDir
+		s.dirLock.Unlock()
 	}
-	if s.configDir == "" {
-		s.configDir = filepath.Join(repoDir, "config")
+	configDir := s.configDirSnapshot()
+	if configDir == "" {
+		configDir = filepath.Join(repoDir, "config")
+		s.dirLock.Lock()
+		s.configDir = configDir
+		s.dirLock.Unlock()
 	}
 	authDir := filepath.Join(repoDir, "auths")
-	configDir := filepath.Join(repoDir, "config")
 	gitDir := filepath.Join(repoDir, ".git")
 	authMethod := s.gitClientOptions()
 	var initPaths []string
 	if _, err := os.Stat(gitDir); errors.Is(err, fs.ErrNotExist) {
 		if errMk := os.MkdirAll(repoDir, 0o700); errMk != nil {
-			s.dirLock.Unlock()
 			return fmt.Errorf("git token store: create repo dir: %w", errMk)
 		}
 		cloneOpts := &git.CloneOptions{ClientOptions: authMethod, URL: s.remote}
@@ -164,14 +170,12 @@ func (s *GitTokenStore) ensureRepositoryLocked() error {
 					var errOpen error
 					repo, errOpen = git.PlainOpen(repoDir)
 					if errOpen != nil {
-						s.dirLock.Unlock()
 						return fmt.Errorf("git token store: init empty repo: %w (open fallback: %w)", errInit, errOpen)
 					}
 				}
 				if s.branch != "" {
 					headRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(s.branch))
 					if errHead := repo.Storer.SetReference(headRef); errHead != nil {
-						s.dirLock.Unlock()
 						return fmt.Errorf("git token store: set head to branch %s: %w", s.branch, errHead)
 					}
 				}
@@ -180,24 +184,19 @@ func (s *GitTokenStore) ensureRepositoryLocked() error {
 						Name: "origin",
 						URLs: []string{s.remote},
 					}); errCreate != nil && !errors.Is(errCreate, git.ErrRemoteExists) {
-						s.dirLock.Unlock()
 						return fmt.Errorf("git token store: configure remote: %w", errCreate)
 					}
 				}
 				if err := os.MkdirAll(authDir, 0o700); err != nil {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: create auth dir: %w", err)
 				}
 				if err := os.MkdirAll(configDir, 0o700); err != nil {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: create config dir: %w", err)
 				}
 				if err := ensureEmptyFile(filepath.Join(authDir, ".gitkeep")); err != nil {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: create auth placeholder: %w", err)
 				}
 				if err := ensureEmptyFile(filepath.Join(configDir, ".gitkeep")); err != nil {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: create config placeholder: %w", err)
 				}
 				initPaths = []string{
@@ -205,27 +204,22 @@ func (s *GitTokenStore) ensureRepositoryLocked() error {
 					filepath.Join("config", ".gitkeep"),
 				}
 			} else {
-				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: clone remote: %w", errClone)
 			}
 		}
 	} else if err != nil {
-		s.dirLock.Unlock()
 		return fmt.Errorf("git token store: stat repo: %w", err)
 	} else {
 		repo, errOpen := git.PlainOpen(repoDir)
 		if errOpen != nil {
-			s.dirLock.Unlock()
 			return fmt.Errorf("git token store: open repo: %w", errOpen)
 		}
 		worktree, errWorktree := repo.Worktree()
 		if errWorktree != nil {
-			s.dirLock.Unlock()
 			return fmt.Errorf("git token store: worktree: %w", errWorktree)
 		}
 		if errVerify := verifyRepositoryHead(repo); errVerify != nil {
 			if !isRepositoryCorruptionError(errVerify) {
-				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: verify repository before pull: %w", errVerify)
 			}
 			// Release go-git file handles before recovery renames .git; on Windows
@@ -234,30 +228,25 @@ func (s *GitTokenStore) ensureRepositoryLocked() error {
 				log.Errorf("git token store: close corrupt repo before recovery: %v", errClose)
 			}
 			if errRecover := s.recoverRepositoryLocked(repoDir, authMethod, nil, nil); errRecover != nil {
-				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: verify repository before pull: %w; recovery failed: %v", errVerify, errRecover)
 			}
 			repo, errOpen = git.PlainOpen(repoDir)
 			if errOpen != nil {
-				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: open recovered repo: %w", errOpen)
 			}
 			worktree, errWorktree = repo.Worktree()
 			if errWorktree != nil {
-				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: recovered worktree: %w", errWorktree)
 			}
 		}
 		if s.branch != "" {
 			if errCheckout := s.checkoutConfiguredBranch(repo, worktree, authMethod); errCheckout != nil {
-				s.dirLock.Unlock()
 				return errCheckout
 			}
 		} else {
 			// When branch is unset, ensure the working tree follows the remote default branch
 			if err := checkoutRemoteDefaultBranch(repo, worktree, authMethod); err != nil {
 				if !shouldFallbackToCurrentBranch(repo, err) {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: checkout remote default: %w", err)
 				}
 			}
@@ -268,25 +257,21 @@ func (s *GitTokenStore) ensureRepositoryLocked() error {
 		}
 		prePullHead, errPrePullHead := repo.Head()
 		if errPrePullHead != nil && !errors.Is(errPrePullHead, plumbing.ErrReferenceNotFound) {
-			s.dirLock.Unlock()
 			return fmt.Errorf("git token store: get head before pull: %w", errPrePullHead)
 		}
 		var prePullTree *object.Tree
 		if prePullHead != nil {
 			prePullCommit, errPrePullCommit := repo.CommitObject(prePullHead.Hash())
 			if errPrePullCommit != nil {
-				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: inspect head before pull: %w", errPrePullCommit)
 			}
 			prePullTree, errPrePullCommit = prePullCommit.Tree()
 			if errPrePullCommit != nil {
-				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: inspect tree before pull: %w", errPrePullCommit)
 			}
 		}
 		dirtyPaths, errDirtyPaths := worktreeDirtyPaths(worktree)
 		if errDirtyPaths != nil {
-			s.dirLock.Unlock()
 			return fmt.Errorf("git token store: inspect worktree before pull: %w", errDirtyPaths)
 		}
 		repositoryRecovered := false
@@ -295,27 +280,22 @@ func (s *GitTokenStore) ensureRepositoryLocked() error {
 			case errors.Is(errPull, git.NoErrAlreadyUpToDate):
 				if errReset := resetIndexToHead(repo, worktree); errReset != nil {
 					if !isRepositoryCorruptionError(errReset) {
-						s.dirLock.Unlock()
 						return fmt.Errorf("git token store: repair index after up-to-date pull: %w", errReset)
 					}
 					if errRecover := s.recoverRepositoryLocked(repoDir, authMethod, prePullTree, dirtyPaths); errRecover != nil {
-						s.dirLock.Unlock()
 						return fmt.Errorf("git token store: repair index after up-to-date pull: %w; recovery failed: %v", errReset, errRecover)
 					}
 					repositoryRecovered = true
 				}
 			case errors.Is(errPull, git.ErrUnstagedChanges), errors.Is(errPull, git.ErrNonFastForwardUpdate):
 				if prePullHead == nil {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: reconcile pull without a local branch")
 				}
 				if errReconcile := reconcileRemoteWorktree(repo, worktree, repoDir, prePullHead, dirtyPaths); errReconcile != nil {
 					if !isRepositoryCorruptionError(errReconcile) {
-						s.dirLock.Unlock()
 						return fmt.Errorf("git token store: reconcile remote changes: %w", errReconcile)
 					}
 					if errRecover := s.recoverRepositoryLocked(repoDir, authMethod, prePullTree, dirtyPaths); errRecover != nil {
-						s.dirLock.Unlock()
 						return fmt.Errorf("git token store: reconcile remote changes: %w; recovery failed: %v", errReconcile, errRecover)
 					}
 					repositoryRecovered = true
@@ -325,29 +305,24 @@ func (s *GitTokenStore) ensureRepositoryLocked() error {
 				// Ignore authentication prompts and empty remote references on initial sync.
 			case errors.Is(errPull, plumbing.ErrReferenceNotFound):
 				if s.branch != "" {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: pull: %w", errPull)
 				}
 				// Ignore missing references only when following the remote default branch.
 			case isRepositoryCorruptionError(errPull):
 				if errRecover := s.recoverRepositoryLocked(repoDir, authMethod, prePullTree, dirtyPaths); errRecover != nil {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: pull: %w; recovery failed: %v", errPull, errRecover)
 				}
 				repositoryRecovered = true
 			default:
-				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: pull: %w", errPull)
 			}
 		}
 		if !repositoryRecovered {
 			if errVerify := verifyRepositoryHead(repo); errVerify != nil {
 				if !isRepositoryCorruptionError(errVerify) {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: verify repository after pull: %w", errVerify)
 				}
 				if errRecover := s.recoverRepositoryLocked(repoDir, authMethod, prePullTree, dirtyPaths); errRecover != nil {
-					s.dirLock.Unlock()
 					return fmt.Errorf("git token store: verify repository after pull: %w; recovery failed: %v", errVerify, errRecover)
 				}
 				repositoryRecovered = true
@@ -355,24 +330,19 @@ func (s *GitTokenStore) ensureRepositoryLocked() error {
 		}
 		if !repositoryRecovered {
 			if errRestore := restoreMissingTrackedFiles(repo, repoDir); errRestore != nil {
-				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: restore tracked worktree files: %w", errRestore)
 			}
 		}
 	}
 	if err := disableGitCommitSigning(repoDir); err != nil {
-		s.dirLock.Unlock()
 		return err
 	}
-	if err := os.MkdirAll(s.baseDir, 0o700); err != nil {
-		s.dirLock.Unlock()
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
 		return fmt.Errorf("git token store: create auth dir: %w", err)
 	}
-	if err := os.MkdirAll(s.configDir, 0o700); err != nil {
-		s.dirLock.Unlock()
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return fmt.Errorf("git token store: create config dir: %w", err)
 	}
-	s.dirLock.Unlock()
 	if len(initPaths) > 0 {
 		if errCommit := s.commitAndPushInitialLocked("Initialize git token store", initPaths...); errCommit != nil {
 			return errCommit
@@ -775,6 +745,12 @@ func (s *GitTokenStore) repoDirSnapshot() string {
 	s.dirLock.RLock()
 	defer s.dirLock.RUnlock()
 	return s.repoDir
+}
+
+func (s *GitTokenStore) configDirSnapshot() string {
+	s.dirLock.RLock()
+	defer s.dirLock.RUnlock()
+	return s.configDir
 }
 
 func disableGitCommitSigning(repoDir string) error {
@@ -1435,10 +1411,13 @@ func verifyRepositoryHead(repo *git.Repository) error {
 	if errTree != nil {
 		return errTree
 	}
+	// Verify every tree entry resolves to an object without decompressing the
+	// blob contents. HasEncodedObject only checks loose-object or packfile-index
+	// presence and returns plumbing.ErrObjectNotFound for a missing blob, which
+	// isRepositoryCorruptionError still treats as corruption.
 	files := tree.Files()
 	return files.ForEach(func(file *object.File) error {
-		_, errContents := file.Contents()
-		return errContents
+		return repo.Storer.HasEncodedObject(file.Hash)
 	})
 }
 

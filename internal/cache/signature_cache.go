@@ -237,44 +237,65 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 
 	now := time.Now()
 
-	sc.mu.Lock()
-	entry, exists := sc.entries[textHash]
+	// Resolve the entry under a read lock so concurrent readers of the same
+	// model-group bucket (all claude/gpt/gemini models share one bucket) do not
+	// serialize on a single exclusive lock.
+	sc.mu.RLock()
+	_, exists := sc.entries[textHash]
 	// issue #10: fall back to the legacy 16-char key shape so entries written
 	// by pre-upgrade code remain readable. On hit, migrate the entry to the
 	// new 64-char key so future lookups skip the fallback path.
 	if !exists {
-		entry, exists = sc.entries[legacyTextHash]
-		if exists {
-			if now.Sub(entry.Timestamp) <= SignatureCacheTTL {
-				sc.entries[textHash] = entry
-			}
-			delete(sc.entries, legacyTextHash)
-		}
+		_, exists = sc.entries[legacyTextHash]
 	}
+	sc.mu.RUnlock()
+
 	if !exists {
-		sc.mu.Unlock()
-		if groupKey == "gemini" {
-			return "skip_thought_signature_validator", nil
-		}
-		return "", nil
-	}
-	if now.Sub(entry.Timestamp) > SignatureCacheTTL {
-		delete(sc.entries, textHash)
-		// also clean up any stale legacy entry sharing the same text
-		delete(sc.entries, legacyTextHash)
-		sc.mu.Unlock()
 		if groupKey == "gemini" {
 			return "skip_thought_signature_validator", nil
 		}
 		return "", nil
 	}
 
-	// Refresh TTL on access (sliding expiration).
-	entry.Timestamp = now
-	sc.entries[textHash] = entry
+	// Migration, expiry cleanup, and the sliding-TTL refresh all mutate the
+	// bucket, so promote to the write lock and re-resolve from the current
+	// state (the read lock was released, so another goroutine may have changed
+	// or removed the entry in the meantime).
+	sc.mu.Lock()
+	var signature string
+	if entry, ok := sc.entries[textHash]; ok {
+		if now.Sub(entry.Timestamp) > SignatureCacheTTL {
+			// Expired: remove both key shapes for this text.
+			delete(sc.entries, textHash)
+			delete(sc.entries, legacyTextHash)
+		} else {
+			// Refresh TTL on access (sliding expiration).
+			entry.Timestamp = now
+			sc.entries[textHash] = entry
+			signature = entry.Signature
+		}
+	} else if entry, ok := sc.entries[legacyTextHash]; ok {
+		if now.Sub(entry.Timestamp) > SignatureCacheTTL {
+			// Expired legacy entry: remove it.
+			delete(sc.entries, legacyTextHash)
+			delete(sc.entries, textHash)
+		} else {
+			// Migrate the legacy entry to the full-hash key and refresh TTL.
+			entry.Timestamp = now
+			sc.entries[textHash] = entry
+			delete(sc.entries, legacyTextHash)
+			signature = entry.Signature
+		}
+	}
 	sc.mu.Unlock()
 
-	return entry.Signature, nil
+	if signature == "" {
+		if groupKey == "gemini" {
+			return "skip_thought_signature_validator", nil
+		}
+		return "", nil
+	}
+	return signature, nil
 }
 
 // ClearSignatureCache clears signature cache for a specific model group or all groups.
