@@ -167,7 +167,12 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		return
 	}
 	h.cfg = newCfg
+	snapshot := h.reloadSnapshotConfigLocked()
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
+	// Route through the standard management reload pipeline (same as every
+	// other management save) so runtime state tracks h.cfg even when the
+	// external file watcher is disabled.
+	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
 }
 
 // GetConfigYAML returns the raw config.yaml file bytes without re-encoding.

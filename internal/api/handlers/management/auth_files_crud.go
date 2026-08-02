@@ -22,6 +22,12 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
+// maxAuthFileBytes caps uploaded auth-file payloads to prevent an authenticated
+// client from exhausting server memory with an unbounded request body.
+const maxAuthFileBytes = 8 << 20 // 8 MiB
+
+var errAuthFileTooLarge = errors.New("auth file exceeds maximum size of 8 MiB")
+
 // Download single auth file by name
 func (h *Handler) DownloadAuthFile(c *gin.Context) {
 	name := strings.TrimSpace(c.Query("name"))
@@ -64,6 +70,10 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		if _, errUpload := h.storeUploadedAuthFile(ctx, fileHeaders[0]); errUpload != nil {
 			if errors.Is(errUpload, errAuthFileMustBeJSON) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "file must be .json"})
+				return
+			}
+			if errors.Is(errUpload, errAuthFileTooLarge) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errUpload.Error()})
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": errUpload.Error()})
@@ -116,9 +126,13 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "name must end with .json"})
 		return
 	}
-	data, err := io.ReadAll(c.Request.Body)
+	data, err := io.ReadAll(io.LimitReader(c.Request.Body, maxAuthFileBytes+1))
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	if len(data) > maxAuthFileBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errAuthFileTooLarge.Error()})
 		return
 	}
 	if err = h.writeAuthFile(ctx, filepath.Base(name), data); err != nil {
@@ -248,9 +262,12 @@ func (h *Handler) storeUploadedAuthFile(ctx context.Context, file *multipart.Fil
 	}
 	defer src.Close()
 
-	data, err := io.ReadAll(src)
+	data, err := io.ReadAll(io.LimitReader(src, maxAuthFileBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("failed to read uploaded file: %w", err)
+	}
+	if len(data) > maxAuthFileBytes {
+		return "", errAuthFileTooLarge
 	}
 	if err := h.writeAuthFile(ctx, name, data); err != nil {
 		return "", err
@@ -504,17 +521,6 @@ func (h *Handler) authIDForPath(path string) string {
 		id = strings.ToLower(id)
 	}
 	return id
-}
-
-func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []byte) error {
-	if h.authManager == nil {
-		return nil
-	}
-	auth, err := h.buildAuthFromFileData(path, data)
-	if err != nil {
-		return err
-	}
-	return h.upsertAuthRecord(ctx, auth)
 }
 
 func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
