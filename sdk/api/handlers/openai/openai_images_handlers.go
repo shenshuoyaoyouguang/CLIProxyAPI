@@ -35,6 +35,10 @@ const (
 	xaiImagesDefaultResolution  = "1k"
 	imagesGenerationsPath       = "/v1/images/generations"
 	imagesEditsPath             = "/v1/images/edits"
+	// maxImageUploadBytes caps the size of a single uploaded image file. Files
+	// larger than this are rejected before their bytes are read and
+	// base64-encoded.
+	maxImageUploadBytes = 32 << 20
 )
 
 type imageCallResult struct {
@@ -46,8 +50,13 @@ type imageCallResult struct {
 	Quality       string
 }
 
+// sseFrameAccumulator reassembles SSE frames from upstream image-stream chunks.
+// It is a thin frame-collecting wrapper around the shared responsesSSEFramer so
+// the images and responses paths share one frame-boundary and emit
+// implementation, including the responses output_item.done -> response.completed
+// repair.
 type sseFrameAccumulator struct {
-	pending []byte
+	framer responsesSSEFramer
 }
 
 type xaiImageResult struct {
@@ -132,62 +141,18 @@ func (h *OpenAIAPIHandler) waitImagesStreamExecution(c *gin.Context, flusher htt
 }
 
 func (a *sseFrameAccumulator) AddChunk(chunk []byte) [][]byte {
-	if len(chunk) == 0 {
-		return nil
-	}
-
-	if responsesSSENeedsLineBreak(a.pending, chunk) {
-		a.pending = append(a.pending, '\n')
-	}
-	a.pending = append(a.pending, chunk...)
-
 	var frames [][]byte
-	for {
-		frameLen := responsesSSEFrameLen(a.pending)
-		if frameLen == 0 {
-			break
-		}
-		frames = append(frames, a.pending[:frameLen])
-		copy(a.pending, a.pending[frameLen:])
-		a.pending = a.pending[:len(a.pending)-frameLen]
-	}
-
-	if len(bytes.TrimSpace(a.pending)) == 0 {
-		a.pending = a.pending[:0]
-		return frames
-	}
-	if len(a.pending) == 0 || !responsesSSECanEmitWithoutDelimiter(a.pending) {
-		return frames
-	}
-	frames = append(frames, a.pending)
-	a.pending = a.pending[:0]
+	a.framer.emitChunk(chunk, func(frame []byte) {
+		frames = append(frames, frame)
+	})
 	return frames
 }
 
 func (a *sseFrameAccumulator) Flush() [][]byte {
-	if len(a.pending) == 0 {
-		return nil
-	}
-
 	var frames [][]byte
-	for {
-		frameLen := responsesSSEFrameLen(a.pending)
-		if frameLen == 0 {
-			break
-		}
-		frames = append(frames, a.pending[:frameLen])
-		copy(a.pending, a.pending[frameLen:])
-		a.pending = a.pending[:len(a.pending)-frameLen]
-	}
-
-	if len(bytes.TrimSpace(a.pending)) == 0 {
-		a.pending = nil
-		return frames
-	}
-	if responsesSSECanEmitWithoutDelimiter(a.pending) {
-		frames = append(frames, a.pending)
-	}
-	a.pending = nil
+	a.framer.emitFlush(func(frame []byte) {
+		frames = append(frames, frame)
+	})
 	return frames
 }
 
@@ -442,6 +407,9 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 	if fileHeader == nil {
 		return "", fmt.Errorf("upload file is nil")
 	}
+	if fileHeader.Size > maxImageUploadBytes {
+		return "", fmt.Errorf("upload file exceeds %d bytes", maxImageUploadBytes)
+	}
 	f, err := fileHeader.Open()
 	if err != nil {
 		return "", fmt.Errorf("open upload file failed: %w", err)
@@ -464,6 +432,20 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 
 	b64 := base64.StdEncoding.EncodeToString(data)
 	return "data:" + mediaType + ";base64," + b64, nil
+}
+
+// imagesToDataURLs converts every uploaded image file to a data URL, applying
+// the per-file size cap from multipartFileToDataURL.
+func imagesToDataURLs(fileHeaders []*multipart.FileHeader) ([]string, error) {
+	images := make([]string, 0, len(fileHeaders))
+	for _, fh := range fileHeaders {
+		dataURL, err := multipartFileToDataURL(fh)
+		if err != nil {
+			return nil, err
+		}
+		images = append(images, dataURL)
+	}
+	return images, nil
 }
 
 func buildOpenAICompatImagesJSONRequest(rawJSON []byte, imageModel string, stream bool) []byte {
@@ -752,21 +734,6 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		return
 	}
 
-	images := make([]string, 0, len(imageFiles))
-	for _, fh := range imageFiles {
-		dataURL, err := multipartFileToDataURL(fh)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-				Error: handlers.ErrorDetail{
-					Message: fmt.Sprintf("Invalid request: %v", err),
-					Type:    "invalid_request_error",
-				},
-			})
-			return
-		}
-		images = append(images, dataURL)
-	}
-
 	responseFormat := strings.TrimSpace(c.PostForm("response_format"))
 	if responseFormat == "" {
 		responseFormat = "b64_json"
@@ -774,6 +741,9 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 	stream := parseBoolField(c.PostForm("stream"), false)
 
 	if isCodexImagesToolModel(imageModel) {
+		// The codex branch forwards the raw multipart files as-is, so the
+		// data-URL conversion is deferred past this check to avoid buffering
+		// and base64-amplifying every image for nothing.
 		imageReq, contentType, errBuild := buildOpenAICompatImagesMultipartRequest(form, imageModel, stream)
 		if errBuild != nil {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
@@ -788,7 +758,18 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		h.handleRoutedImages(c, imageReq, imageModel, stream)
 		return
 	}
+
 	if isXAIImagesModel(imageModel) {
+		images, err := imagesToDataURLs(imageFiles)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+				Error: handlers.ErrorDetail{
+					Message: fmt.Sprintf("Invalid request: %v", err),
+					Type:    "invalid_request_error",
+				},
+			})
+			return
+		}
 		aspectRatio := xaiImagesAspectRatio(c.PostForm("aspect_ratio"), "")
 		aspectRatio = xaiImagesAspectRatioFromSize(c.PostForm("size"), aspectRatio)
 		resolution := xaiImagesResolution(c.PostForm("resolution"), c.PostForm("size"), "")
@@ -797,7 +778,10 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		h.handleXAIImages(c, xaiReq, responseFormat, "image_edit", stream)
 		return
 	}
+
 	if isOpenAICompatImagesModel(imageModel) {
+		// The openai-compat branch also forwards the raw multipart files
+		// as-is, so the data-URL conversion is deferred past this check too.
 		compatReq, contentType, errBuild := buildOpenAICompatImagesMultipartRequest(form, imageModel, stream)
 		if errBuild != nil {
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
@@ -810,6 +794,17 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		}
 		c.Request.Header.Set("Content-Type", contentType)
 		h.handleOpenAICompatImages(c, compatReq, imageModel, responseFormat, "image_edit", stream)
+		return
+	}
+
+	images, err := imagesToDataURLs(imageFiles)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: %v", err),
+				Type:    "invalid_request_error",
+			},
+		})
 		return
 	}
 
@@ -1283,6 +1278,19 @@ func (h *OpenAIAPIHandler) forwardRawImageStream(ctx context.Context, c *gin.Con
 			errs = nil
 		case chunk, ok := <-data:
 			if !ok {
+				// Prefer surfacing a terminal error if one is pending.
+				select {
+				case errMsg, ok := <-errs:
+					if ok && errMsg != nil {
+						writeImagesStreamErrorEvent(c, errMsg)
+						if flusher, ok := c.Writer.(http.Flusher); ok {
+							flusher.Flush()
+						}
+						cancel(errMsg.Error)
+						return
+					}
+				default:
+				}
 				cancel(nil)
 				return
 			}
@@ -1919,6 +1927,16 @@ func (h *OpenAIAPIHandler) forwardImagesStream(ctx context.Context, c *gin.Conte
 			errs = nil
 		case chunk, ok := <-data:
 			if !ok {
+				// Prefer surfacing a terminal error if one is pending.
+				select {
+				case errMsg, ok := <-errs:
+					if ok && errMsg != nil {
+						emitError(errMsg)
+						cancel(errMsg.Error)
+						return
+					}
+				default:
+				}
 				for _, frame := range acc.Flush() {
 					if processFrame(frame) {
 						cancel(nil)
