@@ -35,13 +35,13 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Use an upstream stream whenever the downstream response needs translation
 	// from Claude events. Native Claude responses use the JSON response path.
 	upstreamStream := responseFormat != to
-	originalPayloadSource := req.Payload
-	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
-	}
-	originalPayload := originalPayloadSource
-	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, upstreamStream)
+	// When opts.OriginalRequest is empty both translated views derive from the same
+	// req.Payload bytes; translate once and copy for the read-only original view.
 	body := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, upstreamStream)
+	originalTranslated := append([]byte(nil), body...)
+	if len(opts.OriginalRequest) > 0 {
+		originalTranslated = helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, upstreamStream)
+	}
 	body = helps.SetStringIfDifferent(body, "model", upstreamModel)
 
 	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier())
@@ -189,13 +189,13 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			return resp, errValidate
 		}
 		lines := bytes.Split(data, []byte("\n"))
+		var usageAcc helps.ClaudeStreamUsageAccumulator
 		for i, line := range lines {
-			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
+			usageAcc.Observe(line)
 			lines[i] = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
 		}
 		data = bytes.Join(lines, []byte("\n"))
+		usageAcc.Publish(ctx, reporter)
 	} else {
 		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
 		data = restoreClaudeOAuthToolNamesFromResponse(data, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
