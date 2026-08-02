@@ -89,7 +89,10 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
 	if m.scheduler != nil {
-		m.scheduler.upsertAuth(authClone)
+		// Hand the scheduler an independent clone: it must never alias the live
+		// m.auths object, or scheduler picks (scheduler.mu) would race with
+		// MarkResult's in-place ModelStates mutation (m.mu).
+		m.scheduler.upsertAuth(auth.Clone())
 	}
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
@@ -139,7 +142,10 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
 	if m.scheduler != nil {
-		m.scheduler.upsertAuth(authClone)
+		// Hand the scheduler an independent clone: it must never alias the live
+		// m.auths object, or scheduler picks (scheduler.mu) would race with
+		// MarkResult's in-place ModelStates mutation (m.mu).
+		m.scheduler.upsertAuth(auth.Clone())
 	}
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)

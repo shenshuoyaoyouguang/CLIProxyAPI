@@ -380,3 +380,100 @@ func TestCaptureRequestInfoDecodesZstdRequestBodyForLog(t *testing.T) {
 		t.Fatal("request body was not restored with the original compressed bytes")
 	}
 }
+
+func TestCaptureRequestInfoCapturesNormalBodyUnchanged(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	payload := []byte(`{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(payload))
+
+	info, errCapture := captureRequestInfo(c, true)
+	if errCapture != nil {
+		t.Fatalf("captureRequestInfo: %v", errCapture)
+	}
+	if !bytes.Equal(info.Body, payload) {
+		t.Fatalf("captured body = %q, want %q", string(info.Body), string(payload))
+	}
+	restored, errRead := io.ReadAll(c.Request.Body)
+	if errRead != nil {
+		t.Fatalf("read restored request body: %v", errRead)
+	}
+	if !bytes.Equal(restored, payload) {
+		t.Fatal("request body was not restored unchanged")
+	}
+}
+
+func TestCaptureRequestInfoBoundsZstdCompressionBomb(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Highly compressible payload that would expand far beyond the eager-capture
+	// cap; after zstd it is tiny on the wire and fits under the cap.
+	bomb := bytes.Repeat([]byte("A"), 8<<20)
+	var compressed bytes.Buffer
+	encoder, errNewWriter := zstd.NewWriter(&compressed)
+	if errNewWriter != nil {
+		t.Fatalf("zstd.NewWriter: %v", errNewWriter)
+	}
+	if _, errWrite := encoder.Write(bomb); errWrite != nil {
+		t.Fatalf("zstd write: %v", errWrite)
+	}
+	if errClose := encoder.Close(); errClose != nil {
+		t.Fatalf("zstd close: %v", errClose)
+	}
+	compressedBytes := compressed.Bytes()
+	if int64(len(compressedBytes)) > maxEagerRequestBodyBytes {
+		t.Fatalf("compressed bomb is %d bytes, want it to fit under the eager capture cap", len(compressedBytes))
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(compressedBytes))
+	c.Request.Header.Set("Content-Encoding", "zstd")
+
+	info, errCapture := captureRequestInfo(c, true)
+	if errCapture != nil {
+		t.Fatalf("captureRequestInfo: %v", errCapture)
+	}
+	if len(info.Body) >= len(bomb) {
+		t.Fatalf("captured body length = %d, want bounded output far below the %d-byte bomb", len(info.Body), len(bomb))
+	}
+	if !bytes.Contains(info.Body, []byte("DECOMPRESSED REQUEST BODY TRUNCATED")) {
+		t.Fatalf("captured body = %.200q..., want truncation marker", string(info.Body))
+	}
+
+	restored, errRead := io.ReadAll(c.Request.Body)
+	if errRead != nil {
+		t.Fatalf("read restored request body: %v", errRead)
+	}
+	if !bytes.Equal(restored, compressedBytes) {
+		t.Fatal("request body was not restored with the original compressed bytes")
+	}
+}
+
+func TestCaptureRequestInfoRejectsOversizedBodyButPreservesIt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	oversized := bytes.Repeat([]byte("y"), int(maxEagerRequestBodyBytes)+2)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(oversized))
+
+	info, errCapture := captureRequestInfo(c, true)
+	if errCapture == nil {
+		t.Fatalf("captureRequestInfo succeeded for oversized body (captured %d bytes), want error", len(info.Body))
+	}
+	if !strings.Contains(errCapture.Error(), "exceeds") {
+		t.Fatalf("captureRequestInfo error = %v, want body-size-exceeds error", errCapture)
+	}
+
+	// Downstream handlers must still receive the complete body.
+	restored, errRead := io.ReadAll(c.Request.Body)
+	if errRead != nil {
+		t.Fatalf("read preserved request body: %v", errRead)
+	}
+	if !bytes.Equal(restored, oversized) {
+		t.Fatalf("preserved request body length = %d, want %d", len(restored), len(oversized))
+	}
+}
