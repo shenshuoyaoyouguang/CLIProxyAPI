@@ -286,7 +286,17 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		close(errChan)
 		return nil, nil, errChan
 	}
-	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+	// A cancellable per-attempt context lets an abandoned bootstrap stream be
+	// terminated before a retry instead of leaking its executor goroutine and
+	// upstream body until request end (H24j).
+	streamCtx := ctx
+	var cancelStream context.CancelFunc
+	if ctx != nil {
+		streamCtx, cancelStream = context.WithCancel(ctx)
+	} else {
+		streamCtx, cancelStream = context.WithCancel(context.Background())
+	}
+	streamResult, err := h.AuthManager.ExecuteStream(streamCtx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errMsg := executionErrorMessage(err)
@@ -458,8 +468,16 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			bootstrapErr = executionErrorMessage(bootstrapStreamErr)
 			break
 		}
+		if cancelStream != nil {
+			cancelStream()
+		}
 		bootstrapRetries++
-		retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+		if ctx != nil {
+			streamCtx, cancelStream = context.WithCancel(ctx)
+		} else {
+			streamCtx, cancelStream = context.WithCancel(context.Background())
+		}
+		retryResult, retryErr := h.AuthManager.ExecuteStream(streamCtx, providers, req, opts)
 		if retryErr != nil {
 			originalBootstrapErr := executionErrorMessage(bootstrapStreamErr)
 			if isAuthSelectionUnavailable(retryErr) && originalBootstrapErr.StatusCode >= http.StatusInternalServerError {

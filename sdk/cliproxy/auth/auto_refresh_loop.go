@@ -268,6 +268,11 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 	case <-ctx.Done():
 		return
 	case l.jobs <- authID:
+	default:
+		// All refresh workers are busy: never let the send block the
+		// scheduling loop. Re-schedule this auth promptly so the refresh
+		// is not lost (H24m).
+		l.queueReschedule(authID)
 	}
 }
 

@@ -535,6 +535,12 @@ func (h *BaseAPIHandler) StartNonStreamingKeepAlive(c *gin.Context, ctx context.
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Never write a heartbeat after the response is committed:
+				// a slow error path would otherwise have its 401/429/5xx
+				// swallowed by an already-committed 200 (H24k).
+				if c.Writer.Written() {
+					return
+				}
 				_, _ = c.Writer.Write([]byte("\n"))
 				flusher.Flush()
 			}
