@@ -1120,24 +1120,50 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 		count int
 	}
 	providers := make([]providerCount, 0, len(registration.Providers))
-	// suspendedByProvider := make(map[string]int)
-	// if registration.SuspendedClients != nil {
-	// 	for clientID := range registration.SuspendedClients {
-	// 		if provider, ok := r.clientProviders[clientID]; ok && provider != "" {
-	// 			suspendedByProvider[provider]++
-	// 		}
-	// 	}
-	// }
+	now := time.Now()
 	for name, count := range registration.Providers {
 		if count <= 0 {
 			continue
 		}
-		// adjusted := count - suspendedByProvider[name]
-		// if adjusted <= 0 {
-		// 	continue
-		// }
-		// providers = append(providers, providerCount{name: name, count: adjusted})
-		providers = append(providers, providerCount{name: name, count: count})
+
+		// Subtract clients that are unavailable for this model, attributed by provider,
+		// mirroring buildAvailableModelsLocked accounting: over-quota clients still inside
+		// the recovery window and all suspended clients. A provider with no usable clients
+		// left must not be reported as a supply source for the model.
+		// NOTE: the quota and suspended sets can contain the same client (a 429 marks
+		// both via conductor MarkResult), so unavailable clients are counted as a
+		// union, not as two independent subtractions.
+		unavailable := make(map[string]struct{})
+		if registration.QuotaExceededClients != nil {
+			for clientID, quotaTime := range registration.QuotaExceededClients {
+				if clientID == "" {
+					continue
+				}
+				if p, okProvider := r.clientProviders[clientID]; !okProvider || p != name {
+					continue
+				}
+				if quotaTime != nil && now.Sub(*quotaTime) < modelQuotaExceededWindow {
+					unavailable[clientID] = struct{}{}
+				}
+			}
+		}
+		if registration.SuspendedClients != nil {
+			for clientID := range registration.SuspendedClients {
+				if clientID == "" {
+					continue
+				}
+				if p, okProvider := r.clientProviders[clientID]; !okProvider || p != name {
+					continue
+				}
+				unavailable[clientID] = struct{}{}
+			}
+		}
+
+		adjusted := count - len(unavailable)
+		if adjusted <= 0 {
+			continue
+		}
+		providers = append(providers, providerCount{name: name, count: adjusted})
 	}
 	if len(providers) == 0 {
 		return nil

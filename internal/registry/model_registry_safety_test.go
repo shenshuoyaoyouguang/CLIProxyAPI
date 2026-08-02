@@ -175,3 +175,57 @@ func TestLookupModelInfoIncludesClaudeSonnet5(t *testing.T) {
 		}
 	}
 }
+
+func TestGetModelProvidersExcludesFullySuspendedProvider(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("client-1", "antigravity", []*ModelInfo{{ID: "m1", DisplayName: "Model One"}})
+
+	if providers := r.GetModelProviders("m1"); len(providers) != 1 || providers[0] != "antigravity" {
+		t.Fatalf("expected antigravity provider before suspension, got %v", providers)
+	}
+
+	r.SuspendClientModel("client-1", "m1", "maintenance")
+
+	if providers := r.GetModelProviders("m1"); len(providers) != 0 {
+		t.Fatalf("expected no providers after suspending the only client, got %v", providers)
+	}
+}
+
+func TestGetModelProvidersExcludesOverQuotaProvider(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("client-1", "gemini", []*ModelInfo{{ID: "m1", DisplayName: "Model One"}})
+
+	r.SetModelQuotaExceeded("client-1", "m1")
+
+	if providers := r.GetModelProviders("m1"); len(providers) != 0 {
+		t.Fatalf("expected no providers after quota exceeded, got %v", providers)
+	}
+}
+
+func TestGetModelProvidersKeepsProviderWithAvailableClient(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("client-1", "gemini", []*ModelInfo{{ID: "m1", DisplayName: "Model One"}})
+	r.RegisterClient("client-2", "openai", []*ModelInfo{{ID: "m1", DisplayName: "Model One"}})
+
+	// Suspending one client must not drop a provider that still has usable clients.
+	r.SuspendClientModel("client-1", "m1", "maintenance")
+
+	if providers := r.GetModelProviders("m1"); len(providers) != 1 || providers[0] != "openai" {
+		t.Fatalf("expected only openai provider, got %v", providers)
+	}
+}
+
+func TestGetModelProvidersKeepsProviderWithOverlappingQuotaAndSuspension(t *testing.T) {
+	r := newTestModelRegistry()
+	// Two clients on the same provider; the failing client gets BOTH a quota
+	// mark and a suspension (a 429 marks both via conductor MarkResult). The
+	// provider must not be dropped — the second client is still usable.
+	r.RegisterClient("client-1", "gemini", []*ModelInfo{{ID: "m1"}})
+	r.RegisterClient("client-2", "gemini", []*ModelInfo{{ID: "m1"}})
+	r.SetModelQuotaExceeded("client-1", "m1")
+	r.SuspendClientModel("client-1", "m1", "rate limited")
+
+	if providers := r.GetModelProviders("m1"); len(providers) != 1 || providers[0] != "gemini" {
+		t.Fatalf("expected gemini provider with 1 usable client, got %v", providers)
+	}
+}

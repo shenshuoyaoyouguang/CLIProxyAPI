@@ -256,6 +256,17 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 		}
 		if existing, errRead := os.ReadFile(path); errRead == nil {
 			if jsonEqual(existing, raw) {
+				// Content is unchanged, but still record the path/source attributes and
+				// keep the DB record in sync, mirroring GitTokenStore.Save. A DB row may
+				// be missing even when the file exists (e.g. spool restored from disk).
+				if auth.Attributes == nil {
+					auth.Attributes = make(map[string]string)
+				}
+				auth.Attributes[cliproxyauth.AttributePath] = path
+				auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourcePostgres
+				if relID, errRel := s.relativeAuthID(path); errRel == nil {
+					_ = s.upsertAuthRecord(ctx, relID, path)
+				}
 				return path, nil
 			}
 		} else if errRead != nil && !errors.Is(errRead, fs.ErrNotExist) {
