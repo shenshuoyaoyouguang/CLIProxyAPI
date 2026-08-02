@@ -21,14 +21,15 @@ type logsTabModel struct {
 	height     int
 	ready      bool
 	filter     string // "", "debug", "info", "warn", "error"
-	after      int64
+	cursor     string // server log cursor for incremental reads
 	lastErr    error
 }
 
 type logsPollMsg struct {
-	lines  []string
-	latest int64
-	err    error
+	lines       []string
+	nextCursor  string
+	cursorReset bool
+	err         error
 }
 
 type logsTickMsg struct{}
@@ -51,11 +52,12 @@ func (m logsTabModel) Init() tea.Cmd {
 }
 
 func (m logsTabModel) fetchLogs() tea.Msg {
-	lines, latest, err := m.client.GetLogs(m.after, 200)
+	result, err := m.client.GetLogs(m.cursor, 200)
 	return logsPollMsg{
-		lines:  lines,
-		latest: latest,
-		err:    err,
+		lines:       result.Lines,
+		nextCursor:  result.NextCursor,
+		cursorReset: result.CursorReset,
+		err:         err,
 	}
 }
 
@@ -94,7 +96,13 @@ func (m logsTabModel) Update(msg tea.Msg) (logsTabModel, tea.Cmd) {
 			m.lastErr = msg.err
 		} else {
 			m.lastErr = nil
-			m.after = msg.latest
+			m.cursor = msg.nextCursor
+			if msg.cursorReset {
+				// The server lost the cursor context (e.g. the log file was
+				// truncated or deleted) and returned a fresh tail snapshot, so
+				// replace the view instead of appending duplicate lines.
+				m.lines = nil
+			}
 			if len(msg.lines) > 0 {
 				m.lines = append(m.lines, msg.lines...)
 				if len(m.lines) > m.maxLines {

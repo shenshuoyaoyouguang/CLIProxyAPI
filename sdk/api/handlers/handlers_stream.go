@@ -629,8 +629,20 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	return dataChan, upstreamHeaders, errChan
 }
 
+// validateSSEDataJSON verifies that every data: line in an SSE chunk carries
+// valid JSON. It scans the newline boundaries in place so the streaming hot
+// path does not allocate a per-chunk line slice.
 func validateSSEDataJSON(chunk []byte) error {
-	for _, line := range bytes.Split(chunk, []byte("\n")) {
+	for start := 0; start < len(chunk); {
+		end := bytes.IndexByte(chunk[start:], '\n')
+		var line []byte
+		if end < 0 {
+			line = chunk[start:]
+			start = len(chunk)
+		} else {
+			line = chunk[start : start+end]
+			start += end + 1
+		}
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue

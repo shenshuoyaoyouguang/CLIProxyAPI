@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -143,11 +144,11 @@ func (c *Client) PutConfigYAML(yamlContent string) error {
 // GetAuthFiles lists auth credential files.
 // API returns {"files": [...]}.
 func (c *Client) GetAuthFiles() ([]map[string]any, error) {
-	wrapper, err := c.getJSON("/v0/management/auth-files")
-	if err != nil {
+	var files []map[string]any
+	if err := c.getWrappedList("/v0/management/auth-files", "files", &files); err != nil {
 		return nil, err
 	}
-	return extractList(wrapper, "files")
+	return files, nil
 }
 
 // DeleteAuthFile deletes a single auth file by name.
@@ -180,80 +181,63 @@ func (c *Client) PatchAuthFileFields(name string, fields map[string]any) error {
 	return err
 }
 
-// GetLogs fetches log lines from the server.
-func (c *Client) GetLogs(after int64, limit int) ([]string, int64, error) {
+// LogsResult is the decoded view of the logs endpoint response.
+type LogsResult struct {
+	Lines           []string
+	LatestTimestamp int64
+	NextCursor      string
+	CursorReset     bool
+}
+
+// GetLogs fetches log lines from the server. Pass the next-cursor returned by
+// a previous call to read only the lines appended since then; an empty cursor
+// starts a fresh tail read of up to limit lines.
+func (c *Client) GetLogs(cursor string, limit int) (LogsResult, error) {
 	query := url.Values{}
 	if limit > 0 {
 		query.Set("limit", strconv.Itoa(limit))
 	}
-	if after > 0 {
-		query.Set("after", strconv.FormatInt(after, 10))
+	if cursor != "" {
+		query.Set("cursor", cursor)
 	}
 
 	path := "/v0/management/logs"
-	encodedQuery := query.Encode()
-	if encodedQuery != "" {
+	if encodedQuery := query.Encode(); encodedQuery != "" {
 		path += "?" + encodedQuery
 	}
 
-	wrapper, err := c.getJSON(path)
+	data, err := c.get(path)
 	if err != nil {
-		return nil, after, err
+		return LogsResult{}, err
 	}
-
-	lines := []string{}
-	if rawLines, ok := wrapper["lines"]; ok && rawLines != nil {
-		rawJSON, errMarshal := json.Marshal(rawLines)
-		if errMarshal != nil {
-			return nil, after, errMarshal
-		}
-		if errUnmarshal := json.Unmarshal(rawJSON, &lines); errUnmarshal != nil {
-			return nil, after, errUnmarshal
-		}
+	var resp struct {
+		Lines           []string `json:"lines"`
+		LatestTimestamp int64    `json:"latest-timestamp"`
+		NextCursor      string   `json:"next-cursor"`
+		CursorReset     bool     `json:"cursor-reset"`
 	}
-
-	latest := after
-	if rawLatest, ok := wrapper["latest-timestamp"]; ok {
-		switch value := rawLatest.(type) {
-		case float64:
-			latest = int64(value)
-		case json.Number:
-			if parsed, errParse := value.Int64(); errParse == nil {
-				latest = parsed
-			}
-		case int64:
-			latest = value
-		case int:
-			latest = int64(value)
-		}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return LogsResult{}, err
 	}
-	if latest < after {
-		latest = after
+	if resp.Lines == nil {
+		resp.Lines = []string{}
 	}
-
-	return lines, latest, nil
+	return LogsResult{
+		Lines:           resp.Lines,
+		LatestTimestamp: resp.LatestTimestamp,
+		NextCursor:      resp.NextCursor,
+		CursorReset:     resp.CursorReset,
+	}, nil
 }
 
 // GetAPIKeys fetches the list of API keys.
 // API returns {"api-keys": [...]}.
 func (c *Client) GetAPIKeys() ([]string, error) {
-	wrapper, err := c.getJSON("/v0/management/api-keys")
-	if err != nil {
+	var keys []string
+	if err := c.getWrappedList("/v0/management/api-keys", "api-keys", &keys); err != nil {
 		return nil, err
 	}
-	arr, ok := wrapper["api-keys"]
-	if !ok {
-		return nil, nil
-	}
-	raw, err := json.Marshal(arr)
-	if err != nil {
-		return nil, err
-	}
-	var result []string
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return keys, nil
 }
 
 // AddAPIKey adds a new API key by sending old=nil, new=key which appends.
@@ -287,64 +271,86 @@ func (c *Client) DeleteAPIKey(index int) error {
 // GetGeminiKeys fetches Gemini API keys.
 // API returns {"gemini-api-key": [...]}.
 func (c *Client) GetGeminiKeys() ([]map[string]any, error) {
-	return c.getWrappedKeyList("/v0/management/gemini-api-key", "gemini-api-key")
+	var keys []map[string]any
+	if err := c.getWrappedList("/v0/management/gemini-api-key", "gemini-api-key", &keys); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // GetInteractionsKeys fetches native Interactions API keys.
 // API returns {"interactions-api-key": [...]}.
 func (c *Client) GetInteractionsKeys() ([]map[string]any, error) {
-	return c.getWrappedKeyList("/v0/management/interactions-api-key", "interactions-api-key")
+	var keys []map[string]any
+	if err := c.getWrappedList("/v0/management/interactions-api-key", "interactions-api-key", &keys); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // GetClaudeKeys fetches Claude API keys.
 func (c *Client) GetClaudeKeys() ([]map[string]any, error) {
-	return c.getWrappedKeyList("/v0/management/claude-api-key", "claude-api-key")
+	var keys []map[string]any
+	if err := c.getWrappedList("/v0/management/claude-api-key", "claude-api-key", &keys); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // GetCodexKeys fetches Codex API keys.
 func (c *Client) GetCodexKeys() ([]map[string]any, error) {
-	return c.getWrappedKeyList("/v0/management/codex-api-key", "codex-api-key")
+	var keys []map[string]any
+	if err := c.getWrappedList("/v0/management/codex-api-key", "codex-api-key", &keys); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // GetXAIKeys fetches xAI API keys.
 func (c *Client) GetXAIKeys() ([]map[string]any, error) {
-	return c.getWrappedKeyList("/v0/management/xai-api-key", "xai-api-key")
+	var keys []map[string]any
+	if err := c.getWrappedList("/v0/management/xai-api-key", "xai-api-key", &keys); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // GetVertexKeys fetches Vertex API keys.
 func (c *Client) GetVertexKeys() ([]map[string]any, error) {
-	return c.getWrappedKeyList("/v0/management/vertex-api-key", "vertex-api-key")
+	var keys []map[string]any
+	if err := c.getWrappedList("/v0/management/vertex-api-key", "vertex-api-key", &keys); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // GetOpenAICompat fetches OpenAI compatibility entries.
 func (c *Client) GetOpenAICompat() ([]map[string]any, error) {
-	return c.getWrappedKeyList("/v0/management/openai-compatibility", "openai-compatibility")
+	var keys []map[string]any
+	if err := c.getWrappedList("/v0/management/openai-compatibility", "openai-compatibility", &keys); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
-// getWrappedKeyList fetches a wrapped list from the API.
-func (c *Client) getWrappedKeyList(path, key string) ([]map[string]any, error) {
-	wrapper, err := c.getJSON(path)
+// getWrappedList fetches a JSON object and decodes the array under key
+// directly into target (a non-nil pointer to a slice), avoiding a
+// map[string]any marshal/unmarshal round-trip. A missing or null array
+// leaves target untouched.
+func (c *Client) getWrappedList(path, key string, target any) error {
+	data, err := c.get(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return extractList(wrapper, key)
-}
-
-// extractList pulls an array of maps from a wrapper object by key.
-func extractList(wrapper map[string]any, key string) ([]map[string]any, error) {
-	arr, ok := wrapper[key]
-	if !ok || arr == nil {
-		return nil, nil
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return err
 	}
-	raw, err := json.Marshal(arr)
-	if err != nil {
-		return nil, err
+	raw, ok := wrapper[key]
+	if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
 	}
-	var result []map[string]any
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return json.Unmarshal(raw, target)
 }
 
 // GetDebug fetches the current debug setting.
