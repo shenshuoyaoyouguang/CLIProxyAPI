@@ -1,6 +1,7 @@
 package cliproxy
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	internalregistry "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 func TestRegisterModelsForAuth_UsesPreMergedExcludedModelsAttribute(t *testing.T) {
@@ -131,8 +133,8 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 	if chatModel.Type != "openai-compatibility" {
 		t.Fatalf("chat model type = %q, want openai-compatibility", chatModel.Type)
 	}
-	if chatModel.Thinking == nil {
-		t.Fatal("expected chat model to keep default thinking support")
+	if chatModel.Thinking == nil || len(chatModel.Thinking.Levels) != 3 || chatModel.Thinking.Levels[0] != "low" {
+		t.Fatalf("chat model thinking = %+v, want default [low,medium,high]", chatModel.Thinking)
 	}
 }
 
@@ -312,5 +314,45 @@ func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.
 	}
 	if fetchedOnlyModel != nil {
 		t.Fatalf("fetched-only model should not be registered: %#v", fetchedOnlyModel)
+	}
+}
+
+func TestBuildOpenAICompatibilityConfigModels_WarnsOnDottedExtraBodyKeys(t *testing.T) {
+	var buf bytes.Buffer
+	orig := log.StandardLogger().Out
+	log.SetOutput(&buf)
+	defer log.SetOutput(orig)
+	origLevel := log.GetLevel()
+	log.SetLevel(log.WarnLevel)
+	defer log.SetLevel(origLevel)
+
+	models := buildOpenAICompatibilityConfigModels(&config.OpenAICompatibility{
+		Name:            "test-dot-keys",
+		DefaultThinking: func() *bool { v := false; return &v }(),
+		Models: []config.OpenAICompatibilityModel{
+			{
+				Name:  "test-model",
+				Alias: "test-model",
+				ExtraBody: map[string]any{
+					"safe_key":    "value",
+					"my.key":      "nested",
+					"another.dot": "also_nested",
+				},
+			},
+		},
+	})
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "my.key") {
+		t.Fatalf("expected warn about 'my.key', got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "another.dot") {
+		t.Fatalf("expected warn about 'another.dot', got: %s", logOutput)
+	}
+	if strings.Contains(logOutput, "safe_key") {
+		t.Fatalf("unexpected warn about 'safe_key' (no dot), got: %s", logOutput)
 	}
 }

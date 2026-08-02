@@ -67,6 +67,12 @@ type ModelInfo struct {
 	// This is optional and currently used for Gemini thinking budget normalization.
 	Thinking *ThinkingSupport `json:"thinking,omitempty"`
 
+	// ExtraBody holds additional JSON paths to inject into the request body
+	// when this model is used. Only paths absent from the payload are written
+	// (merge semantics, never overwrite). Used for provider-specific fields
+	// such as extra_body.chat_template_kwargs.enable_thinking.
+	ExtraBody map[string]any `json:"-"`
+
 	// Config holds model-specific runtime overrides loaded from models.json.
 	Config *ModelConfig `json:"config,omitempty"`
 
@@ -586,6 +592,9 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		}
 		copyModel.Thinking = &copyThinking
 	}
+	if model.ExtraBody != nil {
+		copyModel.ExtraBody = cloneModelExtraBody(model.ExtraBody)
+	}
 	if model.Config != nil {
 		copyConfig := *model.Config
 		if len(model.Config.OverrideHeader) > 0 {
@@ -597,6 +606,19 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		copyModel.Config = &copyConfig
 	}
 	return &copyModel
+}
+
+// cloneModelExtraBody recursively deep-clones an ExtraBody map so the
+// clone does not share references with the original.
+func cloneModelExtraBody(extraBody map[string]any) map[string]any {
+	if extraBody == nil {
+		return nil
+	}
+	copyMap := make(map[string]any, len(extraBody))
+	for key, entry := range extraBody {
+		copyMap[key] = cloneModelMapValue(entry)
+	}
+	return copyMap
 }
 
 func cloneModelInfosUnique(models []*ModelInfo) []*ModelInfo {

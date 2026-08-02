@@ -589,6 +589,14 @@ type OpenAICompatibility struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this provider when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// DefaultThinking controls the behavior when a model has no explicit thinking config.
+	//   - nil (default) or true: models without explicit thinking default to levels ["low","medium","high"] (old behavior)
+	//   - false: models without explicit thinking are treated as "does not support reasoning" (new behavior)
+	// This provides a gradual migration path: set default_thinking: false to opt-in to the new
+	// semantics, then add explicit thinking config to each model that needs reasoning.
+	// Future major versions will change the default to false.
+	DefaultThinking *bool `yaml:"default_thinking,omitempty" json:"default_thinking,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -629,8 +637,26 @@ type OpenAICompatibilityModel struct {
 	// OutputModalities declares supported output modalities when known (e.g. text, image).
 	OutputModalities []string `yaml:"output-modalities,omitempty" json:"output-modalities,omitempty"`
 
+	// MaxCompletionTokens is the maximum output token count for this model.
+	// When set (>0) and the request lacks both max_tokens and max_completion_tokens,
+	// this value is injected as max_tokens before sending to upstream.
+	// 0 or omitted means no default injection (upstream decides).
+	MaxCompletionTokens int `yaml:"max_completion_tokens,omitempty" json:"max_completion_tokens,omitempty"`
+
+	// ContextLength is the total context window size (input + output).
+	// Exposed via the model list API when set.
+	ContextLength int `yaml:"context_length,omitempty" json:"context_length,omitempty"`
+
+	// ExtraBody defines additional JSON fields to merge into the request body
+	// when this model is selected. Only paths that are absent from the payload
+	// are written; existing values are never overwritten.
+	// Used for provider-specific parameters such as extra_body.chat_template_kwargs.
+	ExtraBody map[string]any `yaml:"extra_body,omitempty" json:"extra_body,omitempty"`
+
 	// Thinking configures the thinking/reasoning capability for this model.
-	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
+	// Supported semantics:
+	//   - nil (omitted): model does not support thinking/reasoning
+	//   - &ThinkingSupport{Levels:["low","medium","high"]}: use level-based reasoning
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 

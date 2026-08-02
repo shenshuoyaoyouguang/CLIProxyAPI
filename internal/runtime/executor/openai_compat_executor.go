@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -42,11 +43,19 @@ const (
 type OpenAICompatExecutor struct {
 	provider string
 	cfg      *config.Config
+
+	// modelLookup is an injectable function for resolving model info. Defaults to
+	// registry.LookupModelInfo. Override in tests to avoid global registry pollution.
+	modelLookup func(modelID string, provider ...string) *registry.ModelInfo
 }
 
 // NewOpenAICompatExecutor creates an executor bound to a provider key (e.g., "openrouter").
 func NewOpenAICompatExecutor(provider string, cfg *config.Config) *OpenAICompatExecutor {
-	return &OpenAICompatExecutor{provider: provider, cfg: cfg}
+	return &OpenAICompatExecutor{
+		provider:    provider,
+		cfg:         cfg,
+		modelLookup: registry.LookupModelInfo,
+	}
 }
 
 // Identifier implements cliproxyauth.ProviderExecutor.
@@ -135,6 +144,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return resp, err
 	}
+	translated = e.enhanceModelParams(translated, baseModel)
 	if opts.Alt != "responses/compact" {
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
 		if err != nil {
@@ -349,6 +359,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			return helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", b, originalTranslated, requestedModel, requestPath, opts.Headers)
 		},
 	})
+	translated = e.enhanceModelParams(translated, baseModel)
 	if opts.Alt != "responses/compact" {
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
 		if err != nil {
@@ -637,6 +648,7 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
+	translated = e.enhanceModelParams(translated, baseModel)
 
 	enc, err := helps.TokenizerForModel(modelForCounting)
 	if err != nil {
@@ -660,6 +672,109 @@ func (e *OpenAICompatExecutor) Refresh(ctx context.Context, auth *cliproxyauth.A
 		return refreshed, err
 	}
 	return auth, nil
+}
+
+// enhanceModelParams fills in model-level default parameters when the request
+// payload is missing them. It never overwrites existing values.
+//
+// Order of operations:
+//  1. max_tokens / max_completion_tokens: inject MaxCompletionTokens when both absent
+//  2. reasoning_effort: inject lowest level when Thinking is enabled but effort absent
+//  3. extra_body: deep merge model ExtraBody paths that are absent from the payload
+//     (leaf-level merge: existing nested keys are preserved, missing leaf keys are added)
+func (e *OpenAICompatExecutor) enhanceModelParams(body []byte, modelID string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+
+	info := e.modelLookup(modelID, e.Identifier())
+	if info == nil {
+		return body
+	}
+
+	// 1. max_tokens / max_completion_tokens default
+	if info.MaxCompletionTokens > 0 {
+		if !gjson.GetBytes(body, "max_tokens").Exists() && !gjson.GetBytes(body, "max_completion_tokens").Exists() {
+			body, _ = sjson.SetBytes(body, "max_tokens", info.MaxCompletionTokens)
+			log.WithFields(log.Fields{
+				"model": modelID,
+				"field": "max_tokens",
+				"value": info.MaxCompletionTokens,
+			}).Debug("enhanceModelParams: injected default")
+		}
+	}
+
+	// 2. reasoning_effort default when thinking is enabled
+	if info.Thinking != nil && len(info.Thinking.Levels) > 0 {
+		if !gjson.GetBytes(body, "reasoning_effort").Exists() {
+			body, _ = sjson.SetBytes(body, "reasoning_effort", info.Thinking.Levels[0])
+			log.WithFields(log.Fields{
+				"model": modelID,
+				"field": "reasoning_effort",
+				"value": info.Thinking.Levels[0],
+			}).Debug("enhanceModelParams: injected default")
+		}
+	}
+
+	// 3. extra_body deep merge (leaf-level, never overwrite)
+	if info.ExtraBody != nil {
+		body = deepMergeExtraBody(body, "extra_body", info.ExtraBody)
+		log.WithFields(log.Fields{
+			"model": modelID,
+			"keys":  fmt.Sprintf("%v", getMapKeys(info.ExtraBody)),
+		}).Debug("enhanceModelParams: merged extra_body")
+	}
+
+	return body
+}
+
+// getMapKeys returns the keys of a map[string]any as a string slice.
+func getMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// maxExtraBodyMergeDepth limits recursive extra_body merging to prevent
+// stack overflow from deeply nested configuration.
+const maxExtraBodyMergeDepth = 10
+
+// deepMergeExtraBody recursively merges extraBodyConfig into body at the given basePath.
+// It only adds missing leaf values; existing values are never overwritten.
+// Note: key paths are joined with "." (e.g., "chat_template_kwargs.enable_thinking").
+// Keys containing literal dots are not escaped; this is unlikely in practice but noted here.
+func deepMergeExtraBody(body []byte, basePath string, extraBodyConfig map[string]any) []byte {
+	return deepMergeExtraBodyDepth(body, basePath, extraBodyConfig, 0)
+}
+
+// deepMergeExtraBodyDepth is the recursive implementation with depth tracking.
+func deepMergeExtraBodyDepth(body []byte, basePath string, extraBodyConfig map[string]any, depth int) []byte {
+	if depth >= maxExtraBodyMergeDepth {
+		log.WithFields(log.Fields{
+			"path":  basePath,
+			"depth": depth,
+		}).Warn("deepMergeExtraBody: max depth reached, stopping recursion")
+		return body
+	}
+	for k, v := range extraBodyConfig {
+		path := basePath + "." + k
+		existing := gjson.GetBytes(body, path)
+		if existing.Exists() {
+			// If both existing and config are objects, recurse for deep merge
+			if existing.IsObject() {
+				if configMap, ok := v.(map[string]any); ok {
+					body = deepMergeExtraBodyDepth(body, path, configMap, depth+1)
+				}
+			}
+			// Otherwise, leaf exists - skip (never overwrite)
+			continue
+		}
+		// Path doesn't exist - set the entire value
+		body, _ = sjson.SetBytes(body, path, v)
+	}
+	return body
 }
 
 func openAICompatImageEndpointPath(opts cliproxyexecutor.Options) string {

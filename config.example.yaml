@@ -467,6 +467,9 @@ nonstream-keepalive-interval: 0
 #     base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
 #     support-prompt-cache-key: false # optional: derive prompt_cache_key for requests from all input protocols
 #     disable-cooling: false # optional: per-provider override for auth/model cooldown scheduling
+#     default_thinking: true # optional: when true (default), models without explicit thinking config
+#                           # default to levels ["low","medium","high"]; set false to opt-in
+#                           # to the new behavior where no thinking means no reasoning support.
 #     headers:
 #       X-Custom-Header: "custom-value"
 #     api-key-entries:
@@ -482,7 +485,7 @@ nonstream-keepalive-interval: 0
 #         image: false                   # optional: set true to allow this model on /v1/images/generations and /v1/images/edits (not chat/responses image input)
 #         input-modalities: [text, image] # optional: declare /v1/chat/completions and /v1/responses multimodal input for Codex clients
 #         output-modalities: [text]       # optional: declare output modalities when known
-#         thinking:                      # optional: omit to default to levels ["low","medium","high"]
+#         thinking:                      # optional: levels to advertise for this model
 #           levels: ["low", "medium", "high"]
 #       # You may repeat the same alias to build an internal model pool.
 #       # The client still sees only one alias in the model list.

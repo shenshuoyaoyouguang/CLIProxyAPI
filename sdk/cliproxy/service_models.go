@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
@@ -717,6 +718,7 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 	}
 	now := time.Now().Unix()
 	models := make([]*ModelInfo, 0, len(compat.Models))
+	modelsWithoutThinking := 0
 	for i := range compat.Models {
 		model := compat.Models[i]
 		modelType := "openai-compatibility"
@@ -727,14 +729,52 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		if info == nil {
 			continue
 		}
+		// Thinking: nil means the model does not support reasoning/thinking.
+		// The ApplyThinking pipeline reads this field to decide whether to
+		// inject or strip reasoning_effort from the payload.
+		//
+		// Transition notice: a previous version defaulted nil to
+		// [low,medium,high] for all non-image models. Compat.DefaultThinking
+		// controls this: when not set (or true) the old default is preserved;
+		// when false the model is treated as not supporting reasoning.
 		thinkingSupport := model.Thinking
 		if thinkingSupport == nil && !model.Image {
-			thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+			if compat.DefaultThinking == nil || *compat.DefaultThinking {
+				thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+			} else {
+				modelsWithoutThinking++
+			}
 		}
+
+		// Warn when extra_body keys contain dots (they will be interpreted as nested paths)
+		if model.ExtraBody != nil {
+			for k := range model.ExtraBody {
+				if strings.Contains(k, ".") {
+					log.WithFields(log.Fields{
+						"model":    info.ID,
+						"provider": compat.Name,
+						"key":      k,
+					}).Warn("openai-compatibility: extra_body key contains '.', will be treated as nested path")
+				}
+			}
+		}
+
 		info.Thinking = modelconfig.NormalizeThinkingSupport(thinkingSupport)
 		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
 		info.SupportedOutputModalities = normalizeCompatConfigModalities(model.OutputModalities)
+		info.ContextLength = model.ContextLength
+		info.MaxCompletionTokens = model.MaxCompletionTokens
+		info.ExtraBody = model.ExtraBody
 		models = append(models, info)
+	}
+	if modelsWithoutThinking > 0 {
+		log.WithFields(log.Fields{
+			"provider":       compat.Name,
+			"models_without": modelsWithoutThinking,
+		}).Warn("openai-compatibility: some models have no thinking config — " +
+			"treated as 'does not support reasoning'. " +
+			"Set thinking: {levels: [low,medium,high]} explicitly " +
+			"if reasoning is supported.")
 	}
 	return models
 }
