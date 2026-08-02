@@ -83,6 +83,17 @@ func (c *fakeClaudeDeviceProfileKVClient) KVExpire(_ context.Context, _ string, 
 	return true, nil
 }
 
+func (c *fakeClaudeDeviceProfileKVClient) KVDel(_ context.Context, keys ...string) (int64, error) {
+	var deleted int64
+	for _, key := range keys {
+		if _, ok := c.values[key]; ok {
+			delete(c.values, key)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
 func useFakeClaudeDeviceProfileKVClient(t *testing.T, client *fakeClaudeDeviceProfileKVClient, homeMode bool, errClient error) {
 	t.Helper()
 	previous := currentClaudeDeviceProfileKVClient

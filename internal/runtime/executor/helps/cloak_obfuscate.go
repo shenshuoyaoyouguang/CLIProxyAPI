@@ -13,6 +13,11 @@ import (
 // zeroWidthSpace is the Unicode zero-width space character used for obfuscation.
 const zeroWidthSpace = "\u200B"
 
+// isASCIIWordRune reports whether r can sit on a \b boundary (ASCII \w).
+func isASCIIWordRune(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_'
+}
+
 // SensitiveWordMatcher holds the compiled regex for matching sensitive words.
 type SensitiveWordMatcher struct {
 	regex *regexp.Regexp
@@ -49,7 +54,25 @@ func BuildSensitiveWordMatcher(words []string) *SensitiveWordMatcher {
 		escaped[i] = regexp.QuoteMeta(w)
 	}
 
-	pattern := "(?i)" + strings.Join(escaped, "|")
+	// Wrap word-character edges in \b so a short word like "pass" does not
+	// corrupt a longer word like "password". Words that start or end with a
+	// non-word character (spaces, punctuation) keep no boundary on that side,
+	// and non-ASCII words (e.g. Chinese) keep substring matching.
+	patternParts := make([]string, len(escaped))
+	for i, w := range validWords {
+		part := escaped[i]
+		first, _ := utf8.DecodeRuneInString(w)
+		if isASCIIWordRune(first) {
+			part = `\b` + part
+		}
+		last, _ := utf8.DecodeLastRuneInString(w)
+		if isASCIIWordRune(last) {
+			part += `\b`
+		}
+		patternParts[i] = part
+	}
+
+	pattern := "(?i)" + strings.Join(patternParts, "|")
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil

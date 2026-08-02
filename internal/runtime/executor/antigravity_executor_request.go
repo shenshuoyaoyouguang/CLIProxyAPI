@@ -455,7 +455,21 @@ func generateStableSessionID(payload []byte) string {
 			if content.Get("role").String() == "user" {
 				text := content.Get("parts.0.text").String()
 				if text != "" {
-					h := sha256.Sum256([]byte(text))
+					// Hash the opening text together with the system
+					// instruction and tool surface so identical opening
+					// lines in different agent contexts do not collide
+					// into a shared reasoning-replay ledger (H24i).
+					var seed strings.Builder
+					seed.WriteString(text)
+					for _, path := range []string{"request.systemInstruction", "request.tools", "request.toolConfig"} {
+						if value := gjson.GetBytes(payload, path); value.Exists() {
+							seed.WriteByte(0)
+							seed.WriteString(path)
+							seed.WriteByte(0)
+							seed.Write(antigravityCanonicalReplayJSON([]byte(value.Raw)))
+						}
+					}
+					h := sha256.Sum256([]byte(seed.String()))
 					n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
 					return "-" + strconv.FormatInt(n, 10)
 				}

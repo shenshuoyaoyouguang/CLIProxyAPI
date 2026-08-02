@@ -45,6 +45,13 @@ type claudeDeviceProfileKVClient interface {
 	KVSet(ctx context.Context, key string, value []byte, opts homekv.KVSetOptions) (bool, error)
 	KVSetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
 	KVExpire(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	KVDel(ctx context.Context, keys ...string) (int64, error)
+}
+
+// releaseClaudeDeviceProfileLock best-effort removes the profile lock. The
+// lock's short TTL remains the backstop when the owner is gone.
+func releaseClaudeDeviceProfileLock(ctx context.Context, client claudeDeviceProfileKVClient, lockKey string) {
+	_, _ = client.KVDel(ctx, lockKey)
 }
 
 var currentClaudeDeviceProfileKVClient = func() (claudeDeviceProfileKVClient, bool, error) {
@@ -422,6 +429,7 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 		if _, errExpire := client.KVExpire(ctx, valueKey, claudeDeviceProfileTTL); errExpire != nil {
 			return ClaudeDeviceProfile{}, errExpire
 		}
+		releaseClaudeDeviceProfileLock(ctx, client, lockKey)
 		return cached, nil
 	}
 	if !gotLock {
@@ -434,6 +442,7 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	if errWrite := writeClaudeDeviceProfileToHome(ctx, client, valueKey, candidate); errWrite != nil {
 		return ClaudeDeviceProfile{}, errWrite
 	}
+	releaseClaudeDeviceProfileLock(ctx, client, lockKey)
 	return candidate, nil
 }
 

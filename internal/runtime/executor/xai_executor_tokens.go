@@ -12,6 +12,10 @@ import (
 	"github.com/tiktoken-go/tokenizer"
 )
 
+// audioTokensPerSecond is a coarse estimate for audio input token accounting;
+// audio payloads are never tokenized as text (H24n).
+const audioTokensPerSecond = 32
+
 // CountTokens estimates token count for xAI Responses requests.
 func (e *XAIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	prepared, err := e.prepareResponsesRequest(ctx, req, opts, false)
@@ -109,8 +113,12 @@ func xaiCollectContentTokenSegments(content gjson.Result, segments *[]string) {
 			xaiAppendTokenString(segments, part.Get("file_id"))
 			xaiAppendTokenString(segments, part.Get("filename"))
 		case "input_audio":
-			xaiAppendTokenString(segments, part.Get("data"))
-			xaiAppendTokenString(segments, part.Get("input_audio.data"))
+			// The base64 audio payload must not be run through the text
+			// tokenizer (it would inflate the count ~4x); estimate from the
+			// duration metadata when present.
+			if duration := part.Get("duration").Float(); duration > 0 {
+				*segments = append(*segments, strings.Repeat("a", int(duration*audioTokensPerSecond)))
+			}
 		}
 	}
 }
