@@ -22,10 +22,20 @@ import (
 )
 
 func resetAntigravityCreditsRetryState() {
-	antigravityCreditsFailureByAuth = sync.Map{}
-	antigravityShortCooldownByAuth = sync.Map{}
-	antigravityCreditsBalanceByAuth = sync.Map{}
-	antigravityCreditsHintRefreshByID = sync.Map{}
+	// Clear the maps in place instead of reassigning the package variables:
+	// reassigning races with async credits-refresh goroutines that call methods
+	// on the old maps (R1).
+	clearSyncMap(&antigravityCreditsFailureByAuth)
+	clearSyncMap(&antigravityShortCooldownByAuth)
+	clearSyncMap(&antigravityCreditsBalanceByAuth)
+	clearSyncMap(&antigravityCreditsHintRefreshByID)
+}
+
+func clearSyncMap(m *sync.Map) {
+	m.Range(func(k, _ any) bool {
+		m.Delete(k)
+		return true
+	})
 }
 
 type closeSignalReadCloser struct {
