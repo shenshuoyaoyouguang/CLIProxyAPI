@@ -114,7 +114,53 @@ func LiftDeepSeekReasoningText(msg gjson.Result) (string, bool) {
 //  6. History with only empty-string reasoning_content re-opens the gate when
 //     tool calls follow (issue #5): the empty field marks a prior thinking turn
 //     whose chain-of-thought must be preserved for subsequent tool calls.
+//
+// The gate decision is produced by scanDeepSeekPassback, which also collects the
+// per-message lift results that Ensure's update pass reuses, so thinking_blocks /
+// content arrays are parsed once per request instead of once per message twice
+// (review P4).
 func DeepSeekThinkingActive(body []byte, messages gjson.Result) bool {
+	return scanDeepSeekPassback(body, messages).active
+}
+
+// deepSeekPassbackScan carries the single history scan shared by the L4 gate
+// (DeepSeekThinkingActive) and the update pass (Ensure). Both used to call
+// LiftDeepSeekReasoningText per assistant message — the gate once and the update
+// pass again — re-parsing thinking_blocks/content arrays twice per request on
+// tool-heavy histories (review P4). Collecting the lifts once lets both
+// consumers share a single scan.
+type deepSeekPassbackScan struct {
+	// active mirrors the DeepSeekThinkingActive gate decision.
+	active bool
+	// lifted maps an assistant-message index in the messages array to its lifted
+	// reasoning text. Absence means the message is not liftable.
+	lifted map[int]string
+}
+
+// scanDeepSeekPassback evaluates the L4 gate and collects the lifted reasoning
+// text for every assistant message in a single pass over the history. Ensure
+// reuses the lifted map in its update loop instead of lifting a second time.
+func scanDeepSeekPassback(body []byte, messages gjson.Result) deepSeekPassbackScan {
+	scan := deepSeekPassbackScan{lifted: make(map[int]string)}
+	if messages.IsArray() {
+		for i, msg := range messages.Array() {
+			if msg.Get("role").String() != "assistant" {
+				continue
+			}
+			if lifted, ok := LiftDeepSeekReasoningText(msg); ok {
+				scan.lifted[i] = lifted
+			}
+		}
+	}
+	scan.active = deepSeekThinkingActive(body, messages, scan.lifted)
+	return scan
+}
+
+// deepSeekThinkingActive implements the gate decision. The lifted map carries
+// the precomputed per-message lift results, so the default history path decides
+// on lifts that were already computed by the single scan instead of re-parsing
+// thinking_blocks/content arrays.
+func deepSeekThinkingActive(body []byte, messages gjson.Result, lifted map[int]string) bool {
 	tt := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
 	if tt == "disabled" {
 		return false
@@ -136,7 +182,7 @@ func DeepSeekThinkingActive(body []byte, messages gjson.Result) bool {
 	if !messages.IsArray() {
 		return false
 	}
-	for _, msg := range messages.Array() {
+	for i, msg := range messages.Array() {
 		if msg.Get("role").String() != "assistant" {
 			continue
 		}
@@ -145,7 +191,7 @@ func DeepSeekThinkingActive(body []byte, messages gjson.Result) bool {
 				return true
 			}
 		}
-		if _, ok := LiftDeepSeekReasoningText(msg); ok {
+		if _, ok := lifted[i]; ok {
 			return true
 		}
 	}

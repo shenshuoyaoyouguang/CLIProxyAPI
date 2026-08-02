@@ -82,8 +82,11 @@ func (deepSeekMultiTurnPassback) Ensure(body []byte, model string) []byte {
 		return body
 	}
 
-	// Hard-off / soft-active gate before mutating history.
-	if !DeepSeekThinkingActive(body, messages) {
+	// Single scan: the gate decision and the per-message lift results are
+	// computed together. The update loop below reuses the lifts instead of
+	// re-parsing thinking_blocks/content arrays a second time (review P4).
+	scan := scanDeepSeekPassback(body, messages)
+	if !scan.active {
 		return body
 	}
 
@@ -101,8 +104,9 @@ func (deepSeekMultiTurnPassback) Ensure(body []byte, model string) []byte {
 			continue
 		}
 		// Lift real CoT from translated shapes (thinking_blocks / content
-		// thinking) into missing or empty reasoning_content.
-		if lifted, ok := LiftDeepSeekReasoningText(msg); ok {
+		// thinking) into missing or empty reasoning_content. The lift result was
+		// already computed by scanDeepSeekPassback, so no second parse happens.
+		if lifted, ok := scan.lifted[i]; ok {
 			updates[i] = lifted
 			continue
 		}

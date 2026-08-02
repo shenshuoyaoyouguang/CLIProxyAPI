@@ -136,19 +136,51 @@ func applyCompatibleKimi(body []byte, config thinking.ThinkingConfig) ([]byte, e
 }
 
 func applyEnabledThinking(body []byte, effort string) ([]byte, error) {
-	result, errDeleteLegacyEffort := sjson.DeleteBytes(body, "reasoning_effort")
-	if errDeleteLegacyEffort != nil {
-		return body, fmt.Errorf("kimi thinking: failed to clear reasoning_effort: %w", errDeleteLegacyEffort)
+	result, err := sjson.DeleteBytes(body, "reasoning_effort")
+	if err != nil {
+		return body, fmt.Errorf("kimi thinking: failed to clear reasoning_effort: %w", err)
 	}
-	result, errSetType := sjson.SetBytes(result, "thinking.type", "enabled")
-	if errSetType != nil {
-		return body, fmt.Errorf("kimi thinking: failed to set thinking.type: %w", errSetType)
+
+	thRaw, writable := thinkingRaw(result)
+	if !writable {
+		// Array-valued thinking cannot be written via sjson; reproduce the
+		// original per-path error so callers observe identical behavior.
+		return body, fmt.Errorf("kimi thinking: failed to set thinking.type: cannot set array element for non-numeric key 'type'")
 	}
-	result, errSetEffort := sjson.SetBytes(result, "thinking.effort", effort)
-	if errSetEffort != nil {
-		return body, fmt.Errorf("kimi thinking: failed to set thinking.effort: %w", errSetEffort)
+
+	// Batch thinking.type + thinking.effort into a single full-body re-insert
+	// instead of two independent re-serializations of the whole payload.
+	thRaw, err = sjson.SetBytes(thRaw, "type", "enabled")
+	if err != nil {
+		return body, fmt.Errorf("kimi thinking: failed to set thinking.type: %w", err)
 	}
-	return result, nil
+	thRaw, err = sjson.SetBytes(thRaw, "effort", effort)
+	if err != nil {
+		return body, fmt.Errorf("kimi thinking: failed to set thinking.effort: %w", err)
+	}
+	return setThinkingRaw(result, thRaw), nil
+}
+
+// thinkingRaw returns the raw JSON of the thinking object, or an empty object
+// when thinking is absent, null, or a scalar (sjson promotes those to an object
+// when a child key is set). writable is false only for array-valued thinking,
+// which sjson rejects; the caller must then leave thinking untouched.
+func thinkingRaw(body []byte) (raw []byte, writable bool) {
+	th := gjson.GetBytes(body, "thinking")
+	switch {
+	case th.IsObject():
+		return []byte(th.Raw), true
+	case th.IsArray():
+		return nil, false
+	default:
+		return []byte(`{}`), true
+	}
+}
+
+// setThinkingRaw replaces (or creates) the thinking object in a single pass.
+func setThinkingRaw(body, thRaw []byte) []byte {
+	out, _ := sjson.SetRawBytes(body, "thinking", thRaw)
+	return out
 }
 
 func applyDisabledThinking(body []byte) ([]byte, error) {

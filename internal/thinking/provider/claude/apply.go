@@ -86,24 +86,19 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 
 	switch config.Mode {
 	case thinking.ModeNone:
-		result, _ := sjson.SetBytes(body, "thinking.type", "disabled")
-		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-		// Summary display only applies to an active thinking block.
-		result, _ = sjson.DeleteBytes(result, "thinking.display")
-		result, _ = sjson.DeleteBytes(result, "output_config.effort")
-		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-			result, _ = sjson.DeleteBytes(result, "output_config")
-		}
-		return result, nil
+		return applyClaudeDisabled(body, true), nil
 
 	case thinking.ModeLevel:
 		// Adaptive thinking effort is only valid when the model advertises discrete levels.
 		// (Claude 4.6 uses output_config.effort.)
 		if supportsAdaptive && config.Level != "" {
-			result, _ := sjson.SetBytes(body, "thinking.type", "adaptive")
-			result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-			result, _ = sjson.SetBytes(result, "output_config.effort", string(config.Level))
-			return result, nil
+			thRaw, writable := thinkingRaw(body)
+			if writable {
+				thRaw, _ = sjson.SetBytes(thRaw, "type", "adaptive")
+				thRaw, _ = sjson.DeleteBytes(thRaw, "budget_tokens")
+				body = setThinkingRaw(body, thRaw)
+			}
+			return setOutputConfigEffort(body, string(config.Level)), nil
 		}
 
 		// Fallback for non-adaptive Claude models: convert level to budget_tokens.
@@ -120,70 +115,42 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		// Budget is expected to be pre-validated by ValidateConfig (clamped, ZeroAllowed enforced).
 		// Decide enabled/disabled based on budget value.
 		if config.Budget == 0 {
-			result, _ := sjson.SetBytes(body, "thinking.type", "disabled")
-			result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-			result, _ = sjson.DeleteBytes(result, "output_config.effort")
-			if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-				result, _ = sjson.DeleteBytes(result, "output_config")
-			}
-			return result, nil
+			return applyClaudeDisabled(body, false), nil
 		}
-
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-		result, _ = sjson.SetBytes(result, "thinking.budget_tokens", config.Budget)
-		result, _ = sjson.DeleteBytes(result, "output_config.effort")
-		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-			result, _ = sjson.DeleteBytes(result, "output_config")
-		}
-
-		// Ensure max_tokens > thinking.budget_tokens (Anthropic API constraint).
-		result = a.normalizeClaudeBudget(result, config.Budget, modelInfo)
-		return result, nil
+		return a.applyClaudeBudget(body, config.Budget, modelInfo), nil
 
 	case thinking.ModeAuto:
 		// For Claude 4.6 models, auto maps to adaptive thinking with upstream defaults.
 		if supportsAdaptive {
-			result, _ := sjson.SetBytes(body, "thinking.type", "adaptive")
-			result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-			// Explicit effort is optional for adaptive thinking; omit it to allow upstream default.
-			result, _ = sjson.DeleteBytes(result, "output_config.effort")
-			if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-				result, _ = sjson.DeleteBytes(result, "output_config")
+			thRaw, writable := thinkingRaw(body)
+			if writable {
+				thRaw, _ = sjson.SetBytes(thRaw, "type", "adaptive")
+				thRaw, _ = sjson.DeleteBytes(thRaw, "budget_tokens")
+				body = setThinkingRaw(body, thRaw)
 			}
-			return result, nil
+			return deleteOutputConfigEffort(body), nil
 		}
 
 		// Legacy fallback: enable thinking without specifying budget_tokens.
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-		result, _ = sjson.DeleteBytes(result, "output_config.effort")
-		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-			result, _ = sjson.DeleteBytes(result, "output_config")
+		thRaw, writable := thinkingRaw(body)
+		if writable {
+			thRaw, _ = sjson.SetBytes(thRaw, "type", "enabled")
+			thRaw, _ = sjson.DeleteBytes(thRaw, "budget_tokens")
+			body = setThinkingRaw(body, thRaw)
 		}
-		return result, nil
+		return deleteOutputConfigEffort(body), nil
 
 	default:
 		return body, nil
 	}
 }
 
-// normalizeClaudeBudget applies Claude-specific constraints to ensure max_tokens > budget_tokens.
-// Anthropic API requires this constraint; violating it returns a 400 error.
-func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo *registry.ModelInfo) []byte {
-	if budgetTokens <= 0 {
-		return body
-	}
-
-	// Ensure the request satisfies Claude constraints:
-	//  1) Determine effective max_tokens (request overrides model default)
-	//  2) If budget_tokens >= max_tokens, reduce budget_tokens to max_tokens-1
-	//  3) If the adjusted budget falls below the model minimum, leave the request unchanged
-	//  4) If max_tokens came from model default, write it back into the request
-
+// applyClaudeBudget enables manual thinking with the given budget, enforcing the
+// Anthropic constraint that max_tokens must exceed budget_tokens. The thinking
+// mutations and any budget adjustment are batched into a single re-insert; only
+// the optional max_tokens write-back triggers a second full-body pass.
+func (a *Applier) applyClaudeBudget(body []byte, budgetTokens int, modelInfo *registry.ModelInfo) []byte {
 	effectiveMax, setDefaultMax := a.effectiveMaxTokens(body, modelInfo)
-	if setDefaultMax && effectiveMax > 0 {
-		body, _ = sjson.SetBytes(body, "max_tokens", effectiveMax)
-	}
 
 	// Compute the budget we would apply after enforcing budget_tokens < max_tokens.
 	adjustedBudget := budgetTokens
@@ -203,19 +170,30 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 		// Disable thinking instead so the request stays valid, and leave a trace
 		// because this is a silent capability downgrade.
 		log.Warnf("claude thinking: budget %d cannot satisfy both max_tokens=%d and model minimum=%d; disabling thinking for this request", budgetTokens, effectiveMax, minBudget)
-		body, _ = sjson.SetBytes(body, "thinking.type", "disabled")
-		body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
-		body, _ = sjson.DeleteBytes(body, "output_config.effort")
-		if oc := gjson.GetBytes(body, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-			body, _ = sjson.DeleteBytes(body, "output_config")
+		body = applyClaudeDisabled(body, false)
+		if setDefaultMax && effectiveMax > 0 {
+			body, _ = sjson.SetBytes(body, "max_tokens", effectiveMax)
 		}
 		return body
 	}
 
-	if adjustedBudget != budgetTokens {
-		body, _ = sjson.SetBytes(body, "thinking.budget_tokens", adjustedBudget)
+	// Batch thinking.type + budget_tokens into a single re-insert.
+	thRaw, writable := thinkingRaw(body)
+	if writable {
+		thRaw, _ = sjson.SetBytes(thRaw, "type", "enabled")
+		thRaw, _ = sjson.SetBytes(thRaw, "budget_tokens", adjustedBudget)
+		body = setThinkingRaw(body, thRaw)
 	}
+	body = deleteOutputConfigEffort(body)
 
+	// If max_tokens came from the model default, write it back so the request
+	// carries the value the budget was clamped against. The legacy
+	// normalizeClaudeBudget early-returned for budgetTokens <= 0 before this
+	// write-back, so keep that boundary (the thinking mutations above still
+	// apply, mirroring the original Apply-then-normalize order).
+	if setDefaultMax && effectiveMax > 0 && budgetTokens > 0 {
+		body, _ = sjson.SetBytes(body, "max_tokens", effectiveMax)
+	}
 	return body
 }
 
@@ -243,40 +221,110 @@ func applyCompatibleClaude(body []byte, config thinking.ThinkingConfig) ([]byte,
 
 	switch config.Mode {
 	case thinking.ModeNone:
-		result, _ := sjson.SetBytes(body, "thinking.type", "disabled")
-		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-		// Summary display only applies to an active thinking block.
-		result, _ = sjson.DeleteBytes(result, "thinking.display")
-		result, _ = sjson.DeleteBytes(result, "output_config.effort")
-		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-			result, _ = sjson.DeleteBytes(result, "output_config")
-		}
-		return result, nil
+		return applyClaudeDisabled(body, true), nil
 	case thinking.ModeAuto:
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-		result, _ = sjson.DeleteBytes(result, "output_config.effort")
-		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-			result, _ = sjson.DeleteBytes(result, "output_config")
+		thRaw, writable := thinkingRaw(body)
+		if writable {
+			thRaw, _ = sjson.SetBytes(thRaw, "type", "enabled")
+			thRaw, _ = sjson.DeleteBytes(thRaw, "budget_tokens")
+			body = setThinkingRaw(body, thRaw)
 		}
-		return result, nil
+		return deleteOutputConfigEffort(body), nil
 	case thinking.ModeLevel:
 		// For user-defined models, interpret ModeLevel as Claude adaptive thinking effort.
 		// Upstream is responsible for validating whether the target model supports it.
 		if config.Level == "" {
 			return body, nil
 		}
-		result, _ := sjson.SetBytes(body, "thinking.type", "adaptive")
-		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-		result, _ = sjson.SetBytes(result, "output_config.effort", string(config.Level))
-		return result, nil
-	default:
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-		result, _ = sjson.SetBytes(result, "thinking.budget_tokens", config.Budget)
-		result, _ = sjson.DeleteBytes(result, "output_config.effort")
-		if oc := gjson.GetBytes(result, "output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
-			result, _ = sjson.DeleteBytes(result, "output_config")
+		thRaw, writable := thinkingRaw(body)
+		if writable {
+			thRaw, _ = sjson.SetBytes(thRaw, "type", "adaptive")
+			thRaw, _ = sjson.DeleteBytes(thRaw, "budget_tokens")
+			body = setThinkingRaw(body, thRaw)
 		}
-		return result, nil
+		return setOutputConfigEffort(body, string(config.Level)), nil
+	default:
+		thRaw, writable := thinkingRaw(body)
+		if writable {
+			thRaw, _ = sjson.SetBytes(thRaw, "type", "enabled")
+			thRaw, _ = sjson.SetBytes(thRaw, "budget_tokens", config.Budget)
+			body = setThinkingRaw(body, thRaw)
+		}
+		return deleteOutputConfigEffort(body), nil
 	}
+}
+
+// thinkingRaw returns the raw JSON of the thinking object, or an empty object
+// when thinking is absent, null, or a scalar (sjson promotes those to an object
+// when a child key is set). writable is false only for array-valued thinking,
+// which sjson rejects; the caller must then leave thinking untouched.
+func thinkingRaw(body []byte) (raw []byte, writable bool) {
+	th := gjson.GetBytes(body, "thinking")
+	switch {
+	case th.IsObject():
+		return []byte(th.Raw), true
+	case th.IsArray():
+		return nil, false
+	default:
+		return []byte(`{}`), true
+	}
+}
+
+// setThinkingRaw replaces (or creates) the thinking object in a single pass.
+func setThinkingRaw(body, thRaw []byte) []byte {
+	out, _ := sjson.SetRawBytes(body, "thinking", thRaw)
+	return out
+}
+
+// deleteOutputConfigEffort removes output_config.effort and drops output_config
+// entirely when it would end up an empty object. Non-object output_config
+// (absent, array, null, scalar) is left untouched, matching sjson's no-op
+// behaviour on those value shapes.
+func deleteOutputConfigEffort(body []byte) []byte {
+	oc := gjson.GetBytes(body, "output_config")
+	if !oc.IsObject() {
+		return body
+	}
+	ocRaw, _ := sjson.DeleteBytes([]byte(oc.Raw), "effort")
+	if parsed := gjson.ParseBytes(ocRaw); parsed.IsObject() && len(parsed.Map()) == 0 {
+		out, _ := sjson.DeleteBytes(body, "output_config")
+		return out
+	}
+	out, _ := sjson.SetRawBytes(body, "output_config", ocRaw)
+	return out
+}
+
+// setOutputConfigEffort writes output_config.effort, creating output_config if
+// absent and promoting null/scalar values to an object (matching sjson).
+// Array-valued output_config is left untouched because sjson rejects writes
+// into arrays.
+func setOutputConfigEffort(body []byte, effort string) []byte {
+	oc := gjson.GetBytes(body, "output_config")
+	if oc.IsArray() {
+		return body
+	}
+	ocRaw := []byte(`{}`)
+	if oc.IsObject() {
+		ocRaw = []byte(oc.Raw)
+	}
+	ocRaw, _ = sjson.SetBytes(ocRaw, "effort", effort)
+	out, _ := sjson.SetRawBytes(body, "output_config", ocRaw)
+	return out
+}
+
+// applyClaudeDisabled disables thinking, removing the budget and adaptive-effort
+// fields, and drops output_config when it would end up empty. dropDisplay also
+// removes thinking.display, which only the ModeNone paths do; a zero-budget
+// ModeBudget request keeps display so a summary remains visible.
+func applyClaudeDisabled(body []byte, dropDisplay bool) []byte {
+	thRaw, writable := thinkingRaw(body)
+	if writable {
+		thRaw, _ = sjson.SetBytes(thRaw, "type", "disabled")
+		thRaw, _ = sjson.DeleteBytes(thRaw, "budget_tokens")
+		if dropDisplay {
+			thRaw, _ = sjson.DeleteBytes(thRaw, "display")
+		}
+		body = setThinkingRaw(body, thRaw)
+	}
+	return deleteOutputConfigEffort(body)
 }

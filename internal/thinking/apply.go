@@ -453,11 +453,11 @@ func shouldMapConfiguredHighIntent(fromFormat, toFormat string, modelInfo *regis
 	if fromFormat != toFormat {
 		return true
 	}
-	if modelInfo == nil {
-		return false
-	}
-	modelType := strings.ToLower(strings.TrimSpace(modelInfo.Type))
-	return modelType != "" && !isSameProviderFamily(toFormat, modelType)
+	// A model whose family differs from the wire format (e.g. a non-Claude model
+	// served over the Claude wire) maps high intent to the closest supported level.
+	// providerFamily falls back to the wire format when the model type is unknown,
+	// in which case the families match and no mapping is needed.
+	return providerFamily(modelInfo, toFormat) != normalizeProviderFamily(toFormat)
 }
 
 func mapConfiguredHighIntent(level ThinkingLevel, modelInfo *registry.ModelInfo) ThinkingLevel {

@@ -65,14 +65,13 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	toCapability := detectModelCapability(modelInfo)
 	toHasLevelSupport := toCapability == CapabilityLevelOnly || toCapability == CapabilityHybrid
 	modelFamilyMismatch := false
-	if modelInfo != nil {
-		modelType := strings.ToLower(strings.TrimSpace(modelInfo.Type))
-		if modelType != "" {
-			if (fromFormat != "" && !isSameProviderFamily(fromFormat, modelType)) ||
-				(toFormat != "" && !isSameProviderFamily(toFormat, modelType)) {
-				modelFamilyMismatch = true
-			}
-		}
+	if modelInfo != nil && strings.ToLower(strings.TrimSpace(modelInfo.Type)) != "" {
+		// providerFamily resolves the model family from the registered Type (the
+		// wire format is only a fallback for unknown types); any wire format that
+		// maps to a different family means the model is served on a foreign wire.
+		modelFamily := providerFamily(modelInfo, toFormat)
+		modelFamilyMismatch = (fromFormat != "" && modelFamily != normalizeProviderFamily(fromFormat)) ||
+			(toFormat != "" && modelFamily != normalizeProviderFamily(toFormat))
 	}
 	allowClampUnsupported := toHasLevelSupport && (!isSameProviderFamily(fromFormat, toFormat) || modelFamilyMismatch)
 
@@ -373,32 +372,6 @@ func isBudgetCapableProvider(provider string) bool {
 	default:
 		return false
 	}
-}
-
-func isGeminiFamily(provider string) bool {
-	switch provider {
-	case "gemini", "antigravity":
-		return true
-	default:
-		return false
-	}
-}
-
-func isOpenAIFamily(provider string) bool {
-	switch provider {
-	case "openai", "openai-response", "codex", "deepseek", "nvidia":
-		return true
-	default:
-		return false
-	}
-}
-
-func isSameProviderFamily(from, to string) bool {
-	if from == to {
-		return true
-	}
-	return (isGeminiFamily(from) && isGeminiFamily(to)) ||
-		(isOpenAIFamily(from) && isOpenAIFamily(to))
 }
 
 func abs(x int) int {
