@@ -551,6 +551,41 @@ func (m *Manager) persistCooldownStatesToLocked(ctx context.Context, store Coold
 	return ctx.Err() == nil
 }
 
+// persistAuthCooldownState persists cooldown state for a single auth instead of
+// the full snapshot, keeping request-completion persistence bounded to one auth.
+// It acquires configCooldownMu so writes serialize with store transitions, and
+// falls back to the full snapshot for stores without per-auth support.
+func (m *Manager) persistAuthCooldownState(ctx context.Context, authID string) {
+	if authID == "" {
+		return
+	}
+	m.configCooldownMu.Lock()
+	defer m.configCooldownMu.Unlock()
+
+	m.mu.RLock()
+	store := m.cooldownStore
+	var authSnapshot *Auth
+	var records []CooldownStateRecord
+	if store != nil {
+		if auth := m.auths[authID]; auth != nil {
+			authSnapshot = auth.Clone()
+			records = m.cooldownStateRecordsForAuthLocked(authSnapshot, time.Now())
+		}
+	}
+	m.mu.RUnlock()
+	if store == nil || authSnapshot == nil {
+		return
+	}
+
+	if perAuth, ok := store.(CooldownStateStorePerAuth); ok && perAuth != nil {
+		if errSave := perAuth.SaveAuth(ctx, authSnapshot, records); errSave != nil {
+			logEntryWithRequestID(ctx).Warnf("failed to persist cooldown state: %v", errSave)
+		}
+		return
+	}
+	m.persistCooldownStatesLocked(ctx)
+}
+
 func (m *Manager) cooldownStateRecordsSnapshot() []CooldownStateRecord {
 	now := time.Now()
 	records := make([]CooldownStateRecord, 0)
@@ -863,7 +898,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		m.scheduler.upsertAuth(authSnapshot)
 	}
 	if authSnapshot != nil && cooldownStateChanged {
-		m.persistCooldownStates(context.Background())
+		m.persistAuthCooldownState(context.Background(), result.AuthID)
 	}
 
 	if clearModelQuota && result.Model != "" {

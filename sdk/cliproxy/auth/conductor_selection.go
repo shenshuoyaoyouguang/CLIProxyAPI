@@ -937,6 +937,8 @@ func (m *Manager) useSchedulerFastPath() bool {
 	if m == nil || m.scheduler == nil {
 		return false
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return isBuiltInSelector(m.selector)
 }
 

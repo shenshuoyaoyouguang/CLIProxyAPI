@@ -25,9 +25,11 @@ import (
 
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
 type RoundRobinSelector struct {
-	mu      sync.Mutex
-	cursors map[string]int
-	maxKeys int
+	mu       sync.Mutex
+	cursors  map[string]int
+	lastUsed map[string]int64 // recency sequence per cursor key, for LRU eviction
+	seq      int64            // monotonically increasing last-used sequence
+	maxKeys  int
 }
 
 // WeightedRoundRobinSelector provides smooth weighted round-robin selection.
@@ -318,6 +320,7 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 	s.mu.Lock()
 	if s.cursors == nil {
 		s.cursors = make(map[string]int)
+		s.lastUsed = make(map[string]int64)
 	}
 	limit := s.maxKeys
 	if limit <= 0 {
@@ -330,16 +333,39 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 		index = 0
 	}
 	s.cursors[key] = index + 1
+	s.seq++
+	s.lastUsed[key] = s.seq
 	s.mu.Unlock()
 	return available[index%len(available)], nil
 }
 
 // ensureCursorKey ensures the cursor map has capacity for the given key.
+// When the map is at capacity and the key is new, only the least-recently-used
+// key is evicted. Rebuilding the whole map instead would reset every cursor to
+// zero, so the next requests for all keys would land on the first credential.
 // Must be called with s.mu held.
 func (s *RoundRobinSelector) ensureCursorKey(key string, limit int) {
-	if _, ok := s.cursors[key]; !ok && len(s.cursors) >= limit {
-		s.cursors = make(map[string]int)
+	if _, ok := s.cursors[key]; ok {
+		return
 	}
+	if len(s.cursors) < limit {
+		return
+	}
+	var lruKey string
+	var lruSeq int64
+	first := true
+	for candidate, usedAt := range s.lastUsed {
+		if first || usedAt < lruSeq {
+			lruKey = candidate
+			lruSeq = usedAt
+			first = false
+		}
+	}
+	if lruKey == "" {
+		return
+	}
+	delete(s.cursors, lruKey)
+	delete(s.lastUsed, lruKey)
 }
 
 func positiveWeightAuths(auths []*Auth) []*Auth {

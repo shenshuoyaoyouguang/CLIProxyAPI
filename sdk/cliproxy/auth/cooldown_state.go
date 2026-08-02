@@ -35,6 +35,12 @@ type CooldownStateStore interface {
 	Save(context.Context, []CooldownStateRecord) error
 }
 
+// CooldownStateStorePerAuth is implemented by stores that can persist a single
+// auth's cooldown records without rewriting the full snapshot.
+type CooldownStateStorePerAuth interface {
+	SaveAuth(ctx context.Context, auth *Auth, records []CooldownStateRecord) error
+}
+
 // CooldownStateStoreProvider exposes a backend-specific cooldown state store.
 type CooldownStateStoreProvider interface {
 	CooldownStateStore() CooldownStateStore
@@ -175,6 +181,48 @@ func (s *FileCooldownStateStore) Save(ctx context.Context, records []CooldownSta
 		desired[filepath.Clean(path)] = struct{}{}
 	}
 	return s.removeStaleStateFiles(ctx, desired)
+}
+
+// SaveAuth persists cooldown records for a single auth without rewriting every
+// registered auth's state. An empty record set removes the auth's cooldown file.
+// The on-disk format matches Save.
+func (s *FileCooldownStateStore) SaveAuth(ctx context.Context, auth *Auth, records []CooldownStateRecord) error {
+	if s == nil || s.dir == "" {
+		return nil
+	}
+	if auth == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if errCtx := ctx.Err(); errCtx != nil {
+		return errCtx
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	authFile := cooldownAuthFile(auth)
+	normalized := make([]CooldownStateRecord, 0, len(records))
+	for _, record := range records {
+		record.AuthID = auth.ID
+		record.AuthFile = authFile
+		normalized = append(normalized, record)
+	}
+
+	path, errPath := s.statePath(CooldownStateRecord{AuthID: auth.ID, AuthFile: authFile})
+	if errPath != nil {
+		return errPath
+	}
+
+	if len(normalized) == 0 {
+		if errRemove := os.Remove(path); errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
+			return fmt.Errorf("remove cooldown state %s: %w", path, errRemove)
+		}
+		return nil
+	}
+	return writeCooldownStateGroup(ctx, path, normalized)
 }
 
 func writeCooldownStateGroup(ctx context.Context, path string, records []CooldownStateRecord) error {
