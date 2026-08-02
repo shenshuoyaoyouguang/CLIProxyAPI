@@ -217,27 +217,43 @@ type queueItem struct {
 	record Record
 }
 
-// Manager maintains a queue of usage records and delivers them to registered plugins.
+// Manager maintains a bounded queue of usage records and delivers them to
+// registered plugins.
 type Manager struct {
 	once     sync.Once
 	stopOnce sync.Once
 	cancel   context.CancelFunc
 
-	mu     sync.Mutex
-	cond   *sync.Cond
-	queue  []queueItem
-	closed bool
+	done chan struct{} // closed by the dispatcher goroutine when it exits
+
+	mu      sync.Mutex
+	queue   chan queueItem
+	closed  bool
+	started bool // true once the dispatcher goroutine is launched; guarded by mu
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
 	named     map[string]int
 }
 
-// NewManager constructs a manager with a buffered queue.
+// defaultQueueCapacity bounds the usage queue when NewManager is called with a
+// non-positive buffer. It caps memory growth under sustained load so a slow or
+// blocking plugin cannot create an unbounded backlog.
+const defaultQueueCapacity = 512
+
+// NewManager constructs a manager with a bounded queue. A buffer greater than
+// zero sets the queue capacity; a non-positive buffer falls back to
+// defaultQueueCapacity. When the queue is full, Publish drops the record and
+// logs a warning instead of growing the queue without bound.
 func NewManager(buffer int) *Manager {
-	m := &Manager{}
-	m.cond = sync.NewCond(&m.mu)
-	return m
+	capacity := buffer
+	if capacity <= 0 {
+		capacity = defaultQueueCapacity
+	}
+	return &Manager{
+		queue: make(chan queueItem, capacity),
+		done:  make(chan struct{}),
+	}
 }
 
 // Start launches the background dispatcher. Calling Start multiple times is safe.
@@ -251,11 +267,15 @@ func (m *Manager) Start(ctx context.Context) {
 		}
 		var workerCtx context.Context
 		workerCtx, m.cancel = context.WithCancel(ctx)
+		m.mu.Lock()
+		m.started = true
+		m.mu.Unlock()
 		go m.run(workerCtx)
 	})
 }
 
-// Stop stops the dispatcher and drains the queue.
+// Stop stops the dispatcher, drains the queue, and blocks until the dispatcher
+// goroutine has exited, so no records are processed after Stop returns.
 func (m *Manager) Stop() {
 	if m == nil {
 		return
@@ -266,8 +286,12 @@ func (m *Manager) Stop() {
 		}
 		m.mu.Lock()
 		m.closed = true
+		close(m.queue)
+		started := m.started
 		m.mu.Unlock()
-		m.cond.Broadcast()
+		if started {
+			<-m.done
+		}
 	})
 }
 
@@ -306,36 +330,37 @@ func (m *Manager) RegisterNamed(name string, plugin Plugin) {
 }
 
 // Publish enqueues a usage record for processing. If no plugin is registered
-// the record will be discarded downstream.
+// the record will be discarded downstream. Publish never blocks: if the queue
+// is full the record is dropped and a warning is logged rather than buffering
+// without bound. Records published after Stop are dropped.
 func (m *Manager) Publish(ctx context.Context, record Record) {
 	if m == nil {
 		return
 	}
 	// ensure worker is running even if Start was not called explicitly
 	m.Start(context.Background())
+	item := queueItem{ctx: ctx, record: record}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return
 	}
-	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
+	// Drop policy: a full queue means the dispatcher is not keeping up (e.g. a
+	// plugin doing blocking I/O). Drop the newest record and warn instead of
+	// growing the queue without bound.
+	select {
+	case m.queue <- item:
+	default:
+		log.Warnf("usage: queue is full (capacity %d); dropping usage record", cap(m.queue))
+	}
 	m.mu.Unlock()
-	m.cond.Signal()
 }
 
 func (m *Manager) run(ctx context.Context) {
-	for {
-		m.mu.Lock()
-		for !m.closed && len(m.queue) == 0 {
-			m.cond.Wait()
-		}
-		if len(m.queue) == 0 && m.closed {
-			m.mu.Unlock()
-			return
-		}
-		item := m.queue[0]
-		m.queue = m.queue[1:]
-		m.mu.Unlock()
+	defer close(m.done)
+	// Range delivers buffered items even after the queue channel is closed by
+	// Stop, so the queue is drained before the dispatcher exits.
+	for item := range m.queue {
 		m.dispatch(item)
 	}
 }

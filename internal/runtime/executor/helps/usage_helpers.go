@@ -196,6 +196,12 @@ func (r *UsageReporter) PublishFailure(ctx context.Context, errs ...error) {
 	r.publishWithOutcome(ctx, usage.Detail{}, true, failFromErrors(errs...))
 }
 
+// PublishFailureDetail publishes a failed record carrying the accumulated detail,
+// so tokens observed before a mid-stream error are still accounted for.
+func (r *UsageReporter) PublishFailureDetail(ctx context.Context, detail usage.Detail, errs ...error) {
+	r.publishWithOutcome(ctx, detail, true, failFromErrors(errs...))
+}
+
 func (r *UsageReporter) TrackFailure(ctx context.Context, errPtr *error) {
 	if r == nil || errPtr == nil {
 		return
@@ -681,16 +687,106 @@ func ParseClaudeUsage(data []byte) usage.Detail {
 	return parseClaudeUsageNode(usageNode)
 }
 
-func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
+// ClaudeStreamUsageAccumulator aggregates usage across a Claude SSE stream so it
+// can be published once the stream completes. In the Anthropic wire format the
+// input-side counts (input, cache-read, cache-creation tokens) arrive nested at
+// message_start.message.usage — never top-level — while each message_delta carries
+// a cumulative output token count at the top-level usage field.
+type ClaudeStreamUsageAccumulator struct {
+	inputTokens         int64
+	outputTokens        int64
+	cacheReadTokens     int64
+	cacheCreationTokens int64
+	observed            bool
+}
+
+// Observe folds usage from one Claude SSE line into the accumulator. It returns
+// true when the line carried a usage-bearing event (message_start or message_delta).
+func (a *ClaudeStreamUsageAccumulator) Observe(line []byte) bool {
+	if a == nil {
+		return false
+	}
 	payload := jsonPayload(line)
 	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return false
+	}
+	switch gjson.GetBytes(payload, "type").String() {
+	case "message_start":
+		usageNode := gjson.GetBytes(payload, "message.usage")
+		if !usageNode.Exists() {
+			return false
+		}
+		a.inputTokens = usageNode.Get("input_tokens").Int()
+		a.cacheReadTokens = usageNode.Get("cache_read_input_tokens").Int()
+		a.cacheCreationTokens = usageNode.Get("cache_creation_input_tokens").Int()
+		a.observed = true
+		return true
+	case "message_delta":
+		outputTokens := gjson.GetBytes(payload, "usage.output_tokens")
+		if !outputTokens.Exists() {
+			return false
+		}
+		// message_delta reports a cumulative output count, so the latest value wins.
+		a.outputTokens = outputTokens.Int()
+		a.observed = true
+		return true
+	}
+	return false
+}
+
+// Detail returns the accumulated usage as a canonical usage.Detail, or ok=false
+// when no usage event was observed anywhere in the stream.
+func (a *ClaudeStreamUsageAccumulator) Detail() (usage.Detail, bool) {
+	if a == nil || !a.observed {
 		return usage.Detail{}, false
 	}
-	usageNode := gjson.GetBytes(payload, "usage")
-	if !usageNode.Exists() {
-		return usage.Detail{}, false
+	total := a.inputTokens + a.outputTokens + a.cacheReadTokens + a.cacheCreationTokens
+	detail := usage.Detail{
+		InputTokens:         a.inputTokens,
+		OutputTokens:        a.outputTokens,
+		CachedTokens:        a.cacheReadTokens,
+		CacheReadTokens:     a.cacheReadTokens,
+		CacheCreationTokens: a.cacheCreationTokens,
 	}
-	return parseClaudeUsageNode(usageNode), true
+	if detail.CachedTokens == 0 {
+		detail.CachedTokens = detail.CacheCreationTokens
+	}
+	detail.TotalTokens = total
+	detail.TokenBreakdown = usage.NewIndependentTokenBreakdown(
+		detail.InputTokens,
+		detail.CacheReadTokens,
+		detail.CacheCreationTokens,
+		detail.OutputTokens,
+		detail.ReasoningTokens,
+		total,
+	)
+	return detail, true
+}
+
+// Publish emits the accumulated usage if any usage event was observed, otherwise
+// ensures a record is still published so the request is counted.
+func (a *ClaudeStreamUsageAccumulator) Publish(ctx context.Context, reporter *UsageReporter) {
+	if a == nil || reporter == nil {
+		return
+	}
+	if detail, ok := a.Detail(); ok {
+		reporter.Publish(ctx, detail)
+	} else {
+		reporter.EnsurePublished(ctx)
+	}
+}
+
+// PublishFailure emits a failed record carrying the accumulated usage, so tokens
+// observed before a mid-stream error are still accounted for.
+func (a *ClaudeStreamUsageAccumulator) PublishFailure(ctx context.Context, reporter *UsageReporter, err error) {
+	if a == nil || reporter == nil {
+		return
+	}
+	if detail, ok := a.Detail(); ok {
+		reporter.PublishFailureDetail(ctx, detail, err)
+	} else {
+		reporter.PublishFailure(ctx, err)
+	}
 }
 
 func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
