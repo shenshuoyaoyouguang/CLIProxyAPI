@@ -340,6 +340,18 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					break
 				}
 			case wsrelay.MessageTypeStreamEnd:
+				// Feed the [DONE] terminal marker through the translator so
+				// Claude-format output ends with message_stop (mirrors the
+				// Gemini executor). Without it clients hang waiting for
+				// a terminal event.
+				lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, opts.OriginalRequest, translatedReq, []byte("[DONE]"), &param, claudeInputTokens)
+				for i := range lines {
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
+					case <-ctx.Done():
+						return false
+					}
+				}
 				return false
 			case wsrelay.MessageTypeHTTPResp:
 				if !metadataLogged && event.Status > 0 {

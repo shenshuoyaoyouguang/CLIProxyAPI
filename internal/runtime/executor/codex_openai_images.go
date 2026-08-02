@@ -151,6 +151,9 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 			continue
 		}
 		eventData := bytes.TrimSpace(line[len(dataTag):])
+		if streamErr, _, ok := codexTerminalFailureErr(eventData); ok {
+			return resp, streamErr
+		}
 		switch gjson.GetBytes(eventData, "type").String() {
 		case "response.output_item.done":
 			collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
@@ -275,6 +278,10 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 				continue
 			}
 			eventData := bytes.TrimSpace(line[len(dataTag):])
+			if streamErr, _, ok := codexTerminalFailureErr(eventData); ok {
+				sendError(streamErr)
+				return
+			}
 			switch gjson.GetBytes(eventData, "type").String() {
 			case "response.output_item.done":
 				collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)

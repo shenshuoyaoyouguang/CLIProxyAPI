@@ -112,7 +112,11 @@ func TestCountXAIInputTokensExcludesRequestStructure(t *testing.T) {
 		},
 		"input audio": {
 			body:     []byte(`{"input":[{"type":"message","content":[{"type":"input_audio","data":"unique audio data"}]}]}`),
-			expected: "unique audio data",
+			expected: "",
+		},
+		"input audio with duration": {
+			body:     []byte(`{"input":[{"type":"message","content":[{"type":"input_audio","data":"AAAA","duration":2.5}]}]}`),
+			expected: strings.Repeat("a", int(2.5*audioTokensPerSecond)),
 		},
 		"function call": {
 			body:     []byte(`{"input":[{"type":"function_call","call_id":"call-1","name":"unique_function","arguments":"{\"value\":\"unique argument\"}"}]}`),
@@ -148,6 +152,47 @@ func TestCountXAIInputTokensExcludesRequestStructure(t *testing.T) {
 				t.Fatalf("countXAIInputTokens() = %d, want %d", count, expected)
 			}
 		})
+	}
+}
+
+// TestXAIExecutorExecuteClassifiesUpstreamErrorEvent verifies a terminal
+// {"type":"error"} event inside a 200 body is surfaced with the upstream
+// status instead of being misclassified as a 408 timeout (H24b).
+func TestXAIExecutorExecuteClassifiesUpstreamErrorEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"error\",\"error\":{\"status\":429,\"code\":\"rate_limit_exceeded\",\"message\":\"quota exceeded\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "xai-auth",
+		Provider: "xai",
+		Attributes: map[string]string{
+			"base_url":  server.URL,
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"access_token": "xai-token",
+		},
+	}
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.3",
+		Payload: []byte(`{"model":"grok-4.3","input":[{"role":"user","content":"hello"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       false,
+	})
+	if err == nil {
+		t.Fatal("Execute() expected error")
+	}
+	se, ok := err.(statusErr)
+	if !ok {
+		t.Fatalf("Execute() error type = %T, want statusErr", err)
+	}
+	if se.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d, want 429", se.StatusCode())
 	}
 }
 

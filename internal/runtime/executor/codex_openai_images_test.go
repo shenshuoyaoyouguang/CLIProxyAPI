@@ -38,6 +38,71 @@ func codexOpenAIImageTestOptions(path string, stream bool) cliproxyexecutor.Opti
 	}
 }
 
+// TestCodexExecutorOpenAIImageClassifiesUpstreamErrorEvent verifies the
+// non-stream image path classifies an upstream {"type":"error"} event instead
+// of falling through to the 504 "stream disconnected" fallback (H24a).
+func TestCodexExecutorOpenAIImageClassifiesUpstreamErrorEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"error\",\"error\":{\"status_code\":429,\"message\":\"rate limited\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	ctx := contextWithGinHeaders(map[string]string{"User-Agent": "downstream-client/9.9"})
+	executor := NewCodexExecutor(&config.Config{})
+	_, errExecute := executor.Execute(ctx, newCodexOpenAIImageTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "codex/gpt-image-1.5",
+		Payload: []byte(`{"model":"codex/gpt-image-1.5","prompt":"A cute baby sea otter","n":1,"size":"1024x1024","stream":false}`),
+	}, codexOpenAIImageTestOptions("/v1/responses", false))
+	if errExecute == nil {
+		t.Fatal("Execute() expected error")
+	}
+	se, ok := errExecute.(statusErr)
+	if !ok {
+		t.Fatalf("Execute() error type = %T, want statusErr", errExecute)
+	}
+	if se.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d, want 429", se.StatusCode())
+	}
+}
+
+// TestCodexExecutorOpenAIImageStreamClassifiesUpstreamErrorEvent verifies the
+// streaming image path surfaces an upstream error event as an error chunk
+// instead of closing silently (H24a).
+func TestCodexExecutorOpenAIImageStreamClassifiesUpstreamErrorEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"error\",\"error\":{\"status_code\":429,\"message\":\"rate limited\"}}\n\n"))
+	}))
+	defer server.Close()
+
+	ctx := contextWithGinHeaders(map[string]string{"User-Agent": "downstream-client/9.9"})
+	executor := NewCodexExecutor(&config.Config{})
+	res, errExecute := executor.ExecuteStream(ctx, newCodexOpenAIImageTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "codex/gpt-image-1.5",
+		Payload: []byte(`{"model":"codex/gpt-image-1.5","prompt":"A cute baby sea otter","n":1,"size":"1024x1024","stream":true}`),
+	}, codexOpenAIImageTestOptions("/v1/responses", true))
+	if errExecute != nil {
+		t.Fatalf("Execute() error = %v", errExecute)
+	}
+	var gotErr error
+	for chunk := range res.Chunks {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected an error chunk")
+	}
+	se, ok := gotErr.(statusErr)
+	if !ok {
+		t.Fatalf("error chunk type = %T, want statusErr", gotErr)
+	}
+	if se.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d, want 429", se.StatusCode())
+	}
+}
+
 func TestCodexExecutorDirectOpenAIImageGenerationUsesImagesEndpoint(t *testing.T) {
 	var gotPath string
 	var gotAuth string

@@ -94,7 +94,15 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		if len(eventData) == 0 {
 			continue
 		}
-		switch gjson.GetBytes(eventData, "type").String() {
+		switch eventType := gjson.GetBytes(eventData, "type").String(); eventType {
+		case "error":
+			// An upstream error carried inside a 200 body must not fall through
+			// to the 408 "stream disconnected" misclassification below.
+			status := int(gjson.GetBytes(eventData, "error.status").Int())
+			if status < 400 || status > 599 {
+				status = http.StatusBadGateway
+			}
+			return resp, xaiStatusErr(status, eventData)
 		case "response.output_item.done":
 			xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 		case "response.completed":
