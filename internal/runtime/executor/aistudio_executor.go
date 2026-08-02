@@ -320,13 +320,19 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					reporter.MarkFirstResponseByte()
 					helps.AppendAPIResponseChunk(ctx, e.cfg, event.Payload)
 					filtered := helps.FilterSSEUsageMetadata(event.Payload)
-					if detail, ok := helps.ParseGeminiStreamUsage(filtered); ok {
+					// Strip the SSE "data: " prefix so the translator receives bare JSON;
+					// otherwise gjson lookups in the gemini->claude translator find nothing.
+					payload := helps.JSONPayload(filtered)
+					if len(payload) == 0 {
+						break
+					}
+					if detail, ok := helps.ParseGeminiStreamUsage(payload); ok {
 						reporter.Publish(ctx, detail)
 					}
-					lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, opts.OriginalRequest, translatedReq, filtered, &param, claudeInputTokens)
+					lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, opts.OriginalRequest, translatedReq, bytes.Clone(payload), &param, claudeInputTokens)
 					for i := range lines {
 						select {
-						case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(lines[i])}:
+						case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
 						case <-ctx.Done():
 							return false
 						}
@@ -348,7 +354,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, opts.OriginalRequest, translatedReq, event.Payload, &param, claudeInputTokens)
 				for i := range lines {
 					select {
-					case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(lines[i])}:
+					case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
 					case <-ctx.Done():
 						return false
 					}
