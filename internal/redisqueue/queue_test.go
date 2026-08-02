@@ -107,6 +107,64 @@ func TestNotifyUsageRefreshBroadcastsOnlyToUsageSubscribers(t *testing.T) {
 	})
 }
 
+func TestEnqueueSlowSubscriberKeepsSubscriptionWhenBufferFull(t *testing.T) {
+	withEnabledQueue(t, func() {
+		// Subscribe with a tiny buffer so it fills quickly.
+		slow, unsubscribeSlow := global.subscribe(1, nil)
+		defer unsubscribeSlow()
+		fast, unsubscribeFast := SubscribeUsage()
+		defer unsubscribeFast()
+		requireUsageSubscriberPayload(t, fast, usageSupportRefreshPayload)
+
+		// Fill the slow subscriber's single-slot buffer. The fill is also
+		// delivered to fast; drain it so the next read asserts the record.
+		if !global.publishToSubscribers([]byte("fill-slow")) {
+			t.Fatalf("publishToSubscribers() = false, want true for an accepting subscriber")
+		}
+		requireUsageSubscriberPayload(t, fast, "fill-slow")
+		assertSubscriberBufferLen(t, slow, 1)
+
+		// A record published while slow is full is dropped for slow but delivered
+		// to fast, so Enqueue does not fall through to the queue.
+		Enqueue([]byte("usage-record"))
+		requireUsageSubscriberPayload(t, fast, "usage-record")
+		if items := PopOldest(1); len(items) != 0 {
+			t.Fatalf("PopOldest() items = %q, want empty when at least one subscriber accepted", items)
+		}
+
+		// The slow subscriber is still subscribed (not deleted) and its buffer is
+		// still full: the record was dropped for it, not delivered.
+		if got := subscriberCount(); got != 2 {
+			t.Fatalf("subscriberCount() = %d, want 2 (slow subscriber must stay subscribed)", got)
+		}
+		assertSubscriberBufferLen(t, slow, 1)
+
+		// Draining the slow subscriber delivers the fill payload, proving its
+		// channel was not closed by the backpressure drop.
+		requireUsageSubscriberPayload(t, slow, "fill-slow")
+
+		// A new record is delivered to the slow subscriber after it drains.
+		Enqueue([]byte("after-drain"))
+		requireUsageSubscriberPayload(t, slow, "after-drain")
+
+		// When no subscriber accepts (slow full again, fast unsubscribed), Enqueue
+		// falls through to the queue instead of discarding the record.
+		if !global.publishToSubscribers([]byte("fill-slow-2")) {
+			t.Fatalf("publishToSubscribers() = false, want true for an accepting subscriber")
+		}
+		unsubscribeFast()
+		assertSubscriberBufferLen(t, slow, 1)
+
+		Enqueue([]byte("queued-record"))
+		if got := subscriberCount(); got != 1 {
+			t.Fatalf("subscriberCount() = %d, want 1 (slow subscriber must stay subscribed)", got)
+		}
+		if items := PopOldest(1); len(items) != 1 || string(items[0]) != "queued-record" {
+			t.Fatalf("PopOldest() items = %q, want queued-record when no subscriber accepted", items)
+		}
+	})
+}
+
 func requireUsageSubscriberPayload(t *testing.T, subscriber <-chan []byte, want string) {
 	t.Helper()
 
@@ -120,6 +178,20 @@ func requireUsageSubscriberPayload(t *testing.T, subscriber <-chan []byte, want 
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timeout waiting for subscriber payload %q", want)
+	}
+}
+
+func subscriberCount() int {
+	global.mu.Lock()
+	defer global.mu.Unlock()
+	return len(global.subscribers)
+}
+
+func assertSubscriberBufferLen(t *testing.T, subscriber <-chan []byte, want int) {
+	t.Helper()
+
+	if got := len(subscriber); got != want {
+		t.Fatalf("subscriber buffer len = %d, want %d", got, want)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
@@ -356,8 +357,16 @@ func (s *Service) startHomeUsageForwarder(ctx context.Context, client *home.Clie
 
 			for i := range items {
 				if errPush := client.LPushUsage(ctx, items[i]); errPush != nil {
-					for j := i; j < len(items); j++ {
-						redisqueue.Enqueue(items[j])
+					// LPushUsage is a Redis LPUSH: a transport error after the write
+					// reached Home is indistinguishable from a failed write, so the
+					// failing record may already have been delivered. Re-enqueueing it
+					// would double-count. Only re-enqueue the tail that was definitively
+					// not delivered; on ambiguous errors leave the popped records alone
+					// and rely on Home-side dedup by request_id.
+					if !isAmbiguousHomeUsagePushError(errPush) {
+						for j := i; j < len(items); j++ {
+							redisqueue.Enqueue(items[j])
+						}
 					}
 					if !sleep(time.Second) {
 						return
@@ -367,6 +376,27 @@ func (s *Service) startHomeUsageForwarder(ctx context.Context, client *home.Clie
 			}
 		}
 	}()
+}
+
+// isAmbiguousHomeUsagePushError reports whether a failed LPushUsage may already have
+// been written to Home. A Redis command error means the server processed the LPUSH
+// and rejected it (definitively not delivered), and a failure to obtain the command
+// client happens before any command is sent; only transport-level errors that surface
+// after the write are ambiguous.
+func isAmbiguousHomeUsagePushError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, home.ErrNotConnected) ||
+		errors.Is(err, home.ErrDispatchFenced) ||
+		errors.Is(err, home.ErrDisabled) {
+		return false
+	}
+	var redisErr redis.Error
+	if errors.As(err, &redisErr) {
+		return false
+	}
+	return true
 }
 
 func applyHomeObservationBarrier(registry *executionregistry.Registry, revision int64) {
