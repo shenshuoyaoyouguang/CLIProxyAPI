@@ -33,15 +33,35 @@ func (w *Watcher) start(ctx context.Context) error {
 	}
 	log.Debugf("watching config file: %s", w.configPath)
 
+	if errWatchAuthDir := w.watchAuthDir(); errWatchAuthDir != nil {
+		return errWatchAuthDir
+	}
+
+	go w.processEvents(ctx)
+
+	w.reloadClients(true, nil, false)
+	return nil
+}
+
+// watchAuthDir registers authDir and every existing subdirectory so nested
+// credential files also hot-reload (fsnotify watches are not recursive).
+func (w *Watcher) watchAuthDir() error {
 	if errAddAuthDir := w.watcher.Add(w.authDir); errAddAuthDir != nil {
 		log.Errorf("failed to watch auth directory %s: %v", w.authDir, errAddAuthDir)
 		return errAddAuthDir
 	}
 	log.Debugf("watching auth directory: %s", w.authDir)
-
-	go w.processEvents(ctx)
-
-	w.reloadClients(true, nil, false)
+	if errWalk := filepath.WalkDir(w.authDir, func(path string, d os.DirEntry, errWalk error) error {
+		if errWalk != nil || !d.IsDir() || path == w.authDir {
+			return nil
+		}
+		if errAdd := w.watcher.Add(path); errAdd != nil {
+			log.Debugf("failed to watch auth subdirectory %s: %v", path, errAdd)
+		}
+		return nil
+	}); errWalk != nil {
+		log.Debugf("failed to walk auth directory %s: %v", w.authDir, errWalk)
+	}
 	return nil
 }
 
@@ -70,9 +90,25 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	normalizedName := w.normalizeAuthPath(event.Name)
 	normalizedConfigPath := w.normalizeAuthPath(w.configPath)
 	normalizedAuthDir := w.normalizeAuthPath(w.authDir)
+	authDirPrefix := normalizedAuthDir
+	if !strings.HasSuffix(authDirPrefix, string(os.PathSeparator)) {
+		authDirPrefix += string(os.PathSeparator)
+	}
 	isConfigEvent := normalizedName == normalizedConfigPath && event.Op&configOps != 0
+
+	// Register newly created subdirectories so nested credential files keep
+	// hot-reloading (fsnotify watches are not recursive) (H24p).
+	if event.Op&fsnotify.Create != 0 && strings.HasPrefix(normalizedName, authDirPrefix) {
+		if info, errStat := os.Stat(event.Name); errStat == nil && info.IsDir() {
+			if errAdd := w.watcher.Add(event.Name); errAdd == nil {
+				log.Debugf("watching new auth subdirectory: %s", event.Name)
+			}
+		}
+	}
+
 	authOps := fsnotify.Create | fsnotify.Write | fsnotify.Remove | fsnotify.Rename
-	isAuthJSON := filepath.Dir(normalizedName) == normalizedAuthDir && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0
+	isAuthJSON := (normalizedName == normalizedAuthDir || strings.HasPrefix(normalizedName, authDirPrefix)) &&
+		strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0
 	if !isConfigEvent && !isAuthJSON {
 		// Ignore unrelated files (e.g., cookie snapshots *.cookie) and other noise.
 		return
