@@ -15,14 +15,21 @@ const (
 	writeTimeout         = 10 * time.Second
 	maxInboundMessageLen = 64 << 20 // 64 MiB
 	heartbeatInterval    = 30 * time.Second
-	// dispatchTimeout bounds how long the session read loop waits for a slow
-	// consumer before failing that request. Silently dropping messages truncated
-	// streams while still reporting success downstream.
+	// dispatchTimeout bounds how long a slow consumer gets to accept a message
+	// before its request is failed. Silently dropping messages truncated streams
+	// while still reporting success downstream. Delivery happens in a
+	// per-request worker goroutine, so this budget never blocks the session
+	// read loop.
 	dispatchTimeout = 30 * time.Second
 	// dispatchPollInterval is how often a blocked delivery retries. Sends are
 	// attempted under the request lock, so a blocking channel send is not an
 	// option: it would race with close and panic.
 	dispatchPollInterval = 5 * time.Millisecond
+	// maxStalledMessages caps how many messages may queue up for a consumer that
+	// cannot keep up before the request is failed outright. It bounds the memory
+	// a stalled request can hold while the delivery worker waits out
+	// dispatchTimeout.
+	maxStalledMessages = 512
 )
 
 var errClosed = errors.New("websocket session closed")
@@ -35,6 +42,13 @@ type pendingRequest struct {
 	// delivered, ctx cancelled, or session closed). The context-watchdog
 	// goroutine selects on it so it does not leak until ctx/session close.
 	done chan struct{}
+
+	// stalled holds messages that could not be handed to the consumer
+	// immediately (buffer full). A single worker goroutine drains it in FIFO
+	// order so a slow consumer never reorders a stream, while the session read
+	// loop keeps draining the socket. Both fields are guarded by mu.
+	stalled       []Message
+	stalledWorker bool
 }
 
 // deliver hands msg to the consumer, waiting up to timeout when the buffer is
@@ -44,6 +58,7 @@ func (pr *pendingRequest) deliver(msg Message, sessionClosed <-chan struct{}, ti
 		return false
 	}
 	deadline := time.Now().Add(timeout)
+	var ticker *time.Ticker
 	for {
 		pr.mu.Lock()
 		if pr.closed {
@@ -60,10 +75,18 @@ func (pr *pendingRequest) deliver(msg Message, sessionClosed <-chan struct{}, ti
 		if !time.Now().Before(deadline) {
 			return false
 		}
+		// Reuse a single ticker across retries instead of allocating a fresh
+		// timer per poll, which would build up thousands of timers for a message
+		// stuck until dispatchTimeout. The ticker is only created once a delivery
+		// actually stalls, keeping the fast path allocation-free.
+		if ticker == nil {
+			ticker = time.NewTicker(dispatchPollInterval)
+			defer ticker.Stop()
+		}
 		select {
 		case <-sessionClosed:
 			return false
-		case <-time.After(dispatchPollInterval):
+		case <-ticker.C:
 		}
 	}
 }
@@ -163,6 +186,13 @@ func (s *session) startHeartbeat() {
 func (s *session) run() {
 	defer s.cleanup(errClosed)
 	for {
+		// Re-arm the read deadline before every read. Only refreshing it in the
+		// pong handler tore down active data-only clients that do not emit pongs
+		// once the initial deadline expired.
+		if err := s.conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			s.cleanup(err)
+			return
+		}
 		var msg Message
 		if err := s.conn.ReadJSON(&msg); err != nil {
 			s.cleanup(err)
@@ -184,6 +214,7 @@ func (s *session) closePending(id string) {
 
 func (s *session) dispatch(msg Message) {
 	if msg.Type == MessageTypePing {
+		_ = s.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		_ = s.send(context.Background(), Message{ID: msg.ID, Type: MessageTypePong})
 		return
 	}
@@ -194,26 +225,110 @@ func (s *session) dispatch(msg Message) {
 			s.closePending(msg.ID)
 			return
 		}
-		if req.deliver(msg, s.closed, dispatchTimeout) {
-			return
-		}
-		// The consumer stalled past the dispatch timeout. Fail this request
-		// explicitly; dropping the message would hand the caller a truncated
-		// stream with no error attached.
-		if s.manager != nil {
-			s.manager.logDebugf("wsrelay: consumer stalled for id %s (provider=%s), failing request", msg.ID, s.provider)
-		}
-		req.forceDeliver(Message{
-			ID:      msg.ID,
-			Type:    MessageTypeError,
-			Payload: map[string]any{"error": "wsrelay: consumer stalled, stream truncated"},
-		})
-		s.closePending(msg.ID)
+		s.route(msg, req)
 		return
 	}
 	if isTerminalMessageType(msg.Type) {
 		s.manager.logDebugf("wsrelay: received terminal message for unknown id %s (provider=%s)", msg.ID, s.provider)
 	}
+}
+
+// route hands a non-terminal message to the consumer. On the fast path the
+// message is delivered directly; when the consumer buffer is full it is queued
+// for the per-request delivery worker, so a slow consumer never blocks the
+// session read loop. A request whose consumer falls too far behind is failed
+// explicitly rather than stalling the read loop.
+func (s *session) route(msg Message, req *pendingRequest) {
+	req.mu.Lock()
+	if req.closed {
+		req.mu.Unlock()
+		return
+	}
+	if req.stalledWorker {
+		if len(req.stalled) >= maxStalledMessages {
+			req.mu.Unlock()
+			s.failStalled(msg.ID, req)
+			return
+		}
+		req.stalled = append(req.stalled, msg)
+		req.mu.Unlock()
+		return
+	}
+	select {
+	case req.ch <- msg:
+		req.mu.Unlock()
+		return
+	default:
+	}
+	// The consumer buffer is full and no delivery worker is running: queue the
+	// message and start the serialized worker so the read loop keeps draining
+	// the socket.
+	if len(req.stalled) >= maxStalledMessages {
+		req.mu.Unlock()
+		s.failStalled(msg.ID, req)
+		return
+	}
+	req.stalled = append(req.stalled, msg)
+	req.stalledWorker = true
+	req.mu.Unlock()
+	go s.stalledDeliveryWorker(msg.ID, req)
+}
+
+// stalledDeliveryWorker serially drains req.stalled for a consumer that could
+// not keep up, preserving message order. The consumer has one cumulative
+// dispatchTimeout budget from the first stall; when it is exhausted the request
+// is failed explicitly instead of blocking the session read loop.
+func (s *session) stalledDeliveryWorker(id string, req *pendingRequest) {
+	deadline := time.Now().Add(dispatchTimeout)
+	for {
+		req.mu.Lock()
+		if req.closed {
+			req.mu.Unlock()
+			return
+		}
+		if len(req.stalled) == 0 {
+			// The consumer caught up; the read loop resumes direct delivery.
+			req.stalledWorker = false
+			req.mu.Unlock()
+			return
+		}
+		msg := req.stalled[0]
+		req.stalled = req.stalled[1:]
+		req.mu.Unlock()
+
+		if req.deliver(msg, s.closed, time.Until(deadline)) {
+			continue
+		}
+		// The message was not accepted: the stall budget expired, the request was
+		// closed, or the session is tearing down.
+		select {
+		case <-s.closed:
+			return
+		default:
+		}
+		req.mu.Lock()
+		alreadyClosed := req.closed
+		req.mu.Unlock()
+		if alreadyClosed {
+			return
+		}
+		s.failStalled(id, req)
+		return
+	}
+}
+
+// failStalled fails a request whose consumer could not keep up: it forces a
+// terminal error to the consumer and closes the pending request.
+func (s *session) failStalled(id string, req *pendingRequest) {
+	if s.manager != nil {
+		s.manager.logDebugf("wsrelay: consumer stalled for id %s (provider=%s), failing request", id, s.provider)
+	}
+	req.forceDeliver(Message{
+		ID:      id,
+		Type:    MessageTypeError,
+		Payload: map[string]any{"error": "wsrelay: consumer stalled, stream truncated"},
+	})
+	s.closePending(id)
 }
 
 func (s *session) send(ctx context.Context, msg Message) error {
