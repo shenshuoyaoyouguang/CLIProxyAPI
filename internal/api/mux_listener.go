@@ -53,6 +53,19 @@ func (l *muxListener) Close() error {
 	}
 	l.once.Do(func() {
 		close(l.closeCh)
+		// Drain connections already queued in connCh so their file
+		// descriptors do not leak for the process lifetime. No new
+		// connections can be queued after closeCh is closed.
+		for {
+			select {
+			case conn := <-l.connCh:
+				if conn != nil {
+					_ = conn.Close()
+				}
+			default:
+				return
+			}
+		}
 	})
 	return nil
 }
