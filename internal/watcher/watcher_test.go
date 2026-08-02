@@ -1518,6 +1518,7 @@ type stubStore struct {
 	authDir         string
 	cfgPersisted    int32
 	authPersisted   int32
+	mu              sync.Mutex
 	lastAuthMessage string
 	lastAuthPaths   []string
 }
@@ -1533,8 +1534,10 @@ func (s *stubStore) PersistConfig(context.Context) error {
 }
 func (s *stubStore) PersistAuthFiles(_ context.Context, message string, paths ...string) error {
 	atomic.AddInt32(&s.authPersisted, 1)
+	s.mu.Lock()
 	s.lastAuthMessage = message
 	s.lastAuthPaths = paths
+	s.mu.Unlock()
 	return nil
 }
 func (s *stubStore) AuthDir() string { return s.authDir }
@@ -1574,11 +1577,15 @@ func TestPersistConfigAndAuthAsyncInvokePersister(t *testing.T) {
 	if atomic.LoadInt32(&store.authPersisted) != 1 {
 		t.Fatalf("expected PersistAuthFiles to be called once, got %d", store.authPersisted)
 	}
-	if store.lastAuthMessage != "msg" {
-		t.Fatalf("unexpected auth message: %s", store.lastAuthMessage)
+	store.mu.Lock()
+	lastAuthMessage := store.lastAuthMessage
+	lastAuthPaths := append([]string(nil), store.lastAuthPaths...)
+	store.mu.Unlock()
+	if lastAuthMessage != "msg" {
+		t.Fatalf("unexpected auth message: %s", lastAuthMessage)
 	}
-	if len(store.lastAuthPaths) != 2 || store.lastAuthPaths[0] != "a" || store.lastAuthPaths[1] != "b" {
-		t.Fatalf("unexpected filtered paths: %#v", store.lastAuthPaths)
+	if len(lastAuthPaths) != 2 || lastAuthPaths[0] != "a" || lastAuthPaths[1] != "b" {
+		t.Fatalf("unexpected filtered paths: %#v", lastAuthPaths)
 	}
 }
 
@@ -1606,7 +1613,12 @@ func TestScheduleConfigReloadDebounces(t *testing.T) {
 	if atomic.LoadInt32(&reloads) != 1 {
 		t.Fatalf("expected single debounced reload, got %d", reloads)
 	}
-	if w.lastConfigHash == "" {
+	// lastConfigHash is written by the reload goroutine under clientsMutex
+	// (R3); read it under the same lock in the test.
+	w.clientsMutex.RLock()
+	lastConfigHash := w.lastConfigHash
+	w.clientsMutex.RUnlock()
+	if lastConfigHash == "" {
 		t.Fatal("expected lastConfigHash to be set after reload")
 	}
 }
