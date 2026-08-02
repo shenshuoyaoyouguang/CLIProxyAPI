@@ -69,9 +69,12 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 	}
 
 	if l.homeEnabled && l.enabled {
-		responseToWrite, decompressErr := l.decompressResponse(responseHeaders, response)
-		if decompressErr != nil {
+		responseToWrite, truncated, decompressErr := l.decompressResponse(responseHeaders, response)
+		switch {
+		case decompressErr != nil:
 			responseToWrite = response
+		case truncated:
+			responseToWrite = appendDecompressionTruncatedMarker(responseToWrite)
 		}
 
 		var buf bytes.Buffer
@@ -128,10 +131,13 @@ func (l *FileRequestLogger) logRequestWithSources(url, method string, requestHea
 		}()
 	}
 
-	responseToWrite, decompressErr := l.decompressResponse(responseHeaders, response)
-	if decompressErr != nil {
+	responseToWrite, truncated, decompressErr := l.decompressResponse(responseHeaders, response)
+	switch {
+	case decompressErr != nil:
 		// If decompression fails, continue with original response and annotate the log output.
 		responseToWrite = response
+	case truncated:
+		responseToWrite = appendDecompressionTruncatedMarker(responseToWrite)
 	}
 
 	logFile, errOpen := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
