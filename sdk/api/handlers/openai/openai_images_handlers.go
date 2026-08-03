@@ -143,7 +143,10 @@ func (h *OpenAIAPIHandler) waitImagesStreamExecution(c *gin.Context, flusher htt
 func (a *sseFrameAccumulator) AddChunk(chunk []byte) [][]byte {
 	var frames [][]byte
 	a.framer.emitChunk(chunk, func(frame []byte) {
-		frames = append(frames, frame)
+		// Clone: emitChunk hands out views into the pending buffer, which a
+		// later AddChunk may compact in place. The accumulator returns frames to
+		// external callers, so each frame must stay valid beyond this call.
+		frames = append(frames, bytes.Clone(frame))
 	})
 	return frames
 }
@@ -151,7 +154,7 @@ func (a *sseFrameAccumulator) AddChunk(chunk []byte) [][]byte {
 func (a *sseFrameAccumulator) Flush() [][]byte {
 	var frames [][]byte
 	a.framer.emitFlush(func(frame []byte) {
-		frames = append(frames, frame)
+		frames = append(frames, bytes.Clone(frame))
 	})
 	return frames
 }
@@ -732,6 +735,22 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 			},
 		})
 		return
+	}
+	// Enforce the upload cap uniformly across all branches: the codex and
+	// openai-compat paths forward the raw multipart files without the
+	// base64 conversion that applies the cap elsewhere, so without this
+	// upfront check a large upload would be rejected on the xAI path but
+	// forwarded un-gated on the others.
+	for _, file := range imageFiles {
+		if file != nil && file.Size > maxImageUploadBytes {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+				Error: handlers.ErrorDetail{
+					Message: fmt.Sprintf("Invalid request: upload file exceeds %d bytes", maxImageUploadBytes),
+					Type:    "invalid_request_error",
+				},
+			})
+			return
+		}
 	}
 
 	responseFormat := strings.TrimSpace(c.PostForm("response_format"))
