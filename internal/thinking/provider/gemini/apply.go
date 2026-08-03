@@ -189,22 +189,13 @@ func (a *Applier) applyBudgetFormat(body []byte, config thinking.ThinkingConfig)
 // thinkingConfig, which sjson rejects; the caller must then leave the body
 // untouched to match sjson's error-on-array behavior.
 func thinkingConfigRaw(body []byte) (raw []byte, writable bool) {
-	tc := gjson.GetBytes(body, "generationConfig.thinkingConfig")
-	switch {
-	case tc.IsObject():
-		return []byte(tc.Raw), true
-	case tc.IsArray():
-		return nil, false
-	default:
-		return []byte(`{}`), true
-	}
+	return thinking.ObjectSubtreeRaw(body, "generationConfig.thinkingConfig")
 }
 
 // setGeminiThinkingConfig replaces (or creates) generationConfig.thinkingConfig
 // in a single full-body pass.
 func setGeminiThinkingConfig(body, tcRaw []byte) []byte {
-	out, _ := sjson.SetRawBytes(body, "generationConfig.thinkingConfig", tcRaw)
-	return out
+	return thinking.SetObjectSubtreeRaw(body, "generationConfig.thinkingConfig", tcRaw)
 }
 
 // setGeminiThinkingConfigIfChanged replaces generationConfig.thinkingConfig only

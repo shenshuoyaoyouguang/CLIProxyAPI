@@ -259,21 +259,12 @@ func applyCompatibleClaude(body []byte, config thinking.ThinkingConfig) ([]byte,
 // when a child key is set). writable is false only for array-valued thinking,
 // which sjson rejects; the caller must then leave thinking untouched.
 func thinkingRaw(body []byte) (raw []byte, writable bool) {
-	th := gjson.GetBytes(body, "thinking")
-	switch {
-	case th.IsObject():
-		return []byte(th.Raw), true
-	case th.IsArray():
-		return nil, false
-	default:
-		return []byte(`{}`), true
-	}
+	return thinking.ObjectSubtreeRaw(body, "thinking")
 }
 
 // setThinkingRaw replaces (or creates) the thinking object in a single pass.
 func setThinkingRaw(body, thRaw []byte) []byte {
-	out, _ := sjson.SetRawBytes(body, "thinking", thRaw)
-	return out
+	return thinking.SetObjectSubtreeRaw(body, "thinking", thRaw)
 }
 
 // deleteOutputConfigEffort removes output_config.effort and drops output_config

@@ -143,9 +143,10 @@ func applyEnabledThinking(body []byte, effort string) ([]byte, error) {
 
 	thRaw, writable := thinkingRaw(result)
 	if !writable {
-		// Array-valued thinking cannot be written via sjson; reproduce the
-		// original per-path error so callers observe identical behavior.
-		return body, fmt.Errorf("kimi thinking: failed to set thinking.type: cannot set array element for non-numeric key 'type'")
+		// Array-valued thinking cannot be written via sjson; keep the
+		// reasoning_effort deletion made above so the returned body reflects
+		// the mutation that did succeed.
+		return result, fmt.Errorf("kimi thinking: failed to set thinking.type: thinking is an array and cannot be written")
 	}
 
 	// Batch thinking.type + thinking.effort into a single full-body re-insert
@@ -166,21 +167,12 @@ func applyEnabledThinking(body []byte, effort string) ([]byte, error) {
 // when a child key is set). writable is false only for array-valued thinking,
 // which sjson rejects; the caller must then leave thinking untouched.
 func thinkingRaw(body []byte) (raw []byte, writable bool) {
-	th := gjson.GetBytes(body, "thinking")
-	switch {
-	case th.IsObject():
-		return []byte(th.Raw), true
-	case th.IsArray():
-		return nil, false
-	default:
-		return []byte(`{}`), true
-	}
+	return thinking.ObjectSubtreeRaw(body, "thinking")
 }
 
 // setThinkingRaw replaces (or creates) the thinking object in a single pass.
 func setThinkingRaw(body, thRaw []byte) []byte {
-	out, _ := sjson.SetRawBytes(body, "thinking", thRaw)
-	return out
+	return thinking.SetObjectSubtreeRaw(body, "thinking", thRaw)
 }
 
 func applyDisabledThinking(body []byte) ([]byte, error) {
