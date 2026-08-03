@@ -367,6 +367,11 @@ func (s *Service) startHomeUsageForwarder(ctx context.Context, client *home.Clie
 						for j := i; j < len(items); j++ {
 							redisqueue.Enqueue(items[j])
 						}
+					} else {
+						// Ambiguous transport error: the records in items[i:] are
+						// left out of both Home and the re-queue to avoid
+						// double-counting, so drop a trace for auditability.
+						log.WithError(errPush).Warnf("home usage push ambiguous, dropping %d records relying on Home-side dedup", len(items)-i)
 					}
 					if !sleep(time.Second) {
 						return

@@ -270,9 +270,11 @@ func (m *Manager) Start(ctx context.Context) {
 		if ctx == nil {
 			ctx = context.Background()
 		}
+		// Both m.cancel and m.started are written under m.mu so a concurrent Stop
+		// reading them under the same lock is race-free.
 		var workerCtx context.Context
-		workerCtx, m.cancel = context.WithCancel(ctx)
 		m.mu.Lock()
+		workerCtx, m.cancel = context.WithCancel(ctx)
 		m.started = true
 		m.mu.Unlock()
 		go m.run(workerCtx)
@@ -292,10 +294,11 @@ func (m *Manager) Stop() {
 		m.closed = true
 		close(m.queue)
 		started := m.started
+		cancel := m.cancel
 		m.mu.Unlock()
 		if !started {
-			if m.cancel != nil {
-				m.cancel()
+			if cancel != nil {
+				cancel()
 			}
 			return
 		}
@@ -306,8 +309,8 @@ func (m *Manager) Stop() {
 			return
 		case <-time.After(usageStopBudget):
 		}
-		if m.cancel != nil {
-			m.cancel()
+		if cancel != nil {
+			cancel()
 		}
 		log.Warn("usage: dispatcher did not drain within budget; a plugin may be blocked")
 	})
