@@ -290,6 +290,9 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func(first wsrelay.StreamEvent) {
 		defer close(out)
+		// A clean stream with no usage-bearing chunk must still publish a record
+		// so the request does not go unaccounted (idempotent).
+		defer reporter.EnsurePublished(ctx)
 		responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 		originalRequest := opts.OriginalRequest
 		if len(originalRequest) == 0 {
@@ -298,6 +301,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		claudeInputTokens := helps.NewClaudeInputTokenState(opts.SourceFormat, body.toFormat, responseFormat, originalRequest)
 		var param any
 		metadataLogged := false
+		sawStreamEnd := false
 		processEvent := func(event wsrelay.StreamEvent) bool {
 			if event.Err != nil {
 				helps.RecordAPIResponseError(ctx, e.cfg, event.Err)
@@ -340,6 +344,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					break
 				}
 			case wsrelay.MessageTypeStreamEnd:
+				sawStreamEnd = true
 				// Feed the [DONE] terminal marker through the translator so
 				// Claude-format output ends with message_stop (mirrors the
 				// Gemini executor). Without it clients hang waiting for
@@ -390,6 +395,19 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		for event := range wsStream {
 			if !processEvent(event) {
 				return
+			}
+		}
+		if !sawStreamEnd {
+			// The stream closed without a terminal StreamEnd event; feed the
+			// [DONE] marker so Claude-format clients still receive a terminal
+			// event instead of hanging.
+			lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, opts.OriginalRequest, translatedReq, []byte("[DONE]"), &param, claudeInputTokens)
+			for i := range lines {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}(firstEvent)

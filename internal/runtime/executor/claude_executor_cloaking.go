@@ -331,22 +331,27 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 	content := gjson.GetBytes(payload, contentPath)
 
 	if content.IsArray() {
-		newBlock := fmt.Sprintf(`{"type":"text","text":%q}`, prefixBlock)
+		// JSON-encode via sjson rather than fmt %q: Go escaping emits sequences
+		// like \a/\v/\xNN that are invalid JSON, which would make SetRawBytes
+		// fail and silently drop the injected reminder.
+		newBlock := []byte(`{"type":"text","text":""}`)
+		newBlock, _ = sjson.SetBytes(newBlock, "text", prefixBlock)
+		rawNewBlock := string(newBlock)
 		var newArray string
 		switch {
 		case content.Raw == "[]" || content.Raw == "":
-			newArray = "[" + newBlock + "]"
+			newArray = "[" + rawNewBlock + "]"
 		case leadsWithToolResult(content):
 			// Anthropic requires the user message that immediately follows an
 			// assistant tool_use turn to lead with its tool_result blocks.
 			// Append the reminder so those blocks stay at the head.
 			if trimmed := strings.TrimRight(content.Raw, " \t\r\n"); strings.HasSuffix(trimmed, "]") {
-				newArray = trimmed[:len(trimmed)-1] + "," + newBlock + "]"
+				newArray = trimmed[:len(trimmed)-1] + "," + rawNewBlock + "]"
 			} else {
-				newArray = "[" + newBlock + "," + content.Raw[1:]
+				newArray = "[" + rawNewBlock + "," + content.Raw[1:]
 			}
 		default:
-			newArray = "[" + newBlock + "," + content.Raw[1:]
+			newArray = "[" + rawNewBlock + "," + content.Raw[1:]
 		}
 		payload, _ = sjson.SetRawBytes(payload, contentPath, []byte(newArray))
 	} else if content.Type == gjson.String {
@@ -383,29 +388,32 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 	//   -> per-credential settings from auth attributes/metadata
 	//   -> per claude-api-key cloak config
 	cloakMode := "auto"
-	if cfg != nil && cfg.DisableClaudeCloakMode {
-		cloakMode = "never"
-	}
 	strictMode := attrStrict
 	sensitiveWords := attrWords
 	cacheUserID := attrCache
 
-	if attrMode != "" {
-		cloakMode = attrMode
-	}
+	if cfg != nil && cfg.DisableClaudeCloakMode {
+		// The global switch is a hard kill-switch: per-credential and per-key
+		// settings below cannot re-enable cloaking.
+		cloakMode = "never"
+	} else {
+		if attrMode != "" {
+			cloakMode = attrMode
+		}
 
-	if cloakCfg != nil {
-		if mode := strings.TrimSpace(cloakCfg.Mode); mode != "" {
-			cloakMode = mode
-		}
-		if cloakCfg.StrictMode {
-			strictMode = true
-		}
-		if len(cloakCfg.SensitiveWords) > 0 {
-			sensitiveWords = cloakCfg.SensitiveWords
-		}
-		if cloakCfg.CacheUserID != nil {
-			cacheUserID = *cloakCfg.CacheUserID
+		if cloakCfg != nil {
+			if mode := strings.TrimSpace(cloakCfg.Mode); mode != "" {
+				cloakMode = mode
+			}
+			if cloakCfg.StrictMode {
+				strictMode = true
+			}
+			if len(cloakCfg.SensitiveWords) > 0 {
+				sensitiveWords = cloakCfg.SensitiveWords
+			}
+			if cloakCfg.CacheUserID != nil {
+				cacheUserID = *cloakCfg.CacheUserID
+			}
 		}
 	}
 

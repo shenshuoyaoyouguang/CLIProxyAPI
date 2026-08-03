@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1039,9 +1040,26 @@ func ParseAntigravityStreamUsage(line []byte) (usage.Detail, bool) {
 
 var stopChunkWithoutUsage sync.Map
 
+// maxStopChunkWithoutUsageEntries bounds the traceID map: entries expire after
+// 10 minutes, but under high QPS with unique traceIDs the map would otherwise
+// grow without bound. The filter degrades gracefully when the cap is reached
+// (it is a best-effort usage-consistency heuristic).
+const maxStopChunkWithoutUsageEntries = 100_000
+
+var stopChunkWithoutUsageCount atomic.Int64
+
 func rememberStopWithoutUsage(traceID string) {
-	stopChunkWithoutUsage.Store(traceID, struct{}{})
-	time.AfterFunc(10*time.Minute, func() { stopChunkWithoutUsage.Delete(traceID) })
+	if stopChunkWithoutUsageCount.Load() >= maxStopChunkWithoutUsageEntries {
+		return
+	}
+	if _, loaded := stopChunkWithoutUsage.LoadOrStore(traceID, struct{}{}); loaded {
+		return
+	}
+	stopChunkWithoutUsageCount.Add(1)
+	time.AfterFunc(10*time.Minute, func() {
+		stopChunkWithoutUsage.Delete(traceID)
+		stopChunkWithoutUsageCount.Add(-1)
+	})
 }
 
 // FilterSSEUsageMetadata removes usageMetadata from SSE events that are not

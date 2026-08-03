@@ -96,6 +96,15 @@ func initAntigravityTransport() {
 	antigravityTransport = cloneTransportWithHTTP11(base)
 }
 
+// Proxied requests cannot share the singleton transport (its transport carries
+// no proxy); cache one HTTP/1.1 clone per proxy URL so proxied traffic does not
+// leak a fresh connection pool (and its goroutines) on every request.
+var (
+	antigravityProxiedTransport    *http.Transport
+	antigravityProxiedTransportKey string
+	antigravityProxiedTransportMu  sync.Mutex
+)
+
 // newAntigravityHTTPClient creates an HTTP client specifically for Antigravity,
 // enforcing HTTP/1.1 by disabling HTTP/2 to perfectly mimic Node.js https defaults.
 // The underlying Transport is a singleton to avoid leaking connection pools.
@@ -111,7 +120,26 @@ func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cli
 
 	// Preserve proxy settings from proxy-aware transports while forcing HTTP/1.1.
 	if transport, ok := client.Transport.(*http.Transport); ok {
-		client.Transport = cloneTransportWithHTTP11(transport)
+		proxyKey := ""
+		if auth != nil {
+			proxyKey = strings.TrimSpace(auth.ProxyURL)
+		}
+		if proxyKey == "" && cfg != nil {
+			proxyKey = strings.TrimSpace(cfg.ProxyURL)
+		}
+		if proxyKey == "" {
+			client.Transport = cloneTransportWithHTTP11(transport)
+			return client
+		}
+		antigravityProxiedTransportMu.Lock()
+		defer antigravityProxiedTransportMu.Unlock()
+		if antigravityProxiedTransport != nil && antigravityProxiedTransportKey == proxyKey {
+			client.Transport = antigravityProxiedTransport
+			return client
+		}
+		antigravityProxiedTransport = cloneTransportWithHTTP11(transport)
+		antigravityProxiedTransportKey = proxyKey
+		client.Transport = antigravityProxiedTransport
 	}
 	return client
 }
@@ -326,11 +354,11 @@ func shouldResolveAntigravityWebSearchGroundingURLs(from sdktranslator.Format, o
 		hasAntigravityGoogleSearchTool(requestRawJSON)
 }
 
-func (e *AntigravityExecutor) resolveWebSearchGroundingURLs(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, originalRequestRawJSON, requestRawJSON, responseRawJSON []byte) []byte {
+func (e *AntigravityExecutor) resolveWebSearchGroundingURLs(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, originalRequestRawJSON, requestRawJSON, responseRawJSON []byte, cache *helps.AntigravityGroundingURLCache) []byte {
 	if !shouldResolveAntigravityWebSearchGroundingURLs(from, originalRequestRawJSON, requestRawJSON) {
 		return responseRawJSON
 	}
-	return helps.ResolveAntigravityGroundingURLs(ctx, e.cfg, auth, responseRawJSON)
+	return helps.ResolveAntigravityGroundingURLs(ctx, e.cfg, auth, responseRawJSON, cache)
 }
 
 func countClaudeThinkingBlocks(rawJSON []byte) int {

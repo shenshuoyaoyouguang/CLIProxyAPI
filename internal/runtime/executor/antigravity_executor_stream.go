@@ -239,6 +239,9 @@ attemptLoop:
 				clearAntigravityCreditsFailureState(auth)
 			}
 			replayAccumulator := newAntigravityReasoningReplayAccumulator(replayScope, requestPayload)
+			// Grounding chunks repeat across stream lines; resolve each redirect
+			// URL once per request instead of per chunk.
+			groundingURLCache := helps.NewAntigravityGroundingURLCache()
 			out := make(chan cliproxyexecutor.StreamChunk)
 			go func(resp *http.Response) {
 				defer close(out)
@@ -271,7 +274,7 @@ attemptLoop:
 						reporter.Publish(ctx, detail)
 					}
 
-					payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload)
+					payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload, groundingURLCache)
 					chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(payload), &param, claudeInputTokens)
 					for i := range chunks {
 						select {
@@ -281,6 +284,18 @@ attemptLoop:
 						}
 					}
 				}
+				// Surface a broken/truncated stream before emitting the terminal
+				// marker: clients that stop at message_stop would otherwise never
+				// see the error.
+				if errScan := scanner.Err(); errScan != nil {
+					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+					reporter.PublishFailure(ctx, errScan)
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+					case <-ctx.Done():
+					}
+					return
+				}
 				tail := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("[DONE]"), &param, claudeInputTokens)
 				for i := range tail {
 					select {
@@ -289,19 +304,10 @@ attemptLoop:
 						return
 					}
 				}
-				if errScan := scanner.Err(); errScan != nil {
-					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-					reporter.PublishFailure(ctx, errScan)
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-					case <-ctx.Done():
-					}
-				} else {
-					if replayAccumulator != nil {
-						replayAccumulator.Commit(ctx)
-					}
-					reporter.EnsurePublished(ctx)
+				if replayAccumulator != nil {
+					replayAccumulator.Commit(ctx)
 				}
+				reporter.EnsurePublished(ctx)
 			}(httpResp)
 			return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 		}

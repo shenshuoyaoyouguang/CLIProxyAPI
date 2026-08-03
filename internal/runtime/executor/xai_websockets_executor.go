@@ -662,6 +662,11 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			})
 			logXAIWebsocketRequest(executionSessionID, authID, wsURL, wsReqBodyRetry)
 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
+			// Refresh the recorded upstream headers: the first dial's connection
+			// is invalidated, so its headers must not be reported as the result.
+			if respHSRetry != nil {
+				upstreamHeaders = respHSRetry.Header.Clone()
+			}
 			reporter.StartResponseTTFT()
 			if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry != nil {
 				errSendRetry = mapXAIWebsocketWriteError(sess, connRetry, errSendRetry)
@@ -724,6 +729,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		var outputItemsFallback [][]byte
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
 		recordedTranscript := false
+		sawResponseCreated := false
 		for {
 			if ctx != nil && ctx.Err() != nil {
 				terminateReason = "context_done"
@@ -789,7 +795,22 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					continue
 				}
 				eventType := gjson.GetBytes(payload, "type").String()
+				if eventType == "response.created" {
+					sawResponseCreated = true
+				}
 				isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+				if eventType == "response.done" && !sawResponseCreated && readToken > 0 {
+					// On a reused connection every turn (including a warmup
+					// response) begins with response.created; a trailing
+					// response.done from the previous turn is a stale duplicate
+					// and must not terminate this turn prematurely.
+					// response.completed without response.created is a legitimate
+					// turn-starting completion for upstreams that omit the
+					// created marker, so only the duplicate trailing event is
+					// dropped. Fresh connections (readToken == 0) cannot carry
+					// stale events.
+					continue
+				}
 				warmupCompletedPayload := []byte(nil)
 				switch eventType {
 				case "response.created":

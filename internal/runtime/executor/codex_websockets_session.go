@@ -169,9 +169,10 @@ func (s *codexWebsocketSession) clearActive(conn *websocket.Conn, ch chan codexW
 }
 
 // nextReadToken advances and returns the read counter for conn. The reader pump
-// calls it immediately before each ReadMessage so that a message already being
-// read when a consumer snapshots the counter is always stamped with a token the
-// consumer will drop.
+// calls it immediately after each successful ReadMessage, so the counter equals
+// the number of messages read on the connection: a consumer snapshot taken
+// before this turn's first message is 0 on a fresh connection (no stale events
+// possible) and the previous turn's message count on a reused one.
 func (s *codexWebsocketSession) nextReadToken(conn *websocket.Conn) uint64 {
 	if s == nil || conn == nil {
 		return 0

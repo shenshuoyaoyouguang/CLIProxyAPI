@@ -91,10 +91,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	applyModelHeaderOverrides(wsHeaders, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 
+	// auth may be nil for anonymous / pre-authorized transports (see the entry
+	// guard above); the request log below then carries empty identity fields.
 	var authID, authLabel, authType, authValue string
-	authID = auth.ID
-	authLabel = auth.Label
-	authType, authValue = auth.AccountInfo()
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
 
 	executionSessionID := executionSessionIDFromOptions(opts)
 	var sess *codexWebsocketSession
@@ -301,6 +305,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
+		sawResponseCreated := false
 		for {
 			if ctx != nil && ctx.Err() != nil {
 				terminateReason = "context_done"
@@ -393,12 +398,26 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 
 			eventType := gjson.GetBytes(payload, "type").String()
+			if eventType == "response.created" {
+				sawResponseCreated = true
+			}
 			// response.incomplete terminates the turn upstream (for example when
 			// max_output_tokens is hit). Without treating it as terminal the reader
 			// blocks until the websocket liveness deadline and the client sees a
 			// misleading i/o timeout instead of the partial result.
 			isCompletionEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete"
 			isTerminalEvent := isCompletionEvent || eventType == "error"
+			if eventType == "response.done" && !sawResponseCreated && readToken > 0 {
+				// On a reused connection every turn begins with response.created;
+				// a trailing response.done from the previous turn (sent after its
+				// response.completed) is stale and must not terminate this turn
+				// with an empty/partial response. response.completed and
+				// response.incomplete are legitimate turn-starting completions for
+				// upstreams that omit response.created, so only the duplicate
+				// trailing marker is dropped. Fresh connections (readToken == 0)
+				// cannot carry stale events.
+				continue
+			}
 			if eventType == "response.output_item.done" {
 				collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
 			}

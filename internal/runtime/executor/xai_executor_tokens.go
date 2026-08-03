@@ -16,6 +16,11 @@ import (
 // audio payloads are never tokenized as text (H24n).
 const audioTokensPerSecond = 32
 
+// maxXAIInputAudioDurationSeconds bounds the client-controlled audio duration
+// before it is converted into an estimate string; an unbounded duration could
+// force a multi-GB allocation in the CountTokens path.
+const maxXAIInputAudioDurationSeconds = 3 * 60 * 60 // 3 hours
+
 // CountTokens estimates token count for xAI Responses requests.
 func (e *XAIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	prepared, err := e.prepareResponsesRequest(ctx, req, opts, false)
@@ -122,6 +127,9 @@ func xaiCollectContentTokenSegments(content gjson.Result, segments *[]string) {
 				duration = part.Get("duration").Float()
 			}
 			if duration > 0 {
+				if duration > maxXAIInputAudioDurationSeconds {
+					duration = maxXAIInputAudioDurationSeconds
+				}
 				*segments = append(*segments, strings.Repeat("a", int(duration*audioTokensPerSecond)))
 			}
 		}

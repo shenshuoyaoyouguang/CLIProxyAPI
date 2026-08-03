@@ -453,6 +453,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		var streamUsage helps.StreamUsageBuffer
 		defer streamUsage.Publish(ctx, reporter)
 		var readErr error
+		sawDone := false
 		for {
 			line, errRead := readSSELine(reader)
 			if len(line) > 0 {
@@ -473,19 +474,37 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 						continue
 					}
 					if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-						streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
-						helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-						reporter.PublishFailure(ctx, streamErr)
-						select {
-						case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-						case <-ctx.Done():
+						// Some OpenAI-compatible providers emit a final bare-JSON
+						// chunk (usage or error) without an SSE data: prefix. JSON
+						// error objects are terminal; forward anything else as a
+						// data line instead of failing the whole stream.
+						if gjson.ValidBytes(trimmedLine) && gjson.GetBytes(trimmedLine, "error").Exists() {
+							streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+							helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+							reporter.PublishFailure(ctx, streamErr)
+							select {
+							case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+							case <-ctx.Done():
+							}
+							return
 						}
-						return
+						chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, append([]byte("data: "), trimmedLine...), &param, claudeInputTokens)
+						for i := range chunks {
+							select {
+							case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+							case <-ctx.Done():
+								return
+							}
+						}
+						continue
 					}
 					continue
 				}
 
 				// OpenAI-compatible streams must use SSE data lines.
+				if bytes.Equal(bytes.TrimSpace(trimmedLine[5:]), []byte("[DONE]")) {
+					sawDone = true
+				}
 				chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param, claudeInputTokens)
 				for i := range chunks {
 					select {
@@ -509,10 +528,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			case out <- cliproxyexecutor.StreamChunk{Err: readErr}:
 			case <-ctx.Done():
 			}
-		} else {
+		} else if !sawDone {
 			// In case the upstream close the stream without a terminal [DONE] marker.
 			// Feed a synthetic done marker through the translator so pending
-			// response.completed events are still emitted exactly once.
+			// response.completed events are still emitted exactly once. Skip it
+			// when the upstream already sent [DONE]: passthrough response formats
+			// would otherwise emit a duplicated terminal marker.
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param, claudeInputTokens)
 			for i := range chunks {
 				select {

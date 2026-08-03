@@ -175,9 +175,12 @@ func (r *websocketSessionRuntime) readUpstreamLoop(sess *codexWebsocketSession, 
 		if r.readDeadline > 0 {
 			_ = conn.SetReadDeadline(time.Now().Add(r.readDeadline))
 		}
-		token := sess.nextReadToken(conn)
 		msgType, payload, errRead := conn.ReadMessage()
 		if errRead != nil {
+			// Stamp the terminal event with the last successful read's token.
+			// Error events bypass the consumer's token filter, so the value only
+			// needs to be stable for the ev.conn consistency check.
+			token := sess.currentReadToken(conn)
 			invalidate := func() {
 				r.invalidateUpstreamConn(sess, conn, "upstream_disconnected", errRead)
 			}
@@ -194,6 +197,14 @@ func (r *websocketSessionRuntime) readUpstreamLoop(sess *codexWebsocketSession, 
 			}
 			return
 		}
+
+		// Stamp the token after a successful read: the counter then equals the
+		// number of messages read on this connection, so a consumer snapshot
+		// taken before this turn's first message reads 0 on a fresh connection
+		// and the previous turn's message count on a reused one. Incrementing
+		// before ReadMessage would inflate a fresh connection's snapshot to 1
+		// and make consumers misclassify it as reused.
+		token := sess.nextReadToken(conn)
 
 		if msgType != websocket.TextMessage {
 			if msgType == websocket.BinaryMessage {
@@ -408,6 +419,19 @@ func (r *websocketSessionRuntime) readMessage(ctx context.Context, sess *codexWe
 		}
 		if r.readDeadline > 0 {
 			_ = conn.SetReadDeadline(time.Now().Add(r.readDeadline))
+		}
+		if ctx != nil && ctx.Err() == nil {
+			// A client abort must interrupt the blocking read; without this the
+			// upstream socket is held until the read deadline after a cancel.
+			stop := make(chan struct{})
+			defer close(stop)
+			go func() {
+				select {
+				case <-ctx.Done():
+					_ = conn.Close()
+				case <-stop:
+				}
+			}()
 		}
 		msgType, payload, errRead := conn.ReadMessage()
 		return msgType, payload, errRead

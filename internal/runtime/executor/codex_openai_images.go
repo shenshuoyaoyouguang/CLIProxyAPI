@@ -449,13 +449,24 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 		}()
 
 		buffer := make([]byte, 32*1024)
+		// A usage data: line may straddle a read boundary; carry the trailing
+		// partial line across chunks so it is observed as one JSON line.
+		var pendingLine []byte
 		for {
 			n, errRead := httpResp.Body.Read(buffer)
 			if n > 0 {
 				chunk := bytes.Clone(buffer[:n])
 				chunk = applyCodexIdentityConfuseResponsePayload(chunk, identityState)
 				helps.AppendAPIResponseChunk(ctx, e.cfg, chunk)
-				for _, line := range bytes.Split(chunk, []byte("\n")) {
+				combined := append(pendingLine, chunk...)
+				lines := bytes.Split(combined, []byte("\n"))
+				if !bytes.HasSuffix(combined, []byte("\n")) {
+					pendingLine = append([]byte(nil), lines[len(lines)-1]...)
+					lines = lines[:len(lines)-1]
+				} else {
+					pendingLine = nil
+				}
+				for _, line := range lines {
 					streamUsage.ObserveOpenAIStream(bytes.TrimSpace(line))
 				}
 				select {
@@ -465,6 +476,10 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 				}
 			}
 			if errRead != nil {
+				// Flush any trailing partial line at EOF.
+				if errRead == io.EOF && len(pendingLine) > 0 {
+					streamUsage.ObserveOpenAIStream(bytes.TrimSpace(pendingLine))
+				}
 				if errRead != io.EOF {
 					helps.RecordAPIResponseError(ctx, e.cfg, errRead)
 					reporter.PublishFailure(ctx, errRead)

@@ -87,6 +87,14 @@ func antigravityReasoningReplayScopeFromRequest(ctx context.Context, modelName s
 	// from request text. This keeps identical prompts in separate client sessions
 	// from sharing an opaque Gemini reasoning chain.
 	if sessionKey := antigravityReasoningReplayClientSessionKey(ctx, req, opts); sessionKey != "" {
+		// Namespace client-controlled session keys by the downstream CPA API key
+		// so two callers reusing the same key cannot share encrypted reasoning
+		// or tool calls (mirrors the codex/xai/kimi isolation). Client-controlled
+		// sessions without a caller API key are disabled rather than shared.
+		sessionKey = xaiReasoningReplayIsolateSessionKey(ctx, sessionKey)
+		if sessionKey == "" {
+			return antigravityReasoningReplayScope{}
+		}
 		return antigravityReasoningReplayScope{modelName: modelName, sessionKey: sessionKey}
 	}
 	if scope := antigravityReasoningReplayScopeFromPayload(modelName, payload); scope.valid() {

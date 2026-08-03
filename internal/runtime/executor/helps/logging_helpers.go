@@ -23,6 +23,7 @@ const (
 	apiAttemptsKey                 = "API_UPSTREAM_ATTEMPTS"
 	apiRequestKey                  = "API_REQUEST"
 	apiResponseKey                 = "API_RESPONSE"
+	apiResponseAccumulatorKey      = "API_RESPONSE_ACCUMULATOR"
 	apiWebsocketTimelineKey        = "API_WEBSOCKET_TIMELINE"
 	deferredAPIRequestBytesKey     = "DEFERRED_API_REQUEST_BYTES"
 	creditsUsedKey                 = "__antigravity_credits_used__"
@@ -515,28 +516,63 @@ func updateAggregatedResponseIfMemoryBacked(ginCtx *gin.Context, attempts []*ups
 	updateAggregatedResponse(ginCtx, attempts)
 }
 
+// aggregatedResponseAccumulator incrementally appends the aggregated response
+// for request logs. Rebuilding the full concatenation on every chunk (as the
+// previous implementation did) is O(n²) in total streamed bytes.
+type aggregatedResponseAccumulator struct {
+	builder     strings.Builder
+	attemptIdx  int
+	attemptLen  int
+	prevEndedNL bool
+}
+
 func updateAggregatedResponse(ginCtx *gin.Context, attempts []*upstreamAttempt) {
 	if ginCtx == nil {
 		return
 	}
-	var builder strings.Builder
+	accValue, accExists := ginCtx.Get(apiResponseAccumulatorKey)
+	var acc *aggregatedResponseAccumulator
+	if accExists {
+		acc, _ = accValue.(*aggregatedResponseAccumulator)
+	}
+	if acc == nil {
+		acc = &aggregatedResponseAccumulator{attemptIdx: -1}
+		ginCtx.Set(apiResponseAccumulatorKey, acc)
+	}
 	for idx, attempt := range attempts {
 		if attempt == nil || attempt.response == nil {
 			continue
 		}
-		responseText := attempt.response.String()
-		if responseText == "" {
+		text := attempt.response.String()
+		if text == "" {
 			continue
 		}
-		builder.WriteString(responseText)
-		if !strings.HasSuffix(responseText, "\n") {
-			builder.WriteString("\n")
+		if idx != acc.attemptIdx {
+			// First chunk of a new attempt: emit the inter-attempt separators
+			// once, then append this attempt's text from the start.
+			if acc.attemptIdx >= 0 {
+				if !acc.prevEndedNL {
+					acc.builder.WriteString("\n")
+				}
+				acc.builder.WriteString("\n")
+			}
+			acc.attemptIdx = idx
+			acc.attemptLen = 0
 		}
-		if idx < len(attempts)-1 {
-			builder.WriteString("\n")
+		delta := text[acc.attemptLen:]
+		if delta == "" {
+			continue
+		}
+		acc.builder.WriteString(delta)
+		acc.attemptLen = len(text)
+		acc.prevEndedNL = text[len(text)-1] == '\n'
+		// Replicate the previous per-chunk separator: the current attempt is
+		// the last one, so a chunk that does not end with a newline gets one.
+		if !acc.prevEndedNL {
+			acc.builder.WriteString("\n")
 		}
 	}
-	ginCtx.Set(apiResponseKey, []byte(builder.String()))
+	ginCtx.Set(apiResponseKey, []byte(acc.builder.String()))
 }
 
 func apiRequestSource(ginCtx *gin.Context) (*logging.FileBodySource, bool) {

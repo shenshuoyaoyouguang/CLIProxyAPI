@@ -74,8 +74,10 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				log.Errorf("xai executor: close response body error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800)
+		// Read SSE lines incrementally with the shared capped reader (like the
+		// openai-compat executor) instead of a 50 MiB-max bufio.Scanner: a single
+		// oversized line would otherwise terminate the stream with ErrTooLong.
+		reader := bufio.NewReaderSize(httpResp.Body, 64<<10)
 		claudeInputTokens := helps.NewClaudeInputTokenState(prepared.from, prepared.to, prepared.responseFormat, prepared.originalPayload)
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
@@ -93,79 +95,91 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			}
 			return true
 		}
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+		var readErr error
+		for {
+			line, errRead := readSSELine(reader)
+			if len(line) > 0 {
+				// bufio.Scanner semantics: strip the trailing newline and CR.
+				line = bytes.TrimSuffix(line, []byte("\n"))
+				line = bytes.TrimSuffix(line, []byte("\r"))
+				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 
-			if bytes.HasPrefix(line, xaiEventTag) {
-				if pendingEventLine != nil && !emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
-					return
+				if bytes.HasPrefix(line, xaiEventTag) {
+					if pendingEventLine != nil && !emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
+						return
+					}
+					pendingEventLine = bytes.Clone(line)
+					continue
 				}
-				pendingEventLine = bytes.Clone(line)
-				continue
-			}
 
-			if bytes.HasPrefix(line, xaiDataTag) {
-				eventDataList := xaiNormalizeReasoningSummaryDataEvents(bytes.TrimSpace(line[len(xaiDataTag):]))
-				hasPendingEventLine := pendingEventLine != nil
-				for i, eventData := range eventDataList {
-					eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
-					eventData = responseFilter.apply(eventData)
-					if len(eventData) == 0 {
-						if hasPendingEventLine && i == 0 {
-							pendingEventLine = nil
+				if bytes.HasPrefix(line, xaiDataTag) {
+					eventDataList := xaiNormalizeReasoningSummaryDataEvents(bytes.TrimSpace(line[len(xaiDataTag):]))
+					hasPendingEventLine := pendingEventLine != nil
+					for i, eventData := range eventDataList {
+						eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
+						eventData = responseFilter.apply(eventData)
+						if len(eventData) == 0 {
+							if hasPendingEventLine && i == 0 {
+								pendingEventLine = nil
+							}
+							continue
 						}
-						continue
-					}
-					normalizedEventName := gjson.GetBytes(eventData, "type").String()
-					switch normalizedEventName {
-					case "response.output_item.done":
-						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
-					case "response.completed":
-						if detail, ok := helps.ParseCodexUsage(eventData); ok {
-							reporter.Publish(ctx, detail)
+						normalizedEventName := gjson.GetBytes(eventData, "type").String()
+						switch normalizedEventName {
+						case "response.output_item.done":
+							xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
+						case "response.completed":
+							if detail, ok := helps.ParseCodexUsage(eventData); ok {
+								reporter.Publish(ctx, detail)
+							}
+							eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
+							eventData = xaiNormalizeReasoningSummaryData(eventData)
+							cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
+							normalizedEventName = gjson.GetBytes(eventData, "type").String()
 						}
-						eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
-						eventData = xaiNormalizeReasoningSummaryData(eventData)
-						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
-						normalizedEventName = gjson.GetBytes(eventData, "type").String()
-					}
 
-					if hasPendingEventLine {
-						eventLine := []byte("event: " + normalizedEventName)
-						if i == 0 {
-							eventLine = xaiNormalizeReasoningSummaryEventLine(pendingEventLine, normalizedEventName)
-							pendingEventLine = nil
+						if hasPendingEventLine {
+							eventLine := []byte("event: " + normalizedEventName)
+							if i == 0 {
+								eventLine = xaiNormalizeReasoningSummaryEventLine(pendingEventLine, normalizedEventName)
+								pendingEventLine = nil
+							}
+							if !emitTranslatedLine(eventLine) {
+								return
+							}
 						}
-						if !emitTranslatedLine(eventLine) {
+						if !emitTranslatedLine(append([]byte("data: "), eventData...)) {
 							return
 						}
 					}
-					if !emitTranslatedLine(append([]byte("data: "), eventData...)) {
+					continue
+				}
+
+				if pendingEventLine != nil {
+					if !emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
 						return
 					}
+					pendingEventLine = nil
 				}
-				continue
-			}
-
-			if pendingEventLine != nil {
-				if !emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, "")) {
+				if !emitTranslatedLine(bytes.Clone(line)) {
 					return
 				}
-				pendingEventLine = nil
 			}
-			if !emitTranslatedLine(bytes.Clone(line)) {
-				return
+			if errRead != nil {
+				if errRead != io.EOF {
+					readErr = errRead
+				}
+				break
 			}
 		}
 		if pendingEventLine != nil {
 			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
 		}
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+		if readErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
+			reporter.PublishFailure(ctx, readErr)
 			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case out <- cliproxyexecutor.StreamChunk{Err: readErr}:
 			case <-ctx.Done():
 			}
 		}

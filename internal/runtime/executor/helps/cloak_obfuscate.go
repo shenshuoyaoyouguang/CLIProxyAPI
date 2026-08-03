@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"encoding/json"
 	"regexp"
 	"sort"
 	"strings"
@@ -169,23 +170,17 @@ func obfuscateMessages(payload []byte, matcher *SensitiveWordMatcher) []byte {
 		}
 
 		msgPath := "messages." + msgKey.String()
+		payload = obfuscateMessageContent(payload, matcher, msgPath+".content", content)
 
-		if content.Type == gjson.String {
-			// Simple string content
-			text := content.String()
-			obfuscated := matcher.obfuscateText(text)
-			if obfuscated != text {
-				payload, _ = sjson.SetBytes(payload, msgPath+".content", obfuscated)
-			}
-		} else if content.IsArray() {
-			// Array of content blocks
+		// Scrub tool_use.input argument values too: keys stay untouched so the
+		// upstream tool contract is preserved.
+		if content.IsArray() {
 			content.ForEach(func(blockKey, block gjson.Result) bool {
-				if block.Get("type").String() == "text" {
-					text := block.Get("text").String()
-					obfuscated := matcher.obfuscateText(text)
-					if obfuscated != text {
-						path := msgPath + ".content." + blockKey.String() + ".text"
-						payload, _ = sjson.SetBytes(payload, path, obfuscated)
+				if block.Get("type").String() == "tool_use" {
+					if input := block.Get("input"); input.Exists() && (input.IsObject() || input.IsArray()) {
+						if scrubbed, ok := scrubJSONStringValues(input.Raw, matcher); ok {
+							payload, _ = sjson.SetRawBytes(payload, msgPath+".content."+blockKey.String()+".input", []byte(scrubbed))
+						}
 					}
 				}
 				return true
@@ -196,4 +191,81 @@ func obfuscateMessages(payload []byte, matcher *SensitiveWordMatcher) []byte {
 	})
 
 	return payload
+}
+
+// obfuscateMessageContent recursively obfuscates text inside a content value
+// (string or array of blocks), descending into tool_result content arrays.
+func obfuscateMessageContent(payload []byte, matcher *SensitiveWordMatcher, path string, content gjson.Result) []byte {
+	if content.Type == gjson.String {
+		text := content.String()
+		obfuscated := matcher.obfuscateText(text)
+		if obfuscated != text {
+			payload, _ = sjson.SetBytes(payload, path, obfuscated)
+		}
+		return payload
+	}
+	if !content.IsArray() {
+		return payload
+	}
+	content.ForEach(func(blockKey, block gjson.Result) bool {
+		blockPath := path + "." + blockKey.String()
+		switch block.Get("type").String() {
+		case "text":
+			text := block.Get("text").String()
+			obfuscated := matcher.obfuscateText(text)
+			if obfuscated != text {
+				payload, _ = sjson.SetBytes(payload, blockPath+".text", obfuscated)
+			}
+		case "tool_result":
+			if nested := block.Get("content"); nested.Exists() {
+				payload = obfuscateMessageContent(payload, matcher, blockPath+".content", nested)
+			}
+		}
+		return true
+	})
+	return payload
+}
+
+// scrubJSONStringValues re-encodes rawJSON with sensitive words removed from
+// every string value; object keys are left untouched. Returns ok=false when
+// nothing changed or the input is not decodable JSON.
+func scrubJSONStringValues(rawJSON string, matcher *SensitiveWordMatcher) (string, bool) {
+	var value any
+	if err := json.Unmarshal([]byte(rawJSON), &value); err != nil {
+		return "", false
+	}
+	changed := false
+	var walk func(any) any
+	walk = func(v any) any {
+		switch t := v.(type) {
+		case string:
+			scrubbed := matcher.obfuscateText(t)
+			if scrubbed != t {
+				changed = true
+				return scrubbed
+			}
+			return t
+		case map[string]any:
+			for k, item := range t {
+				t[k] = walk(item)
+			}
+			return t
+		case []any:
+			for i, item := range t {
+				t[i] = walk(item)
+			}
+			return t
+		default:
+			return v
+		}
+	}
+	value = walk(value)
+	if !changed {
+		return "", false
+	}
+	reencoded, err := json.Marshal(value)
+	if err != nil {
+		return "", false
+	}
+	return string(reencoded), true
 }

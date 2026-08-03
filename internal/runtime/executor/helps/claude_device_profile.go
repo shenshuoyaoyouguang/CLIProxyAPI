@@ -417,24 +417,29 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	if errLock != nil {
 		return ClaudeDeviceProfile{}, errLock
 	}
+	// Only release the lock when this process actually acquired it (KVSetNX
+	// succeeded). Deleting an unowned lock would lift another process's mutual
+	// exclusion and allow concurrent profile writers.
+	releaseLockIfOwned := func() {
+		if gotLock {
+			releaseClaudeDeviceProfileLock(ctx, client, lockKey)
+		}
+	}
 	if ClaudeDeviceProfileBeforeCandidateStore != nil {
 		ClaudeDeviceProfileBeforeCandidateStore(candidate)
 	}
 
 	cached, found, errRead := readClaudeDeviceProfileValueFromHome(ctx, client, valueKey, baseline)
 	if errRead != nil {
+		releaseLockIfOwned()
 		return ClaudeDeviceProfile{}, errRead
 	}
 	if found && !shouldUpgradeClaudeDeviceProfile(candidate, cached) {
 		if _, errExpire := client.KVExpire(ctx, valueKey, claudeDeviceProfileTTL); errExpire != nil {
+			releaseLockIfOwned()
 			return ClaudeDeviceProfile{}, errExpire
 		}
-		// Only release the lock when this process actually acquired it
-		// (KVSetNX succeeded). Deleting an unowned lock would lift another
-		// process's mutual exclusion and allow concurrent profile writers.
-		if gotLock {
-			releaseClaudeDeviceProfileLock(ctx, client, lockKey)
-		}
+		releaseLockIfOwned()
 		return cached, nil
 	}
 	if !gotLock {
@@ -445,9 +450,10 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	}
 
 	if errWrite := writeClaudeDeviceProfileToHome(ctx, client, valueKey, candidate); errWrite != nil {
+		releaseLockIfOwned()
 		return ClaudeDeviceProfile{}, errWrite
 	}
-	releaseClaudeDeviceProfileLock(ctx, client, lockKey)
+	releaseLockIfOwned()
 	return candidate, nil
 }
 

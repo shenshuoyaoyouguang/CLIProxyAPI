@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	vertexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/vertex"
@@ -539,6 +540,9 @@ func (e *GeminiVertexExecutor) executeStreamCore(
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
+		// A clean stream with no usage-bearing chunk must still publish a record
+		// so the request does not go unaccounted (idempotent).
+		defer reporter.EnsurePublished(ctx)
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("vertex executor: close response body error: %v", errClose)
@@ -551,9 +555,12 @@ func (e *GeminiVertexExecutor) executeStreamCore(
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			// Strip the SSE "data: " prefix so the translator receives bare JSON;
+			// Filter mid-stream usage metadata so a non-terminal chunk cannot win
+			// the reporter's once.Do over the complete terminal count, then strip
+			// the SSE "data: " prefix so the translator receives bare JSON;
 			// otherwise gjson lookups in the gemini->claude translator find nothing.
-			payload := helps.JSONPayload(line)
+			filtered := helps.FilterSSEUsageMetadata(line)
+			payload := helps.JSONPayload(filtered)
 			if len(payload) == 0 {
 				continue
 			}
@@ -569,20 +576,23 @@ func (e *GeminiVertexExecutor) executeStreamCore(
 				}
 			}
 		}
-		lines := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param, claudeInputTokens)
-		for i := range lines {
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
-			case <-ctx.Done():
-				return
-			}
-		}
+		// Surface a broken/truncated stream before emitting the terminal marker:
+		// clients that stop at message_stop would otherwise never see the error.
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
+			}
+			return
+		}
+		lines := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param, claudeInputTokens)
+		for i := range lines {
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
@@ -853,7 +863,28 @@ func vertexBaseURL(location string) string {
 	return fmt.Sprintf("https://%s-aiplatform.googleapis.com", loc)
 }
 
+// vertexTokenSourceCache caches the oauth2 token source per auth identity so
+// service-account requests do not pay a fresh JWT sign + token endpoint round
+// trip on every request. The cached source refreshes internally on expiry.
+// Bounded by the number of distinct vertex auths.
+var vertexTokenSourceCache sync.Map // authID -> oauth2.TokenSource
+
 func vertexAccessToken(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, saJSON []byte) (string, error) {
+	cacheKey := ""
+	if auth != nil {
+		cacheKey = auth.ID
+	}
+	if cacheKey != "" {
+		if cached, ok := vertexTokenSourceCache.Load(cacheKey); ok {
+			if ts, ok := cached.(oauth2.TokenSource); ok && ts != nil {
+				tok, errTok := ts.Token()
+				if errTok != nil {
+					return "", fmt.Errorf("vertex executor: get access token failed: %w", errTok)
+				}
+				return tok.AccessToken, nil
+			}
+		}
+	}
 	if httpClient := helps.NewProxyAwareHTTPClient(ctx, cfg, auth, 0); httpClient != nil {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	}
@@ -861,6 +892,9 @@ func vertexAccessToken(ctx context.Context, cfg *config.Config, auth *cliproxyau
 	creds, errCreds := google.CredentialsFromJSON(ctx, saJSON, "https://www.googleapis.com/auth/cloud-platform")
 	if errCreds != nil {
 		return "", fmt.Errorf("vertex executor: parse service account json failed: %w", errCreds)
+	}
+	if cacheKey != "" {
+		vertexTokenSourceCache.Store(cacheKey, creds.TokenSource)
 	}
 	tok, errTok := creds.TokenSource.Token()
 	if errTok != nil {

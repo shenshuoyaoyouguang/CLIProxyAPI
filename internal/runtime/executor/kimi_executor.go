@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
@@ -765,13 +766,26 @@ func applyKimiHeadersWithAuth(r *http.Request, token string, stream bool, auth *
 	}
 }
 
-// getKimiHostname returns the machine hostname.
+var (
+	kimiHostnameOnce sync.Once
+	kimiHostnameVal  string
+
+	kimiDeviceIDOnce sync.Once
+	kimiDeviceIDVal  string
+)
+
+// getKimiHostname returns the machine hostname (cached: it runs os.Hostname on
+// every request header build otherwise).
 func getKimiHostname() string {
-	hostname, err := os.Hostname()
-	if err != nil {
-		return "unknown"
-	}
-	return hostname
+	kimiHostnameOnce.Do(func() {
+		hostname, err := os.Hostname()
+		if err != nil {
+			kimiHostnameVal = "unknown"
+			return
+		}
+		kimiHostnameVal = hostname
+	})
+	return kimiHostnameVal
 }
 
 // getKimiDeviceModel returns a device model string matching kimi-cli format.
@@ -781,6 +795,16 @@ func getKimiDeviceModel() string {
 
 // getKimiDeviceID returns a stable device ID, matching kimi-cli storage location.
 func getKimiDeviceID() string {
+	kimiDeviceIDOnce.Do(func() {
+		kimiDeviceIDVal = resolveKimiDeviceIDFromDisk()
+	})
+	return kimiDeviceIDVal
+}
+
+// resolveKimiDeviceIDFromDisk reads the device ID from kimi-cli's storage
+// location. It is called once and cached: the home-directory probing and file
+// read would otherwise run on every request header build.
+func resolveKimiDeviceIDFromDisk() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "cli-proxy-api-device"
