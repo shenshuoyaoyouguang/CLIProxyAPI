@@ -276,7 +276,10 @@ func ApplyThinkingWithSummary(body []byte, model string, fromFormat string, toFo
 // visibility from the original source body.
 func ApplyThinkingWithModelInfo(body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, modelInfo *registry.ModelInfo) ([]byte, error) {
 	summaryConfig := ExtractSummaryConfig(sourceBody, fromFormat)
-	if len(sourceBody) == 0 {
+	// The source body is authoritative, but a summary intent produced by the
+	// translation into the target body (e.g. a normalizer that materialized the
+	// visibility field) must not be discarded when the source carries none.
+	if summaryConfig.Mode == SummaryUnspecified {
 		summaryConfig = ExtractSummaryConfig(body, toFormat)
 	}
 	return ApplyThinkingWithModelInfoAndSummary(body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, summaryConfig)
@@ -450,6 +453,10 @@ func thinkingIsFullyDisabled(config ThinkingConfig) bool {
 func shouldMapConfiguredHighIntent(fromFormat, toFormat string, modelInfo *registry.ModelInfo) bool {
 	fromFormat = strings.ToLower(strings.TrimSpace(fromFormat))
 	toFormat = strings.ToLower(strings.TrimSpace(toFormat))
+	// Different wire formats (e.g. openai-response vs codex) carry different
+	// effort vocabularies, so high intent maps to the closest supported level
+	// even when both belong to the same provider family. Identical wire formats
+	// keep the explicit level authoritative unless the model family differs.
 	if fromFormat != toFormat {
 		return true
 	}
@@ -586,7 +593,11 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 		return body, nil
 	}
 
-	config = normalizeUserDefinedConfig(config, fromFormat, toFormat)
+	// The provider appliers route ModeLevel to their level format natively (e.g.
+	// Gemini 3.x thinkingLevel), so a request's explicit level must not be
+	// coerced to a budget here: a user-defined Gemini 3 model would otherwise
+	// receive thinkingBudget and be rejected or ignored by level-only upstreams.
+	// ModeBudget requests are left untouched as well.
 	log.WithFields(log.Fields{
 		"provider": toFormat,
 		"model":    modelID,
@@ -602,26 +613,6 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 		return applied, nil
 	}
 	return applySummaryConfigForProvider(applied, toFormat, modelID, providerKey, modelInfo, summaryConfig), nil
-}
-
-func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat string) ThinkingConfig {
-	if config.Mode != ModeLevel {
-		return config
-	}
-	if toFormat == "claude" {
-		return config
-	}
-	if !isBudgetCapableProvider(toFormat) {
-		return config
-	}
-	budget, ok := ConvertLevelToBudget(string(config.Level))
-	if !ok {
-		return config
-	}
-	config.Mode = ModeBudget
-	config.Budget = budget
-	config.Level = ""
-	return config
 }
 
 // extractThinkingConfig extracts provider-specific thinking config from request body.

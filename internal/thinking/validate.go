@@ -64,6 +64,7 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	// (typically "high") instead of failing validation.
 	toCapability := detectModelCapability(modelInfo)
 	toHasLevelSupport := toCapability == CapabilityLevelOnly || toCapability == CapabilityHybrid
+	capability := toCapability
 	modelFamilyMismatch := false
 	if modelInfo != nil && strings.ToLower(strings.TrimSpace(modelInfo.Type)) != "" {
 		// providerFamily resolves the model family from the registered Type (the
@@ -82,7 +83,6 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 	strictBudget := !fromSuffix && fromFormat != "" && isSameProviderFamily(fromFormat, toFormat) && !modelFamilyMismatch
 	budgetDerivedFromLevel := false
 
-	capability := detectModelCapability(modelInfo)
 	switch capability {
 	case CapabilityBudgetOnly:
 		if config.Mode == ModeLevel {
@@ -106,6 +106,11 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 			}
 			// When converting Budget -> Level for level-only models, clamp the derived standard level
 			// to the nearest supported level. Special values (none/auto) are preserved.
+			// Derived levels clamp unconditionally: a budget is an approximation of
+			// the user's intent, so the nearest supported level is the correct
+			// outcome. Only user-explicit levels are validated strictly (the
+			// level-support check below), mirroring the budget-only model's strict
+			// range error for non-derived budgets.
 			config.Mode = ModeLevel
 			config.Level = clampLevel(ThinkingLevel(level), modelInfo, toFormat)
 			config.Budget = 0
@@ -361,17 +366,6 @@ func normalizeLevels(levels []string) []string {
 		out[i] = strings.ToLower(strings.TrimSpace(l))
 	}
 	return out
-}
-
-// isBudgetCapableProvider returns true if the provider supports budget-based thinking.
-// These providers may also support level-based thinking (hybrid models).
-func isBudgetCapableProvider(provider string) bool {
-	switch provider {
-	case "gemini", "antigravity", "claude":
-		return true
-	default:
-		return false
-	}
 }
 
 func abs(x int) int {

@@ -66,16 +66,29 @@ func IsInactiveReasoningEffort(effort string) bool {
 // Returns ("", false) when no non-empty thinking text is found.
 func LiftDeepSeekReasoningText(msg gjson.Result) (string, bool) {
 	var parts []string
+	// The same CoT can be present in both thinking_blocks and the content array
+	// after translation (e.g. LiteLLM/Anthropic adapters emit both shapes);
+	// concatenating it twice would duplicate the reasoning text in the
+	// passback payload.
+	seen := make(map[string]struct{})
+	addPart := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		if _, dup := seen[text]; dup {
+			return
+		}
+		seen[text] = struct{}{}
+		parts = append(parts, text)
+	}
 
 	if blocks := msg.Get("thinking_blocks"); blocks.Exists() && blocks.IsArray() {
 		for _, block := range blocks.Array() {
 			if t := block.Get("type").String(); t != "" && t != "thinking" {
 				continue
 			}
-			text := strings.TrimSpace(GetThinkingText(block))
-			if text != "" {
-				parts = append(parts, text)
-			}
+			addPart(GetThinkingText(block))
 		}
 	}
 
@@ -84,10 +97,7 @@ func LiftDeepSeekReasoningText(msg gjson.Result) (string, bool) {
 			if part.Get("type").String() != "thinking" {
 				continue
 			}
-			text := strings.TrimSpace(GetThinkingText(part))
-			if text != "" {
-				parts = append(parts, text)
-			}
+			addPart(GetThinkingText(part))
 		}
 	}
 

@@ -131,11 +131,22 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 			return deleteOutputConfigEffort(body), nil
 		}
 
-		// Legacy fallback: enable thinking without specifying budget_tokens.
+		// Legacy fallback for manual-thinking Claude models: "auto" maps to the
+		// model's minimum budget. Anthropic rejects thinking.type:"enabled"
+		// without budget_tokens (HTTP 400), so a bare "enabled" here would fail
+		// upstream. Without capability info, leave the request untouched so the
+		// client's own thinking configuration stands.
+		minBudget := 0
+		if modelInfo != nil && modelInfo.Thinking != nil {
+			minBudget = modelInfo.Thinking.Min
+		}
+		if minBudget <= 0 {
+			return body, nil
+		}
 		thRaw, writable := thinkingRaw(body)
 		if writable {
 			thRaw, _ = sjson.SetBytes(thRaw, "type", "enabled")
-			thRaw, _ = sjson.DeleteBytes(thRaw, "budget_tokens")
+			thRaw, _ = sjson.SetBytes(thRaw, "budget_tokens", minBudget)
 			body = setThinkingRaw(body, thRaw)
 		}
 		return deleteOutputConfigEffort(body), nil
@@ -223,13 +234,10 @@ func applyCompatibleClaude(body []byte, config thinking.ThinkingConfig) ([]byte,
 	case thinking.ModeNone:
 		return applyClaudeDisabled(body, true), nil
 	case thinking.ModeAuto:
-		thRaw, writable := thinkingRaw(body)
-		if writable {
-			thRaw, _ = sjson.SetBytes(thRaw, "type", "enabled")
-			thRaw, _ = sjson.DeleteBytes(thRaw, "budget_tokens")
-			body = setThinkingRaw(body, thRaw)
-		}
-		return deleteOutputConfigEffort(body), nil
+		// For user-defined models there is no capability data to derive a valid
+		// "auto" from: Anthropic rejects thinking.type:"enabled" without
+		// budget_tokens, so leave the request untouched rather than risk a 400.
+		return body, nil
 	case thinking.ModeLevel:
 		// For user-defined models, interpret ModeLevel as Claude adaptive thinking effort.
 		// Upstream is responsible for validating whether the target model supports it.

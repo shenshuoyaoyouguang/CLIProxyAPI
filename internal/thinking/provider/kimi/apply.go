@@ -113,12 +113,10 @@ func applyCompatibleKimi(body []byte, config thinking.ThinkingConfig) ([]byte, e
 		}
 		effort = string(config.Level)
 	case thinking.ModeNone:
-		if config.Level == "" || config.Level == thinking.LevelNone {
-			return applyDisabledThinking(body)
-		}
-		if config.Level != "" {
-			effort = string(config.Level)
-		}
+		// User-defined models skip validation, so a clamped fallback level can
+		// never legitimately reach here: ModeNone must always mean disabled.
+		// Silently enabling thinking for a disable request would be a surprise.
+		return applyDisabledThinking(body)
 	case thinking.ModeAuto:
 		effort = string(thinking.LevelAuto)
 	case thinking.ModeBudget:
