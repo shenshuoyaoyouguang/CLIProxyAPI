@@ -619,12 +619,14 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			setSSEHeaders()
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 
-			// Write the first chunk
+			// Write the first chunk. Commit and flush regardless: when the chunk
+			// is filtered, an unflushed header set would leave the client waiting
+			// on an uncommitted response until the next chunk (or [DONE]).
 			converted := convertChatCompletionsStreamChunkToCompletions(chunk)
 			if converted != nil {
 				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(converted))
-				flusher.Flush()
 			}
+			flusher.Flush()
 
 			done := make(chan struct{})
 			var doneOnce sync.Once

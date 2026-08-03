@@ -261,7 +261,9 @@ func receiveInitialModelExecutionChunk(ctx context.Context, dataChan <-chan []by
 				return nil, dataChan, errChan, errMsg
 			}
 		case <-done:
-			return nil, dataChan, errChan, nil
+			// Cancellation is not a successful empty stream: the caller would
+			// otherwise commit a 200 with a truncated response.
+			return nil, dataChan, errChan, &interfaces.ErrorMessage{StatusCode: http.StatusRequestTimeout, Error: ctx.Err()}
 		}
 	}
 	return nil, dataChan, errChan, nil

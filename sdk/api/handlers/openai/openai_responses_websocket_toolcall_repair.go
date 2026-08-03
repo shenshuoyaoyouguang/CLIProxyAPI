@@ -16,8 +16,10 @@ const (
 	websocketToolOutputCacheTTL           = 30 * time.Minute
 )
 
-var defaultWebsocketToolOutputCache = newWebsocketToolOutputCache(0, websocketToolOutputCacheMaxPerSession)
-var defaultWebsocketToolCallCache = newWebsocketToolOutputCache(0, websocketToolOutputCacheMaxPerSession)
+// The TTL bounds sessions leaked when a connection dies between retain and the
+// release defer (e.g. a panic in setup): without it those entries never expire.
+var defaultWebsocketToolOutputCache = newWebsocketToolOutputCache(websocketToolOutputCacheTTL, websocketToolOutputCacheMaxPerSession)
+var defaultWebsocketToolCallCache = newWebsocketToolOutputCache(websocketToolOutputCacheTTL, websocketToolOutputCacheMaxPerSession)
 var defaultWebsocketToolSessionRefs = newWebsocketToolSessionRefCounter()
 var defaultWebsocketToolCacheTransactionMu sync.RWMutex
 

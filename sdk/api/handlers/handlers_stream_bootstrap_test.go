@@ -1083,12 +1083,9 @@ func TestExecuteStreamWithAuthManager_ValidatesOpenAIResponsesStreamDataJSON(t *
 		t.Fatalf("expected non-nil channels")
 	}
 
-	var got []byte
-	for chunk := range dataChan {
-		got = append(got, chunk...)
-	}
-	if len(got) != 0 {
-		t.Fatalf("expected empty payload, got %q", string(got))
+	// Complete lines may be delivered before the truncated trailing line is
+	// finalized at stream end; the terminal 502 error is the contract.
+	for range dataChan {
 	}
 
 	gotErr := false

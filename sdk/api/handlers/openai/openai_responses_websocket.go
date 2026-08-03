@@ -39,6 +39,15 @@ const (
 	responsesWebsocketUpstreamModeHTTP    = "http"
 
 	codexLocalCompactionSummaryPrefix = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:"
+
+	// Downstream responses websocket liveness (mirrors the wsrelay session
+	// pattern): pings keep alive-idle clients answering, and the read deadline
+	// only fires when the peer stops responding entirely (no messages and no
+	// pongs for responsesWebsocketReadTimeout), so a vanished client cannot pin
+	// the handler goroutine and its upstream execution session forever.
+	responsesWebsocketReadTimeout      = 90 * time.Second
+	responsesWebsocketPingPeriod       = 30 * time.Second
+	responsesWebsocketPingWriteTimeout = 10 * time.Second
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -198,6 +207,31 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	clientIP := websocketClientAddress(c)
 	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientIP)
 
+	// Liveness guard: a client that vanished without a close frame (network
+	// drop, sleep) must not pin this goroutine and its upstream execution
+	// session forever. Alive-idle clients keep the deadline moving via pongs;
+	// data-only clients re-arm it on every message in the read loop below.
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(responsesWebsocketReadTimeout))
+	})
+	stopPings := make(chan struct{})
+	defer close(stopPings)
+	go func() {
+		ticker := time.NewTicker(responsesWebsocketPingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopPings:
+				return
+			case <-ticker.C:
+				if errPing := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(responsesWebsocketPingWriteTimeout)); errPing != nil {
+					// Peer is gone; the next ReadMessage surfaces the close.
+					return
+				}
+			}
+		}
+	}()
+
 	requestLogEnabled := h != nil && h.Cfg != nil && h.Cfg.RequestLog
 	wsTimelineLog := newWebsocketTimelineLog(requestLogEnabled, websocketTimelineSourceFromContext(c))
 
@@ -308,6 +342,13 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	}
 
 	for {
+		// Re-arm the read deadline before every read: refreshing it only in the
+		// pong handler would tear down active data-only clients that do not emit
+		// pongs once the initial deadline expired.
+		if errDeadline := conn.SetReadDeadline(time.Now().Add(responsesWebsocketReadTimeout)); errDeadline != nil {
+			wsTerminateErr = errDeadline
+			return
+		}
 		msgType, payload, errReadMessage := conn.ReadMessage()
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage

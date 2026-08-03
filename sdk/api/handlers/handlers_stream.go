@@ -127,6 +127,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 		defer close(errChan)
 		chunkIndex := 0
 		var historyChunks [][]byte
+		var pendingSSEData []byte
 		for {
 			chunk, ok, canceled := nextStreamChunk(ctx, nil, nil, chunks)
 			if canceled {
@@ -138,6 +139,22 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 				return
 			}
 			if !ok {
+				if responseProtocol == "openai-response" {
+					if errValidate := finalizeSSEDataJSON(pendingSSEData); errValidate != nil {
+						completionOutcome = pluginapi.RequestCompletionFailed
+						completionStatus = http.StatusBadGateway
+						completionErr = errValidate
+						select {
+						case errChan <- &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: errValidate}:
+						case <-done:
+							completionOutcome = pluginapi.RequestCompletionCanceled
+							completionStatus = 0
+							if ctx != nil {
+								completionErr = ctx.Err()
+							}
+						}
+					}
+				}
 				return
 			}
 			if chunk.Err != nil {
@@ -187,7 +204,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 				chunkIndex++
 			}
 			if responseProtocol == "openai-response" {
-				if errValidate := validateSSEDataJSON(payload); errValidate != nil {
+				if errValidate := validateSSEDataJSON(&pendingSSEData, payload); errValidate != nil {
 					completionOutcome = pluginapi.RequestCompletionFailed
 					completionStatus = http.StatusBadGateway
 					completionErr = errValidate
@@ -343,6 +360,10 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		rawStreamHeaders = finalInterceptorHeaders(rawStreamHeaders, headers)
 	}
 
+	// pendingSSEData buffers a trailing partial SSE line across executor chunks
+	// for openai-response streams; finalized at stream end.
+	var pendingSSEData []byte
+
 	applyStreamHeaderInit := func() {
 		if !streamInterceptorsActive || streamHeaderInitialized {
 			return
@@ -395,7 +416,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			(*chunkIndex)++
 		}
 		if responseProtocol == "openai-response" {
-			if errValidate := validateSSEDataJSON(payload); errValidate != nil {
+			if errValidate := validateSSEDataJSON(&pendingSSEData, payload); errValidate != nil {
 				return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: errValidate}
 			}
 		}
@@ -504,6 +525,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		bootstrapPayload = nil
 		bootstrapChunkIndex = 0
 		bootstrapHistoryChunks = nil
+		pendingSSEData = nil
 		chunks = retryResult.Chunks
 		if chunks == nil {
 			closed := make(chan coreexecutor.StreamChunk)
@@ -613,6 +635,18 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 				return
 			}
 			if !ok {
+				if responseProtocol == "openai-response" {
+					if errValidate := finalizeSSEDataJSON(pendingSSEData); errValidate != nil {
+						completionOutcome = pluginapi.RequestCompletionFailed
+						completionStatus = http.StatusBadGateway
+						completionErr = errValidate
+						if !sendErr(&interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: errValidate}) && ctx != nil && ctx.Err() != nil {
+							completionOutcome = pluginapi.RequestCompletionCanceled
+							completionStatus = 0
+							completionErr = ctx.Err()
+						}
+					}
+				}
 				return
 			}
 			if chunk.Err != nil {
@@ -661,43 +695,69 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	return dataChan, upstreamHeaders, errChan
 }
 
-// validateSSEDataJSON verifies that every data: line in an SSE chunk carries
-// valid JSON. It scans the newline boundaries in place so the streaming hot
-// path does not allocate a per-chunk line slice.
-func validateSSEDataJSON(chunk []byte) error {
+// validateSSEDataJSON verifies that every complete data: line in an SSE chunk
+// carries valid JSON. It scans the newline boundaries in place so the streaming
+// hot path does not allocate a per-chunk line slice. A trailing line without a
+// terminating newline may be half of an SSE frame split across executor chunks:
+// it is buffered in *pending and validated when the continuation arrives (or by
+// finalizeSSEDataJSON when the stream ends). Validating it in isolation would
+// produce false 502s on boundary splits.
+func validateSSEDataJSON(pending *[]byte, chunk []byte) error {
+	if pending != nil && len(*pending) > 0 {
+		combined := make([]byte, 0, len(*pending)+len(chunk))
+		combined = append(combined, (*pending)...)
+		combined = append(combined, chunk...)
+		*pending = nil
+		chunk = combined
+	}
 	for start := 0; start < len(chunk); {
 		end := bytes.IndexByte(chunk[start:], '\n')
-		var line []byte
 		if end < 0 {
-			line = chunk[start:]
-			start = len(chunk)
-		} else {
-			line = chunk[start : start+end]
-			start += end + 1
+			if pending != nil {
+				*pending = append((*pending)[:0], chunk[start:]...)
+			}
+			break
 		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
+		line := chunk[start : start+end]
+		start += end + 1
+		if errLine := validateSSEDataLine(line); errLine != nil {
+			return errLine
 		}
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
-		}
-		data := bytes.TrimSpace(line[5:])
-		if len(data) == 0 {
-			continue
-		}
-		if bytes.Equal(data, []byte("[DONE]")) {
-			continue
-		}
-		if json.Valid(data) {
-			continue
-		}
-		const max = 512
-		preview := data
-		if len(preview) > max {
-			preview = preview[:max]
-		}
-		return fmt.Errorf("invalid SSE data JSON (len=%d): %q", len(data), preview)
 	}
 	return nil
+}
+
+// finalizeSSEDataJSON validates the trailing partial line buffered by
+// validateSSEDataJSON once the stream ends without completing it.
+func finalizeSSEDataJSON(pending []byte) error {
+	if len(pending) == 0 {
+		return nil
+	}
+	return validateSSEDataLine(pending)
+}
+
+func validateSSEDataLine(line []byte) error {
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 {
+		return nil
+	}
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return nil
+	}
+	data := bytes.TrimSpace(line[5:])
+	if len(data) == 0 {
+		return nil
+	}
+	if bytes.Equal(data, []byte("[DONE]")) {
+		return nil
+	}
+	if json.Valid(data) {
+		return nil
+	}
+	const max = 512
+	preview := data
+	if len(preview) > max {
+		preview = preview[:max]
+	}
+	return fmt.Errorf("invalid SSE data JSON (len=%d): %q", len(data), preview)
 }
