@@ -369,13 +369,14 @@ func disableThinkingIfToolChoiceForced(body []byte) []byte {
 }
 
 // normalizeClaudeSamplingForUpstream keeps Anthropic message requests valid.
+// Extended thinking requires default sampling values (temperature must be 1,
+// top_p/top_k are unsupported), so they are dropped only while thinking is
+// active; without thinking the user's sampling parameters pass through.
 func normalizeClaudeSamplingForUpstream(body []byte) []byte {
-	body, _ = sjson.DeleteBytes(body, "temperature")
-	body, _ = sjson.DeleteBytes(body, "top_p")
-
 	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
 	switch thinkingType {
 	case "enabled", "adaptive", "auto":
+		body, _ = sjson.DeleteBytes(body, "temperature")
 		body, _ = sjson.DeleteBytes(body, "top_p")
 		body, _ = sjson.DeleteBytes(body, "top_k")
 	}
@@ -816,7 +817,9 @@ func rebuildMidSystemMessagesToTopLevel(payload []byte) []byte {
 	keptMessages := make([]string, 0, int(messages.Get("#").Int()))
 	messages.ForEach(func(_, message gjson.Result) bool {
 		if strings.EqualFold(strings.TrimSpace(message.Get("role").String()), "system") {
-			movedSystemParts = append(movedSystemParts, claudeSystemTextParts(message.Get("content"))...)
+			// Preserve every content block (not only text) so mid-stream
+			// system messages do not lose non-text blocks when hoisted.
+			movedSystemParts = append(movedSystemParts, claudeSystemContentParts(message.Get("content"))...)
 			return true
 		}
 		keptMessages = append(keptMessages, message.Raw)
@@ -837,6 +840,45 @@ func rebuildMidSystemMessagesToTopLevel(payload []byte) []byte {
 		payload = updated
 	}
 	return payload
+}
+
+// claudeSystemContentParts extracts every content block (plain strings are
+// wrapped into text blocks) in original order, including non-text block
+// types, so hoisting mid-conversation system messages loses nothing.
+func claudeSystemContentParts(content gjson.Result) []string {
+	if !content.Exists() {
+		return nil
+	}
+	if content.Type == gjson.String {
+		text := content.String()
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		block := []byte(`{"type":"text","text":""}`)
+		block, _ = sjson.SetBytes(block, "text", text)
+		return []string{string(block)}
+	}
+	if !content.IsArray() {
+		return nil
+	}
+
+	var parts []string
+	content.ForEach(func(_, item gjson.Result) bool {
+		if item.Type == gjson.String {
+			text := item.String()
+			if strings.TrimSpace(text) != "" {
+				block := []byte(`{"type":"text","text":""}`)
+				block, _ = sjson.SetBytes(block, "text", text)
+				parts = append(parts, string(block))
+			}
+			return true
+		}
+		if item.IsObject() && item.Get("type").String() != "" {
+			parts = append(parts, item.Raw)
+		}
+		return true
+	})
+	return parts
 }
 
 func claudeSystemTextParts(content gjson.Result) []string {

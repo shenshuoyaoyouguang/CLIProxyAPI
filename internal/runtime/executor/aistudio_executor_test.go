@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -125,6 +126,93 @@ func TestAIStudioExecutorExecuteStartsTTFTBeforeRelayWait(t *testing.T) {
 	record := waitForAIStudioUsageRecord(t, plugin.records, "gemini-3.1-pro-preview")
 	if record.TTFT < delay {
 		t.Fatalf("ttft = %v, want >= %v", record.TTFT, delay)
+	}
+}
+
+// TestAIStudioExecutorExecuteStreamEmitsMessageStopForClaude verifies the
+// stream ends with a [DONE]-derived message_stop for Claude-format output
+// instead of closing silently (which would hang Claude clients) (H24c).
+func TestAIStudioExecutorExecuteStreamEmitsMessageStopForClaude(t *testing.T) {
+	const authID = "aistudio-done-auth"
+	relay := wsrelay.NewManager(wsrelay.Options{
+		ProviderFactory: func(*http.Request) (string, error) {
+			return authID, nil
+		},
+	})
+	server := httptest.NewServer(relay.Handler())
+	defer server.Close()
+	defer func() {
+		if errStop := relay.Stop(context.Background()); errStop != nil {
+			t.Errorf("relay stop error = %v", errStop)
+		}
+	}()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + relay.Path()
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if errDial != nil {
+		t.Fatalf("dial websocket: %v", errDial)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Errorf("websocket close error = %v", errClose)
+		}
+	}()
+
+	clientDone := make(chan error, 1)
+	go func() {
+		var msg wsrelay.Message
+		if errReadJSON := conn.ReadJSON(&msg); errReadJSON != nil {
+			clientDone <- fmt.Errorf("read relay request: %w", errReadJSON)
+			return
+		}
+		if msg.Type != wsrelay.MessageTypeHTTPReq {
+			clientDone <- fmt.Errorf("relay message type = %q, want %q", msg.Type, wsrelay.MessageTypeHTTPReq)
+			return
+		}
+		write := func(typ string, payload map[string]any) bool {
+			if errWriteJSON := conn.WriteJSON(wsrelay.Message{ID: msg.ID, Type: typ, Payload: payload}); errWriteJSON != nil {
+				clientDone <- fmt.Errorf("write relay %s: %w", typ, errWriteJSON)
+				return false
+			}
+			return true
+		}
+		if !write(wsrelay.MessageTypeStreamStart, map[string]any{
+			"status":  float64(http.StatusOK),
+			"headers": map[string]any{"Content-Type": "text/event-stream"},
+		}) {
+			return
+		}
+		if !write(wsrelay.MessageTypeStreamChunk, map[string]any{
+			"data": "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]}}]}\n\n",
+		}) {
+			return
+		}
+		if !write(wsrelay.MessageTypeStreamEnd, map[string]any{}) {
+			return
+		}
+		clientDone <- nil
+	}()
+
+	exec := NewAIStudioExecutor(&config.Config{}, "aistudio", relay)
+	res, errExecute := exec.ExecuteStream(context.Background(), &cliproxyauth.Auth{ID: authID, Provider: "aistudio"}, cliproxyexecutor.Request{
+		Model:   "claude-sonnet-4-6",
+		Payload: []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	if errExecute != nil {
+		t.Fatalf("ExecuteStream() error = %v", errExecute)
+	}
+	var all []byte
+	for chunk := range res.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("chunk error = %v", chunk.Err)
+		}
+		all = append(all, chunk.Payload...)
+	}
+	if !bytes.Contains(all, []byte("message_stop")) {
+		t.Fatalf("stream missing message_stop terminal: %s", string(all))
+	}
+	if errClient := <-clientDone; errClient != nil {
+		t.Fatal(errClient)
 	}
 }
 

@@ -22,6 +22,18 @@ var (
 	claudeInputTokenizerErr   error
 )
 
+const (
+	// Flat token estimates for media blocks whose payloads are base64 data and
+	// must not be tokenized as text (see collectClaudeContentTokenSegments).
+	// "a"-runs approximate token count because single letters are individual
+	// O200k tokens, matching the xai executor's audio estimate convention.
+	claudeImageEstimateTokens            = 258 // Anthropic's documented default-detail image cost
+	claudeAudioTokensPerSecond           = 32
+	claudeAudioFlatEstimateTokens        = 512  // fallback when no duration is present
+	claudeVideoEstimateTokens            = 1024 // flat fallback
+	claudeRedactedThinkingEstimateTokens = 128
+)
+
 // ClaudeInputTokenState tracks the one-time input token update for a translated Claude stream.
 type ClaudeInputTokenState struct {
 	upstreamFormat  sdktranslator.Format
@@ -29,7 +41,13 @@ type ClaudeInputTokenState struct {
 	originalRequest []byte
 	codec           tokenizer.Codec
 	handled         bool
+	pendingLine     []byte // trailing partial SSE line carried across chunks
 }
+
+// maxClaudeInputPendingLineBytes bounds the carried-over partial line so a
+// pathological upstream line cannot grow memory unboundedly. message_start
+// lines are tiny, so the cap never applies to the event we are looking for.
+const maxClaudeInputPendingLineBytes = 1 << 20
 
 // NewClaudeInputTokenState creates request-scoped state for translated Claude input token usage.
 func NewClaudeInputTokenState(sourceFormat, upstreamFormat, responseFormat sdktranslator.Format, originalRequest []byte) *ClaudeInputTokenState {
@@ -135,8 +153,10 @@ func collectClaudeSystemTokenSegments(system gjson.Result, segments *[]string) {
 	system.ForEach(func(_, part gjson.Result) bool {
 		if part.Type == gjson.String {
 			appendClaudeTokenString(segments, part.String())
-		} else if part.Get("type").String() == "text" {
-			appendClaudeTokenString(segments, part.Get("text").String())
+		} else {
+			// Route non-string blocks (text, image, audio, video, ...) through
+			// the shared block collector so media blocks get flat estimates.
+			collectClaudeContentTokenSegments(part, segments)
 		}
 		return true
 	})
@@ -207,8 +227,21 @@ func collectClaudeContentTokenSegments(content gjson.Result, segments *[]string)
 		collectClaudeContentTokenSegments(content.Get("output"), segments)
 	case "tool_reference":
 		appendClaudeTokenString(segments, content.Get("tool_name").String())
-	case "image", "input_audio", "audio", "video", "redacted_thinking":
-		return
+	case "image":
+		// Base64 media payloads are counted with flat estimates; tokenizing the
+		// base64 text itself would massively over-count.
+		appendClaudeTokenString(segments, strings.Repeat("a", claudeImageEstimateTokens))
+	case "input_audio", "audio":
+		if duration := content.Get("duration").Float(); duration > 0 {
+			appendClaudeTokenString(segments, strings.Repeat("a", int(duration*claudeAudioTokensPerSecond)))
+		} else {
+			appendClaudeTokenString(segments, strings.Repeat("a", claudeAudioFlatEstimateTokens))
+		}
+	case "video":
+		appendClaudeTokenString(segments, strings.Repeat("a", claudeVideoEstimateTokens))
+	case "redacted_thinking":
+		// No visible text; the upstream counts these as cached tokens.
+		appendClaudeTokenString(segments, strings.Repeat("a", claudeRedactedThinkingEstimateTokens))
 	case "":
 		appendClaudeTokenJSON(segments, content)
 	default:
@@ -298,13 +331,27 @@ func (state *ClaudeInputTokenState) apply(ctx context.Context, chunks [][]byte) 
 }
 
 func (state *ClaudeInputTokenState) applyChunk(ctx context.Context, chunk []byte) ([]byte, bool) {
+	if len(state.pendingLine) > 0 {
+		combined := make([]byte, 0, len(state.pendingLine)+len(chunk))
+		combined = append(combined, state.pendingLine...)
+		combined = append(combined, chunk...)
+		chunk = combined
+		state.pendingLine = nil
+	}
+
 	for lineStart := 0; lineStart < len(chunk); {
 		lineEnd := bytes.IndexByte(chunk[lineStart:], '\n')
 		if lineEnd < 0 {
-			lineEnd = len(chunk)
-		} else {
-			lineEnd += lineStart
+			// Unterminated trailing segment: a message_start line may be split
+			// across network reads, so carry it over instead of parsing (and
+			// losing) a partial JSON payload.
+			trailing := chunk[lineStart:]
+			if len(trailing) <= maxClaudeInputPendingLineBytes {
+				state.pendingLine = append([]byte(nil), trailing...)
+			}
+			break
 		}
+		lineEnd += lineStart
 
 		contentEnd := lineEnd
 		if contentEnd > lineStart && chunk[contentEnd-1] == '\r' {
@@ -350,9 +397,6 @@ func (state *ClaudeInputTokenState) applyChunk(ctx context.Context, chunk []byte
 			}
 		}
 
-		if lineEnd == len(chunk) {
-			break
-		}
 		lineStart = lineEnd + 1
 	}
 	return chunk, false

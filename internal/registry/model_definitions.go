@@ -28,6 +28,9 @@ type staticModelsJSON struct {
 	Kimi        []*ModelInfo `json:"kimi"`
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
+	ZAI         []*ModelInfo `json:"zai"`
+	DeepSeek    []*ModelInfo `json:"deepseek"`
+	Nvidia      []*ModelInfo `json:"nvidia"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -108,6 +111,21 @@ func AntigravityWebSearchModelFor(modelID string) string {
 // GetXAIModels returns the standard xAI Grok model definitions.
 func GetXAIModels() []*ModelInfo {
 	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
+}
+
+// GetZAIModels returns the standard Z.ai GLM model definitions.
+func GetZAIModels() []*ModelInfo {
+	return cloneModelInfos(getModels().ZAI)
+}
+
+// GetDeepSeekModels returns the standard DeepSeek model definitions.
+func GetDeepSeekModels() []*ModelInfo {
+	return cloneModelInfos(getModels().DeepSeek)
+}
+
+// GetNvidiaModels returns the standard NVIDIA model definitions.
+func GetNvidiaModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Nvidia)
 }
 
 // WithCodexBuiltins injects hard-coded Codex-only model definitions that should
@@ -277,6 +295,9 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - kimi
 //   - antigravity
 //   - xai
+//   - zai
+//   - deepseek
+//   - nvidia
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
@@ -296,6 +317,12 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAntigravityModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
+	case "zai", "z-ai", "glm":
+		return GetZAIModels()
+	case "deepseek":
+		return GetDeepSeekModels()
+	case "nvidia":
+		return GetNvidiaModels()
 	default:
 		return nil
 	}
@@ -318,6 +345,9 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Kimi,
 		data.Antigravity,
 		data.XAI,
+		data.ZAI,
+		data.DeepSeek,
+		data.Nvidia,
 	}
 	for _, models := range allModels {
 		for _, m := range models {

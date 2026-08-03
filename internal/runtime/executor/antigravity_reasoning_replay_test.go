@@ -980,7 +980,7 @@ func TestAntigravityReasoningReplayPreservesRepeatedIDLessCallsAcrossSplitSSEPar
 func TestAntigravityReasoningReplayLegacyAmbiguousIDLessCallFailsClosed(t *testing.T) {
 	item := []byte(`{"type":"function_call_part","contentIndex":1,"partIndex":1,"name":"run_command","args":{"command":"same"},"thoughtSignature":"legacy-ambiguous-signature-123456"}`)
 	payload := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"run"}]},{"role":"model","parts":[{"functionCall":{"name":"run_command","args":{"command":"same"}}},{"functionCall":{"name":"run_command","args":{"command":"same"}}}]}]}}`)
-	out, changed := insertAntigravityReasoningReplayItems(payload, [][]byte{item})
+	out, changed := insertAntigravityReasoningReplayItemsWithSchemas(payload, [][]byte{item}, nil, nil)
 	if changed || strings.Contains(string(out), "legacy-ambiguous-signature") {
 		t.Fatalf("legacy ambiguous ID-less replay must fail closed: changed=%v body=%s", changed, out)
 	}
@@ -1133,9 +1133,11 @@ func TestAntigravityReasoningReplayScopePrefersStableSessionOverExecutionUUID(t 
 		Headers:  http.Header{"Session-Id": []string{"stable-session"}},
 		Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "socket-uuid"},
 	}
-	scope := antigravityReasoningReplayScopeFromRequest(context.Background(), "gemini-3.6-flash-high", cliproxyexecutor.Request{}, opts, nil)
-	if got := scope.sessionKey; got != "responses:stable-session" {
-		t.Fatalf("session key = %q, want stable Responses session", got)
+	ctx := testContextWithAPIKey("caller-a")
+	scope := antigravityReasoningReplayScopeFromRequest(ctx, "gemini-3.6-flash-high", cliproxyexecutor.Request{}, opts, nil)
+	want := xaiReasoningReplayIsolateSessionKey(ctx, "responses:stable-session")
+	if got := scope.sessionKey; got != want {
+		t.Fatalf("session key = %q, want %q (isolated stable Responses session)", got, want)
 	}
 }
 
@@ -1151,9 +1153,12 @@ func TestAntigravityReasoningReplayScopeKeepsExecutionAheadOfPromptCacheKey(t *t
 }
 
 func TestAntigravityReasoningReplayScopeSeparatesPromptCacheAndExplicitSessionNamespaces(t *testing.T) {
-	promptScope := antigravityReasoningReplayScopeFromRequest(context.Background(), "gemini-3.6-flash-high", cliproxyexecutor.Request{}, cliproxyexecutor.Options{OriginalRequest: []byte(`{"prompt_cache_key":"same-value"}`)}, nil)
-	sessionScope := antigravityReasoningReplayScopeFromRequest(context.Background(), "gemini-3.6-flash-high", cliproxyexecutor.Request{}, cliproxyexecutor.Options{OriginalRequest: []byte(`{"session_id":"same-value"}`)}, nil)
-	if promptScope.sessionKey != "prompt-cache:same-value" || sessionScope.sessionKey != "responses:same-value" || promptScope.sessionKey == sessionScope.sessionKey {
+	ctx := testContextWithAPIKey("caller-a")
+	promptScope := antigravityReasoningReplayScopeFromRequest(ctx, "gemini-3.6-flash-high", cliproxyexecutor.Request{}, cliproxyexecutor.Options{OriginalRequest: []byte(`{"prompt_cache_key":"same-value"}`)}, nil)
+	sessionScope := antigravityReasoningReplayScopeFromRequest(ctx, "gemini-3.6-flash-high", cliproxyexecutor.Request{}, cliproxyexecutor.Options{OriginalRequest: []byte(`{"session_id":"same-value"}`)}, nil)
+	wantPrompt := xaiReasoningReplayIsolateSessionKey(ctx, "prompt-cache:same-value")
+	wantSession := xaiReasoningReplayIsolateSessionKey(ctx, "responses:same-value")
+	if promptScope.sessionKey != wantPrompt || sessionScope.sessionKey != wantSession || promptScope.sessionKey == sessionScope.sessionKey {
 		t.Fatalf("prompt/session namespaces collided: %q vs %q", promptScope.sessionKey, sessionScope.sessionKey)
 	}
 }
@@ -1161,9 +1166,11 @@ func TestAntigravityReasoningReplayScopeSeparatesPromptCacheAndExplicitSessionNa
 func TestAntigravityReasoningReplayScopeUsesClaudeMetadataSession(t *testing.T) {
 	opts := cliproxyexecutor.Options{OriginalRequest: []byte(`{"metadata":{"user_id":"{\"session_id\":\"claude-session\",\"device_id\":\"device\"}"}}`)}
 	payload := []byte(`{"sessionId":"generated-from-prompt","request":{"contents":[{"role":"user","parts":[{"text":"same prompt"}]}]}}`)
-	scope := antigravityReasoningReplayScopeFromRequest(context.Background(), "gemini-3.6-flash-high", cliproxyexecutor.Request{}, opts, payload)
-	if got := scope.sessionKey; got != "claude:claude-session:agent:main" {
-		t.Fatalf("session key = %q, want Claude root-agent session", got)
+	ctx := testContextWithAPIKey("caller-a")
+	scope := antigravityReasoningReplayScopeFromRequest(ctx, "gemini-3.6-flash-high", cliproxyexecutor.Request{}, opts, payload)
+	want := xaiReasoningReplayIsolateSessionKey(ctx, "claude:claude-session:agent:main")
+	if got := scope.sessionKey; got != want {
+		t.Fatalf("session key = %q, want %q (isolated Claude root-agent session)", got, want)
 	}
 }
 
@@ -1177,9 +1184,10 @@ func TestAntigravityReasoningReplaySeparatesClaudeSessionTitleFromResumedTranscr
 		sig2  = "claude-resume-signature-two-123456"
 	)
 	headers := http.Header{"X-Claude-Code-Session-Id": []string{"claude-resume-session"}}
+	ctx := testContextWithAPIKey("caller-a")
 	mainOriginal1 := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"root prompt"}]}],"system":[{"type":"text","text":"You are Claude Code."}],"thinking":{"type":"enabled"},"tools":[{"name":"Read"}]}`)
 	mainRequest1 := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"root prompt"}]}]}}`)
-	mainScope := antigravityReasoningReplayScopeFromRequest(context.Background(), model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{Headers: headers, OriginalRequest: mainOriginal1}, mainRequest1)
+	mainScope := antigravityReasoningReplayScopeFromRequest(ctx, model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{Headers: headers, OriginalRequest: mainOriginal1}, mainRequest1)
 	mainAccumulator1 := newAntigravityReasoningReplayAccumulator(mainScope, mainRequest1)
 	mainAccumulator1.observeResponsePayload([]byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"answer one"},{"text":"","thoughtSignature":"` + sig1 + `"}]},"finishReason":"STOP"}]}}`))
 	mainAccumulator1.Commit(context.Background())
@@ -1188,7 +1196,7 @@ func TestAntigravityReasoningReplaySeparatesClaudeSessionTitleFromResumedTranscr
 	// reproduces Claude Code's concurrent title/main request ordering.
 	mainOriginal2 := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"root prompt"}]},{"role":"assistant","content":[{"type":"text","text":"answer one"}]},{"role":"user","content":[{"type":"text","text":"next prompt"}]}],"system":[{"type":"text","text":"You are Claude Code."}],"thinking":{"type":"enabled"},"tools":[{"name":"Read"}]}`)
 	mainRequest2 := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"root prompt"}]},{"role":"model","parts":[{"text":"answer one"}]},{"role":"user","parts":[{"text":"next prompt"}]}]}}`)
-	prepared2, scope2, errPrepare2 := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{Headers: headers, OriginalRequest: mainOriginal2}, mainRequest2)
+	prepared2, scope2, errPrepare2 := prepareAntigravityGeminiReasoningReplayPayload(ctx, model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{Headers: headers, OriginalRequest: mainOriginal2}, mainRequest2)
 	if errPrepare2 != nil {
 		t.Fatal(errPrepare2)
 	}
@@ -1198,7 +1206,7 @@ func TestAntigravityReasoningReplaySeparatesClaudeSessionTitleFromResumedTranscr
 
 	titleOriginal := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"root prompt"}]}],"system":[{"type":"text","text":"Generate a concise title that summarizes this session."}],"tools":[]}`)
 	titleRequest := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"root prompt"}]}]}}`)
-	preparedTitle, titleScope, errPrepareTitle := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{Headers: headers, OriginalRequest: titleOriginal}, titleRequest)
+	preparedTitle, titleScope, errPrepareTitle := prepareAntigravityGeminiReasoningReplayPayload(ctx, model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{Headers: headers, OriginalRequest: titleOriginal}, titleRequest)
 	if errPrepareTitle != nil {
 		t.Fatal(errPrepareTitle)
 	}
@@ -1218,7 +1226,7 @@ func TestAntigravityReasoningReplaySeparatesClaudeSessionTitleFromResumedTranscr
 
 	resumeOriginal := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"root prompt"}]},{"role":"assistant","content":[{"type":"text","text":"answer one"}]},{"role":"user","content":[{"type":"text","text":"next prompt"}]},{"role":"assistant","content":[{"type":"text","text":"answer two"}]},{"role":"user","content":[{"type":"text","text":"resumed prompt"}]}],"system":[{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],"thinking":{"type":"enabled"},"tools":[{"name":"Read"}]}`)
 	resumeRequest := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"root prompt"}]},{"role":"model","parts":[{"text":"answer one"}]},{"role":"user","parts":[{"text":"next prompt"}]},{"role":"model","parts":[{"text":"answer two"}]},{"role":"user","parts":[{"text":"resumed prompt"}]}]}}`)
-	resumed, resumeScope, errResume := prepareAntigravityGeminiReasoningReplayPayload(context.Background(), model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{Headers: headers, OriginalRequest: resumeOriginal}, resumeRequest)
+	resumed, resumeScope, errResume := prepareAntigravityGeminiReasoningReplayPayload(ctx, model, cliproxyexecutor.Request{}, cliproxyexecutor.Options{Headers: headers, OriginalRequest: resumeOriginal}, resumeRequest)
 	if errResume != nil {
 		t.Fatal(errResume)
 	}
@@ -1234,12 +1242,13 @@ func TestAntigravityReasoningReplaySeparatesClaudeSessionTitleFromResumedTranscr
 }
 
 func TestAntigravityReasoningReplayScopeSeparatesClaudeAgents(t *testing.T) {
+	ctx := testContextWithAPIKey("caller-a")
 	opts := cliproxyexecutor.Options{Headers: http.Header{
 		"X-Claude-Code-Session-Id": []string{"claude-session"},
 		"X-Claude-Code-Agent-Id":   []string{"subagent-1"},
 	}}
-	scope := antigravityReasoningReplayScopeFromRequest(context.Background(), "gemini-3.6-flash-high", cliproxyexecutor.Request{}, opts, nil)
-	if got := scope.sessionKey; got != "claude:claude-session:agent:subagent-1" {
+	scope := antigravityReasoningReplayScopeFromRequest(ctx, "gemini-3.6-flash-high", cliproxyexecutor.Request{}, opts, nil)
+	if got := scope.sessionKey; got != xaiReasoningReplayIsolateSessionKey(ctx, "claude:claude-session:agent:subagent-1") {
 		t.Fatalf("session key = %q, want agent-scoped Claude session", got)
 	}
 }

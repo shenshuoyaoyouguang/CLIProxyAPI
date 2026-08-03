@@ -28,6 +28,10 @@ const (
 	logScannerMaxBuffer     = 8 * 1024 * 1024
 	logCursorVersion        = 1
 	logCursorFingerprintMax = 4 * 1024
+
+	// maxLogAccumulatorLines caps the no-limit full-scan log path; without it,
+	// limit 0 would accumulate every line of every log file in memory.
+	maxLogAccumulatorLines = 100_000
 )
 
 // GetLogs returns log lines with optional incremental loading.
@@ -510,8 +514,14 @@ func (acc *logAccumulator) addLine(raw string) {
 
 func (acc *logAccumulator) append(line string) {
 	acc.lines = append(acc.lines, line)
-	if acc.limit > 0 && len(acc.lines) > acc.limit {
-		acc.lines = acc.lines[len(acc.lines)-acc.limit:]
+	cap := acc.limit
+	if cap <= 0 {
+		// Bound the no-limit full-scan path: limit 0 would otherwise keep
+		// every line of every log file in memory.
+		cap = maxLogAccumulatorLines
+	}
+	if len(acc.lines) > cap {
+		acc.lines = acc.lines[len(acc.lines)-cap:]
 	}
 }
 

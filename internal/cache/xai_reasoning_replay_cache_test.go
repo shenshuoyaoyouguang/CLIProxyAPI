@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -66,6 +67,20 @@ func (c *fakeXAIReasoningReplayKVClient) KVDel(_ context.Context, keys ...string
 		}
 	}
 	return deleted, nil
+}
+
+func (c *fakeXAIReasoningReplayKVClient) KVCompareAndSwap(_ context.Context, key string, expected []byte, expectedExists bool, value []byte, ttl time.Duration) (bool, error) {
+	c.setCount++
+	c.lastSetTTL = ttl
+	if c.setErr != nil {
+		return false, c.setErr
+	}
+	current, exists := c.values[key]
+	if exists != expectedExists || (exists && !bytes.Equal(current, expected)) {
+		return false, nil
+	}
+	c.values[key] = append([]byte(nil), value...)
+	return true, nil
 }
 
 func (c *fakeXAIReasoningReplayKVClient) KVExpire(_ context.Context, _ string, ttl time.Duration) (bool, error) {
@@ -277,5 +292,26 @@ func TestXAIReasoningReplayCacheStoresRefusalMessagePart(t *testing.T) {
 	}
 	if gjson.GetBytes(got[1], "content.0.text").Exists() {
 		t.Fatalf("refusal part should not use text field; item=%s", got[1])
+	}
+}
+
+func TestStoreXAIReasoningReplayItemsBackendError(t *testing.T) {
+	ClearXAIReasoningReplayCache()
+	t.Cleanup(ClearXAIReasoningReplayCache)
+
+	client := newFakeXAIReasoningReplayKVClient()
+	client.setErr = errors.New("set failed")
+	useFakeXAIReasoningReplayKVClient(t, client, true, nil)
+
+	encryptedContent := validGrokEncryptedContentForReplayCacheTest()
+	items := [][]byte{
+		[]byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"` + encryptedContent + `"}`),
+	}
+	status := StoreXAIReasoningReplayItems(context.Background(), "grok-4.5", "session-backend-error", items)
+	if status != XAIReasoningReplayStoreBackendError {
+		t.Fatalf("StoreXAIReasoningReplayItems status = %v, want BackendError", status)
+	}
+	if client.setCount != 1 {
+		t.Fatalf("KVSet count = %d, want 1", client.setCount)
 	}
 }

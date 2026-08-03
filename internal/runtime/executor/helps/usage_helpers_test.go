@@ -334,6 +334,73 @@ func TestParseClaudeUsageFallsBackCachedTokensToCacheCreation(t *testing.T) {
 	}
 }
 
+func TestClaudeStreamUsageAccumulatorMergesInputAndOutputEvents(t *testing.T) {
+	var acc ClaudeStreamUsageAccumulator
+	start := []byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":12,"cache_creation_input_tokens":3,"cache_read_input_tokens":7}}}`)
+	if !acc.Observe(start) {
+		t.Fatal("Observe(message_start) = false, want true")
+	}
+	delta := []byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":34}}`)
+	if !acc.Observe(delta) {
+		t.Fatal("Observe(message_delta) = false, want true")
+	}
+	// Non-usage lines must not disturb the accumulator.
+	if acc.Observe([]byte(`data: {"type":"message_stop"}`)) {
+		t.Fatal("Observe(message_stop) = true, want false")
+	}
+	if acc.Observe([]byte(`event: message_delta`)) {
+		t.Fatal("Observe(non-data line) = true, want false")
+	}
+
+	detail, ok := acc.Detail()
+	if !ok {
+		t.Fatal("Detail() ok = false, want true")
+	}
+	if detail.InputTokens != 12 {
+		t.Fatalf("input tokens = %d, want 12", detail.InputTokens)
+	}
+	if detail.OutputTokens != 34 {
+		t.Fatalf("output tokens = %d, want 34", detail.OutputTokens)
+	}
+	if detail.CacheReadTokens != 7 {
+		t.Fatalf("cache read tokens = %d, want 7", detail.CacheReadTokens)
+	}
+	if detail.CacheCreationTokens != 3 {
+		t.Fatalf("cache creation tokens = %d, want 3", detail.CacheCreationTokens)
+	}
+	if detail.CachedTokens != 7 {
+		t.Fatalf("cached tokens = %d, want 7", detail.CachedTokens)
+	}
+	if detail.TotalTokens != 56 {
+		t.Fatalf("total tokens = %d, want 56", detail.TotalTokens)
+	}
+	if !detail.TokenBreakdown.Valid() {
+		t.Fatalf("token breakdown invalid: %+v", detail.TokenBreakdown)
+	}
+}
+
+func TestClaudeStreamUsageAccumulatorTakesLatestCumulativeOutput(t *testing.T) {
+	var acc ClaudeStreamUsageAccumulator
+	acc.Observe([]byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":12}}}`))
+	acc.Observe([]byte(`data: {"type":"message_delta","usage":{"output_tokens":10}}`))
+	acc.Observe([]byte(`data: {"type":"message_delta","usage":{"output_tokens":34}}`))
+	detail, ok := acc.Detail()
+	if !ok {
+		t.Fatal("Detail() ok = false, want true")
+	}
+	if detail.OutputTokens != 34 {
+		t.Fatalf("output tokens = %d, want 34 (latest cumulative value)", detail.OutputTokens)
+	}
+}
+
+func TestClaudeStreamUsageAccumulatorDetailWithoutUsageEvents(t *testing.T) {
+	var acc ClaudeStreamUsageAccumulator
+	acc.Observe([]byte(`data: {"type":"message_stop"}`))
+	if _, ok := acc.Detail(); ok {
+		t.Fatal("Detail() ok = true with no usage events, want false")
+	}
+}
+
 func TestParseGeminiUsageNormalizesCachedContent(t *testing.T) {
 	detail := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":4,"totalTokenCount":12}}`))
 	if detail.CachedTokens != 4 {

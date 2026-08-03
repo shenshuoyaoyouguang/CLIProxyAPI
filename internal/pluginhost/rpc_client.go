@@ -35,6 +35,10 @@ type rpcThinkingApplier struct {
 	*rpcPluginAdapter
 }
 
+type rpcThinkingExtractor struct {
+	*rpcPluginAdapter
+}
+
 type rpcPluginError struct {
 	message    string
 	statusCode int
@@ -127,6 +131,9 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	}
 	if resp.Capabilities.ThinkingApplier {
 		plugin.Capabilities.ThinkingApplier = rpcThinkingApplier{rpcPluginAdapter: adapter}
+	}
+	if resp.Capabilities.ThinkingExtractor {
+		plugin.Capabilities.ThinkingExtractor = rpcThinkingExtractor{rpcPluginAdapter: adapter}
 	}
 	if resp.Capabilities.UsagePlugin {
 		plugin.Capabilities.UsagePlugin = adapter
@@ -527,6 +534,19 @@ func (a rpcThinkingApplier) ApplyThinking(ctx context.Context, req pluginapi.Thi
 	return callPlugin[pluginapi.PayloadResponse](ctx, a.client, pluginabi.MethodThinkingApply, rpcThinkingApplyRequest{
 		ThinkingApplyRequest: req,
 		HostCallbackID:       callbackID,
+	})
+}
+
+func (a rpcThinkingExtractor) Identifier() string {
+	return callPluginIdentifier(a.client, pluginabi.MethodThinkingIdentifier)
+}
+
+func (a rpcThinkingExtractor) ExtractThinking(ctx context.Context, req pluginapi.ThinkingExtractRequest) (pluginapi.ThinkingExtractResponse, error) {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	return callPlugin[pluginapi.ThinkingExtractResponse](ctx, a.client, pluginabi.MethodThinkingExtract, rpcThinkingExtractRequest{
+		ThinkingExtractRequest: req,
+		HostCallbackID:         callbackID,
 	})
 }
 

@@ -177,11 +177,15 @@ func recordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, resp *
 	closeHTTPResponseBody(resp, "codex websockets executor: close handshake response body error")
 }
 
+// maxWebsocketHandshakeBodyBytes bounds the failed-upgrade error body read so a
+// stalled or oversized response cannot hang the handler or inflate memory.
+const maxWebsocketHandshakeBodyBytes = 1 << 20 // 1 MiB
+
 func websocketHandshakeBody(resp *http.Response) []byte {
 	if resp == nil || resp.Body == nil {
 		return nil
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxWebsocketHandshakeBodyBytes+1))
 	closeHTTPResponseBody(resp, "codex websockets executor: close handshake response body error")
 	if len(body) == 0 {
 		return nil

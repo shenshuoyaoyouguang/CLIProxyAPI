@@ -213,7 +213,9 @@ func TestAntigravityExecutorCountTokensReconstructsCompactedClaudeToolCall(t *te
 	const nativeArgs = `{"command":"true"}`
 	clientID := util.GeminiClaudeToolUseID(nativeID, "Bash", nativeArgs)
 	item := []byte(`{"type":"function_call_part","contentIndex":0,"partIndex":0,"targetOccurrence":0,"call_id":"` + nativeID + `","name":"Bash","args":` + nativeArgs + `,"thoughtSignature":"` + nativeSignature + `"}`)
-	if !cache.CacheAntigravityReasoningReplayItems("gemini-3.6-flash-high", "responses:count-token-replay", [][]byte{item}) {
+	ctx := testContextWithAPIKey("caller-a")
+	replayKey := xaiReasoningReplayIsolateSessionKey(ctx, "responses:count-token-replay")
+	if !cache.CacheAntigravityReasoningReplayItems("gemini-3.6-flash-high", replayKey, [][]byte{item}) {
 		t.Fatal("failed to cache native tool provenance")
 	}
 
@@ -231,7 +233,7 @@ func TestAntigravityExecutorCountTokensReconstructsCompactedClaudeToolCall(t *te
 
 	payload := []byte(`{"model":"gemini-3.6-flash-high","session_id":"count-token-replay","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + clientID + `","content":"ok"}]}],"tools":[{"name":"Bash","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}]}`)
 	exec := NewAntigravityExecutor(&config.Config{RequestRetry: 1})
-	_, errCount := exec.CountTokens(context.Background(), testAntigravityAuth(server.URL), cliproxyexecutor.Request{
+	_, errCount := exec.CountTokens(ctx, testAntigravityAuth(server.URL), cliproxyexecutor.Request{
 		Model:   "gemini-3.6-flash-high",
 		Payload: payload,
 	}, cliproxyexecutor.Options{

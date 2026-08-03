@@ -37,13 +37,11 @@
 //     traceable to a prior Gemini model response in the same conversation.
 //   - Opaque-shape tier: for real Gemini signatures, require a non-empty string,
 //     bounded length, successful standard base64 decoding, and a known protobuf
-//     envelope when the caller needs provider compatibility. The only known
-//     envelope is the Gemini 3.x field-2 -> field-1 payload, whose body holds
-//     either versioned opaque state or a provider UUID. Gemini 2.5 emitted a
-//     repeated field-1 form; those models are out of scope and their signatures
-//     are no longer a known envelope. Bare base64 UUID payloads are classified
-//     separately and should be replaced with the bypass sentinel rather than
-//     replayed.
+//     envelope when the caller needs provider compatibility. Observed samples
+//     currently include Gemini 3.x field-2 -> field-1 payloads containing either
+//     versioned opaque state or a provider UUID, plus Gemini 2.5 repeated field-1
+//     payloads. Bare base64 UUID payloads are classified separately and should be
+//     replaced with the bypass sentinel rather than replayed.
 //   - Replay tier: real validation means preserving the exact model part that
 //     came from Gemini, including its thoughtSignature, id/name/function args,
 //     part index, and ordering relative to sibling parallel function calls.

@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"strconv"
 
 	"github.com/tidwall/gjson"
@@ -105,4 +106,23 @@ func AppendSSEEventBytes(out []byte, event string, payload []byte, trailingNewli
 		out = append(out, '\n')
 	}
 	return out
+}
+
+// SSEDataPayload extracts the payload after a `data:` prefix from an SSE line.
+// The line (after trimming leading/trailing whitespace) must start with
+// `data:` followed by at most one space; the payload is returned with the
+// prefix and surrounding whitespace removed. Non-`data:` lines return
+// (nil, false). This helper unifies the previous ad-hoc
+// `bytes.HasPrefix(line, []byte("data:"))` + raw-slice copies scattered across
+// translators, avoiding mismatches on prefixes other than `data:payload`.
+func SSEDataPayload(line []byte) ([]byte, bool) {
+	line = bytes.TrimSpace(line)
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return nil, false
+	}
+	rest := line[len("data:"):]
+	if len(rest) > 0 && rest[0] == ' ' {
+		rest = rest[1:]
+	}
+	return bytes.TrimSpace(rest), true
 }

@@ -45,7 +45,9 @@ func (ts *TokenStorage) SaveTokenToFile(authFilePath string) error {
 	if errMkdirAll := os.MkdirAll(filepath.Dir(authFilePath), 0o700); errMkdirAll != nil {
 		return fmt.Errorf("xai token storage: create directory: %w", errMkdirAll)
 	}
-	file, err := os.Create(authFilePath)
+	// Owner-only permissions: tokens are credentials and must not be
+	// world-readable on shared hosts.
+	file, err := os.OpenFile(authFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("xai token storage: create token file: %w", err)
 	}

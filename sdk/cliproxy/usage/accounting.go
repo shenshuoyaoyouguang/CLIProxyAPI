@@ -88,8 +88,11 @@ func validTokenAccountingQuality(quality TokenAccountingQuality) bool {
 // in input totals and reasoning tokens are included in output totals.
 func NewSubsetTokenBreakdown(inputTotal, cacheRead, cacheWrite, outputTotal, reasoning, total int64) TokenBreakdown {
 	expectedTotal, okExpected := nonNegativeSum(inputTotal, outputTotal)
-	if !okExpected || cacheRead < 0 || cacheWrite < 0 || reasoning < 0 ||
-		cacheRead+cacheWrite > inputTotal || reasoning > outputTotal {
+	// Sum the cache buckets overflow-safely: two large values could wrap
+	// negative and pass the comparison below, corrupting the breakdown.
+	cacheTotal, okCache := nonNegativeSum(cacheRead, cacheWrite)
+	if !okExpected || !okCache || cacheRead < 0 || cacheWrite < 0 || reasoning < 0 ||
+		cacheTotal > inputTotal || reasoning > outputTotal {
 		return inconsistentTokenBreakdown(total, expectedTotal)
 	}
 	resolvedTotal, okTotal := resolveAccountingTotal(total, expectedTotal)
@@ -188,7 +191,10 @@ func NewIndependentTokenBreakdown(uncachedInput, cacheRead, cacheWrite, nonReaso
 // NewSeparateReasoningTokenBreakdown normalizes protocols where cache tokens
 // are included in input totals while reasoning is separate from ordinary output.
 func NewSeparateReasoningTokenBreakdown(inputTotal, cacheRead, cacheWrite, nonReasoningOutput, reasoning, total int64) TokenBreakdown {
-	if inputTotal < 0 || cacheRead < 0 || cacheWrite < 0 || cacheRead+cacheWrite > inputTotal {
+	// Sum the cache buckets overflow-safely: two large values could wrap
+	// negative and pass the comparison below, corrupting the breakdown.
+	cacheTotal, okCache := nonNegativeSum(cacheRead, cacheWrite)
+	if inputTotal < 0 || !okCache || cacheTotal > inputTotal {
 		return inconsistentTokenBreakdown(total, 0)
 	}
 	outputTotal, okOutput := nonNegativeSum(nonReasoningOutput, reasoning)
@@ -252,6 +258,12 @@ func EnsureTokenBreakdownForProvider(detail Detail, provider, executorType strin
 			detail.OutputTokens == 0 && detail.ReasoningTokens == 0 && detail.CacheCreationTokens == 0 && detail.TotalTokens == 0 &&
 			(semantics == tokenAccountingSemanticsSubset || semantics == tokenAccountingSemanticsSeparateReasoning) {
 			detail.CacheReadTokens = detail.CachedTokens
+		}
+		// A legacy/foreign breakdown may be the only carrier of the total (e.g.
+		// pre-v2 persisted records with no flat raw fields); seed it so the
+		// rebuild does not silently report TotalTokens 0.
+		if detail.TotalTokens == 0 && detail.TokenBreakdown.TotalTokens > 0 {
+			detail.TotalTokens = detail.TokenBreakdown.TotalTokens
 		}
 		detail.TokenBreakdown = tokenBreakdownForSemantics(detail, semantics)
 	}

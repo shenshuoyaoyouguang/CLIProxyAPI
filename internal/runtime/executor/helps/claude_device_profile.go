@@ -47,6 +47,13 @@ type claudeDeviceProfileKVClient interface {
 	KVSet(ctx context.Context, key string, value []byte, opts homekv.KVSetOptions) (bool, error)
 	KVSetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
 	KVExpire(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	KVDel(ctx context.Context, keys ...string) (int64, error)
+}
+
+// releaseClaudeDeviceProfileLock best-effort removes the profile lock. The
+// lock's short TTL remains the backstop when the owner is gone.
+func releaseClaudeDeviceProfileLock(ctx context.Context, client claudeDeviceProfileKVClient, lockKey string) {
+	_, _ = client.KVDel(ctx, lockKey)
 }
 
 var currentClaudeDeviceProfileKVClient = func() (claudeDeviceProfileKVClient, bool, error) {
@@ -466,18 +473,29 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	if errLock != nil {
 		return ClaudeDeviceProfile{}, errLock
 	}
+	// Only release the lock when this process actually acquired it (KVSetNX
+	// succeeded). Deleting an unowned lock would lift another process's mutual
+	// exclusion and allow concurrent profile writers.
+	releaseLockIfOwned := func() {
+		if gotLock {
+			releaseClaudeDeviceProfileLock(ctx, client, lockKey)
+		}
+	}
 	if ClaudeDeviceProfileBeforeCandidateStore != nil {
 		ClaudeDeviceProfileBeforeCandidateStore(candidate)
 	}
 
 	cached, found, errRead := readClaudeDeviceProfileValueFromHome(ctx, client, valueKey, baseline)
 	if errRead != nil {
+		releaseLockIfOwned()
 		return ClaudeDeviceProfile{}, errRead
 	}
 	if found && !shouldUpgradeClaudeDeviceProfile(candidate, cached) {
 		if _, errExpire := client.KVExpire(ctx, valueKey, claudeDeviceProfileTTL); errExpire != nil {
+			releaseLockIfOwned()
 			return ClaudeDeviceProfile{}, errExpire
 		}
+		releaseLockIfOwned()
 		return cached, nil
 	}
 	if !gotLock {
@@ -488,8 +506,10 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 	}
 
 	if errWrite := writeClaudeDeviceProfileToHome(ctx, client, valueKey, candidate); errWrite != nil {
+		releaseLockIfOwned()
 		return ClaudeDeviceProfile{}, errWrite
 	}
+	releaseLockIfOwned()
 	return candidate, nil
 }
 
@@ -616,8 +636,8 @@ func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg
 	if confirmedClaudeCode {
 		miscEnsure("X-Stainless-Runtime-Version", profile.RuntimeVersion, func(value string) bool { return value == profile.RuntimeVersion })
 		miscEnsure("X-Stainless-Package-Version", profile.PackageVersion, func(value string) bool { return value == profile.PackageVersion })
-		miscEnsure("X-Stainless-Os", mapStainlessOS(), nil)
-		miscEnsure("X-Stainless-Arch", mapStainlessArch(), nil)
+		miscEnsure("X-Stainless-Os", profile.OS, func(value string) bool { return value == profile.OS })
+		miscEnsure("X-Stainless-Arch", profile.Arch, func(value string) bool { return value == profile.Arch })
 		if clientUA := strings.TrimSpace(ginHeaders.Get("User-Agent")); plausibleClaudeCodeUserAgent(clientUA, cfg) {
 			r.Header.Set("User-Agent", clientUA)
 			return
@@ -625,10 +645,17 @@ func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg
 	}
 
 	// Unconfirmed clients must not leak a copied or third-party software profile
-	// into the upstream Claude Code SDK fingerprint.
+	// into the upstream Claude Code SDK fingerprint. Their OS and arch reflect
+	// the local machine (the same values a natively installed SDK would report);
+	// confirmed clients whose UA was not accepted above keep the configured
+	// platform tuple.
+	osName, archName := mapStainlessOS(), mapStainlessArch()
+	if confirmedClaudeCode {
+		osName, archName = profile.OS, profile.Arch
+	}
 	r.Header.Set("X-Stainless-Runtime-Version", profile.RuntimeVersion)
 	r.Header.Set("X-Stainless-Package-Version", profile.PackageVersion)
-	r.Header.Set("X-Stainless-Os", profile.OS)
-	r.Header.Set("X-Stainless-Arch", profile.Arch)
+	r.Header.Set("X-Stainless-Os", osName)
+	r.Header.Set("X-Stainless-Arch", archName)
 	r.Header.Set("User-Agent", profile.UserAgent)
 }

@@ -627,6 +627,118 @@ func TestFixCLIToolResponse_MultipleGroupsFIFO(t *testing.T) {
 	}
 }
 
+// TestFixCLIToolResponse_MatchesResponsesByNameNotFIFO 验证当 response 顺序与 call 顺序不一致时，
+// 按 functionResponse.name 匹配而非 FIFO-by-count，避免错误关联（issue #26）。
+func TestFixCLIToolResponse_MatchesResponsesByNameNotFIFO(t *testing.T) {
+	// 两个并行 call: A, B。但 response 顺序为 B, A（与 call 顺序相反）。
+	// FIFO-by-count 会把 B 的 response 关联到 A，A 的 response 关联到 B（错误）。
+	// 按 name 匹配应正确关联。
+	input := `{
+		"model": "gemini-3-pro-preview",
+		"request": {
+			"contents": [
+				{
+					"role": "model",
+					"parts": [
+						{"functionCall": {"name": "FuncA", "args": {}}},
+						{"functionCall": {"name": "FuncB", "args": {}}}
+					]
+				},
+				{
+					"role": "function",
+					"parts": [
+						{"functionResponse": {"name": "FuncB", "response": {"result": "B-result"}}},
+						{"functionResponse": {"name": "FuncA", "response": {"result": "A-result"}}}
+					]
+				}
+			]
+		}
+	}`
+
+	result, err := fixCLIToolResponse(input)
+	if err != nil {
+		t.Fatalf("fixCLIToolResponse failed: %v", err)
+	}
+
+	contents := gjson.Get(result, "request.contents").Array()
+	var funcContent gjson.Result
+	for _, c := range contents {
+		if c.Get("role").String() == "function" {
+			funcContent = c
+			break
+		}
+	}
+	if !funcContent.Exists() {
+		t.Fatal("function role content should exist in output")
+	}
+
+	parts := funcContent.Get("parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("Expected 2 function response parts, got %d: %s", len(parts), result)
+	}
+	// 按 name 匹配：第一个 part 应对应 FuncA，第二个对应 FuncB
+	if got := parts[0].Get("functionResponse.name").String(); got != "FuncA" {
+		t.Errorf("Expected first response name 'FuncA' (matched by name), got '%s'", got)
+	}
+	if got := parts[1].Get("functionResponse.name").String(); got != "FuncB" {
+		t.Errorf("Expected second response name 'FuncB' (matched by name), got '%s'", got)
+	}
+	// 验证 response 内容也正确关联
+	if got := parts[0].Get("functionResponse.response.result").String(); got != "A-result" {
+		t.Errorf("Expected first response result 'A-result', got '%s'", got)
+	}
+	if got := parts[1].Get("functionResponse.response.result").String(); got != "B-result" {
+		t.Errorf("Expected second response result 'B-result', got '%s'", got)
+	}
+}
+
+// TestFixCLIToolResponse_PreservesSurplusResponseWithoutMatchingCall 验证
+// 无匹配 pending call 的 surplus response 不被错误关联到后续 group（issue #26）。
+func TestFixCLIToolResponse_PreservesSurplusResponseWithoutMatchingCall(t *testing.T) {
+	// group1: call A。response: A + extra(name="Unknown")。
+	// group2: call B。response: B。
+	// 按 name 匹配：A→group1，extra(Unknown) 无匹配应保留不消费，B→group2。
+	input := `{
+		"model": "gemini-3-pro-preview",
+		"request": {
+			"contents": [
+				{"role": "model", "parts": [{"functionCall": {"name": "FuncA", "args": {}}}]},
+				{"role": "function", "parts": [
+					{"functionResponse": {"name": "FuncA", "response": {"result": "A-result"}}},
+					{"functionResponse": {"name": "Unknown", "response": {"result": "extra"}}}
+				]},
+				{"role": "model", "parts": [{"functionCall": {"name": "FuncB", "args": {}}}]},
+				{"role": "function", "parts": [{"functionResponse": {"name": "FuncB", "response": {"result": "B-result"}}}]}
+			]
+		}
+	}`
+
+	result, err := fixCLIToolResponse(input)
+	if err != nil {
+		t.Fatalf("fixCLIToolResponse failed: %v", err)
+	}
+
+	// group1 应正确关联 FuncA
+	contents := gjson.Get(result, "request.contents").Array()
+	var funcContents []gjson.Result
+	for _, c := range contents {
+		if c.Get("role").String() == "function" {
+			funcContents = append(funcContents, c)
+		}
+	}
+	// "Unknown" response 无匹配 pending call，应被丢弃（无 group 可关联），
+	// 不应错误关联到 group2 的 FuncB。
+	if len(funcContents) != 2 {
+		t.Fatalf("Expected 2 function contents (A and B), got %d: %s", len(funcContents), result)
+	}
+	if got := funcContents[0].Get("parts.0.functionResponse.name").String(); got != "FuncA" {
+		t.Errorf("Expected first group name 'FuncA', got '%s'", got)
+	}
+	if got := funcContents[1].Get("parts.0.functionResponse.name").String(); got != "FuncB" {
+		t.Errorf("Expected second group name 'FuncB' (not 'Unknown'), got '%s'", got)
+	}
+}
+
 func TestConvertGeminiRequestToAntigravityDeduplicatesRequestWideAndDisambiguatesTools(t *testing.T) {
 	first := "mcp__plugin_cloudflare_cloudflare-builds__workers_builds_get_build"
 	second := "mcp__plugin_cloudflare_cloudflare-builds__workers_builds_get_build_logs"

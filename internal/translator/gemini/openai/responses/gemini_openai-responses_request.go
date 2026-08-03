@@ -722,7 +722,10 @@ func buildOpenAIResponsesFunctionResponsePart(item gjson.Result, functionNamesBy
 	functionResponse, _ = sjson.SetBytes(functionResponse, "functionResponse.name", util.SanitizeFunctionName(functionName))
 	functionResponse, _ = sjson.SetBytes(functionResponse, "functionResponse.id", callID)
 
-	outputRaw := item.Get("output").Str
+	// .String() returns the raw JSON for object/array outputs (`.Str` is empty
+	// for those and would silently drop structured tool results) and the
+	// unquoted value for plain strings (avoiding double-escaped quotes).
+	outputRaw := item.Get("output").String()
 	if outputRaw != "" && outputRaw != "null" {
 		output := gjson.Parse(outputRaw)
 		if output.Type == gjson.JSON && json.Valid([]byte(output.Raw)) {

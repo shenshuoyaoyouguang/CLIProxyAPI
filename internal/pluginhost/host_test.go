@@ -334,6 +334,44 @@ func TestHostApplyConfigRegistersPluginThinkingApplier(t *testing.T) {
 	}
 }
 
+func TestHostApplyConfigRegistersPluginThinkingExtractor(t *testing.T) {
+	loader := newTestSymbolLoader()
+	plugin := &testPlugin{
+		registerResult:    validTestPlugin("alpha"),
+		reconfigureResult: validTestPlugin("alpha"),
+	}
+	plugin.registerResult.Capabilities.ThinkingExtractor = testThinkingExtractorCapability{provider: "plugin-extractor"}
+	plugin.reconfigureResult.Capabilities.ThinkingExtractor = testThinkingExtractorCapability{provider: "plugin-extractor"}
+	loader.lookups["alpha"] = newTestSymbolLookup(plugin)
+	h := NewForTest(loader)
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     makePluginDir(t, "alpha"),
+			Configs: enabledPluginConfigs("alpha"),
+		},
+	}
+	t.Cleanup(func() {
+		h.ApplyConfig(context.Background(), &config.Config{
+			Plugins: config.PluginsConfig{
+				Enabled: false,
+				Dir:     cfg.Plugins.Dir,
+			},
+		})
+	})
+
+	h.ApplyConfig(context.Background(), cfg)
+
+	extractor := thinking.GetProviderExtractor("plugin-extractor")
+	if extractor == nil {
+		t.Fatalf("GetProviderExtractor() = nil, want registered plugin extractor")
+	}
+	config := extractor([]byte(`{"reasoning_effort":"high"}`))
+	if config.Mode != thinking.ModeLevel || string(config.Level) != "high" {
+		t.Fatalf("extracted config = %+v, want ModeLevel/high", config)
+	}
+}
+
 func TestHostApplyConfigRegistersInterceptorOnlyPlugin(t *testing.T) {
 	loader := newTestSymbolLoader()
 	plugin := &testPlugin{

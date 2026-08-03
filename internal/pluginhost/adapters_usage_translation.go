@@ -39,22 +39,35 @@ func (h *Host) refreshThinkingProviders(records []capabilityRecord) {
 		return
 	}
 	for _, record := range records {
-		applier := record.plugin.Capabilities.ThinkingApplier
-		if applier == nil || h.isPluginFused(record.id) {
+		if h.isPluginFused(record.id) {
 			continue
 		}
-		provider, okProvider := h.callThinkingIdentifier(record, applier)
-		if !okProvider {
-			continue
+		if applier := record.plugin.Capabilities.ThinkingApplier; applier != nil {
+			provider, okProvider := h.callThinkingIdentifier(record, applier)
+			if okProvider {
+				thinking.RegisterPluginProvider(record.id, provider, record.priority, &thinkingAdapter{
+					host:     h,
+					pluginID: record.id,
+					path:     record.path,
+					version:  record.version,
+					provider: provider,
+					applier:  applier,
+				})
+			}
 		}
-		thinking.RegisterPluginProvider(record.id, provider, record.priority, &thinkingAdapter{
-			host:     h,
-			pluginID: record.id,
-			path:     record.path,
-			version:  record.version,
-			provider: provider,
-			applier:  applier,
-		})
+		if extractor := record.plugin.Capabilities.ThinkingExtractor; extractor != nil {
+			provider, okProvider := h.callThinkingExtractorIdentifier(record, extractor)
+			if okProvider {
+				thinking.RegisterPluginProviderExtractor(record.id, provider, record.priority, (&thinkingExtractorAdapter{
+					host:      h,
+					pluginID:  record.id,
+					path:      record.path,
+					version:   record.version,
+					provider:  provider,
+					extractor: extractor,
+				}).Extract)
+			}
+		}
 	}
 }
 
@@ -200,6 +213,70 @@ func (a *thinkingAdapter) Apply(body []byte, config thinking.ThinkingConfig, mod
 		return bytes.Clone(body), nil
 	}
 	return bytes.Clone(resp.Body), nil
+}
+
+type thinkingExtractorAdapter struct {
+	host      *Host
+	pluginID  string
+	path      string
+	version   string
+	provider  string
+	extractor pluginapi.ThinkingExtractor
+}
+
+func (a *thinkingExtractorAdapter) Extract(body []byte) (config thinking.ThinkingConfig) {
+	if a == nil || a.extractor == nil || a.host == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
+		return thinking.ThinkingConfig{}
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			a.host.fusePlugin(a.pluginID, "ThinkingExtractor.ExtractThinking", recovered)
+			config = thinking.ThinkingConfig{}
+		}
+	}()
+	resp, errExtract := a.extractor.ExtractThinking(context.Background(), pluginapi.ThinkingExtractRequest{
+		Provider: a.provider,
+		Body:     bytes.Clone(body),
+	})
+	if errExtract != nil {
+		return thinking.ThinkingConfig{}
+	}
+	return pluginThinkingConfigToThinkingConfig(resp.Config)
+}
+
+func pluginThinkingConfigToThinkingConfig(config pluginapi.ThinkingConfig) thinking.ThinkingConfig {
+	mode := thinking.ModeBudget
+	switch strings.ToLower(strings.TrimSpace(config.Mode)) {
+	case "none":
+		mode = thinking.ModeNone
+	case "auto":
+		mode = thinking.ModeAuto
+	case "level":
+		mode = thinking.ModeLevel
+	}
+	return thinking.ThinkingConfig{
+		Mode:   mode,
+		Budget: config.Budget,
+		Level:  thinking.ThinkingLevel(config.Level),
+	}
+}
+
+func (h *Host) callThinkingExtractorIdentifier(record capabilityRecord, extractor pluginapi.ThinkingExtractor) (provider string, ok bool) {
+	if h == nil || extractor == nil || h.isPluginFused(record.id) || !h.recordCurrent(record) {
+		return "", false
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			h.fusePlugin(record.id, "ThinkingExtractor.Identifier", recovered)
+			provider = ""
+			ok = false
+		}
+	}()
+	provider = strings.ToLower(strings.TrimSpace(extractor.Identifier()))
+	if provider == "" {
+		return "", false
+	}
+	return provider, true
 }
 
 func (h *Host) NormalizeRequest(ctx context.Context, from, to sdktranslator.Format, model string, body []byte, stream bool) []byte {

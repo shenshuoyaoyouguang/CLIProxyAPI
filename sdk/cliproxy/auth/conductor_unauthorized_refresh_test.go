@@ -334,3 +334,48 @@ func TestManager_Execute_UnauthorizedRefreshThenRetryStillFailsFallsBackOnce(t *
 		t.Fatalf("Execute calls = %v, want [primary, primary, backup]", got)
 	}
 }
+
+// TestTryRefreshAfterUnauthorized_OpenAICompatRefreshes guards H13: an
+// openai-compat auth's refresh must resolve its executor via the normalized
+// key (executorKeyFromAuth) rather than the raw auth.Provider value, otherwise
+// a valid refresh_token leads to a nil executor and the auth is suspended.
+func TestTryRefreshAfterUnauthorized_OpenAICompatRefreshes(t *testing.T) {
+	// The executor is registered under the normalized compat key, mirroring how
+	// openai-compat executors register themselves.
+	executor := &unauthorizedRefreshExecutor{id: "openai-compatible-myprovider"}
+	m := NewManager(nil, nil, nil)
+	m.RegisterExecutor(executor)
+
+	auth := &Auth{
+		ID:       "compat-auth",
+		Provider: "openai-compatibility",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"access_token":  "stale-access-token",
+			"refresh_token": "refresh-token",
+		},
+		Attributes: map[string]string{
+			"compat_name": "myprovider",
+		},
+	}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	refreshed, ok := m.tryRefreshAfterUnauthorized(context.Background(), auth, &Error{
+		HTTPStatus: http.StatusUnauthorized,
+		Message:    "token invalidated",
+	}, false)
+	if !ok {
+		t.Fatalf("tryRefreshAfterUnauthorized = (_, false), want refresh to proceed for openai-compat auth")
+	}
+	if refreshed == nil {
+		t.Fatal("tryRefreshAfterUnauthorized returned nil auth")
+	}
+	if got := executor.RefreshCalls(); got != 1 {
+		t.Fatalf("Refresh calls = %d, want 1", got)
+	}
+	if got := authAccessToken(refreshed); got != "refreshed-access-token" {
+		t.Fatalf("access_token = %q, want refreshed-access-token", got)
+	}
+}

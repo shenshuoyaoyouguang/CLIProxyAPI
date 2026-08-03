@@ -66,6 +66,9 @@ func (a *CodexAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 	}
 
 	oauthServer := codex.NewOAuthServer(callbackPort)
+	// Reject callbacks carrying any other state (spoofed callbacks would
+	// otherwise consume the single-slot result channel and abort the login).
+	oauthServer.SetExpectedState(state)
 	if err = oauthServer.Start(); err != nil {
 		if strings.Contains(err.Error(), "already in use") {
 			return nil, codex.NewAuthenticationError(codex.ErrPortInUse, err)

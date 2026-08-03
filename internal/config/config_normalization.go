@@ -145,6 +145,15 @@ func (cfg *Config) SanitizeXAIKeys() {
 	}
 }
 
+// SanitizeZAIKeys removes Z.ai API key entries missing a BaseURL.
+// It applies the same normalization rules as codex-api-key.
+func (cfg *Config) SanitizeZAIKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.ZAIKey = sanitizeCodexKeyEntries(cfg.ZAIKey)
+}
+
 func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
 	if len(entries) == 0 {
 		return entries

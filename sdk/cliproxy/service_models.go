@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
@@ -149,6 +150,17 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		if entry := s.resolveConfigXAIKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildXAIConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
+	case "zai":
+		models = registry.GetZAIModels()
+		if entry := s.resolveConfigZAIKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildZAIConfigModels(entry)
 			}
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
@@ -494,6 +506,13 @@ func (s *Service) resolveConfigXAIKey(auth *coreauth.Auth) *config.XAIKey {
 	return resolveConfigCodexStyleKey(auth, s.cfg.XAIKey, false)
 }
 
+func (s *Service) resolveConfigZAIKey(auth *coreauth.Auth) *config.ZAIKey {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	return resolveConfigCodexStyleKey(auth, s.cfg.ZAIKey, false)
+}
+
 func resolveConfigCodexStyleKey(auth *coreauth.Auth, entries []config.CodexKey, validateIndexCredentials bool) *config.CodexKey {
 	if auth == nil {
 		return nil
@@ -710,6 +729,7 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 	}
 	now := time.Now().Unix()
 	models := make([]*ModelInfo, 0, len(compat.Models))
+	modelsWithoutThinking := 0
 	for i := range compat.Models {
 		model := compat.Models[i]
 		modelType := "openai-compatibility"
@@ -720,14 +740,54 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		if info == nil {
 			continue
 		}
+		// Thinking: nil means the model does not support reasoning/thinking.
+		// The ApplyThinking pipeline reads this field to decide whether to
+		// inject or strip reasoning_effort from the payload.
+		//
+		// Transition notice: a previous version defaulted nil to
+		// [low,medium,high] for all non-image models. Compat.DefaultThinking
+		// controls this: when not set (or true) the old default is preserved;
+		// when false the model is treated as not supporting reasoning.
 		thinkingSupport := model.Thinking
 		if thinkingSupport == nil && !model.Image {
-			thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+			if compat.DefaultThinking == nil || *compat.DefaultThinking {
+				thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
+			} else {
+				modelsWithoutThinking++
+			}
 		}
+
+		// Warn when extra_body keys contain dots (they will be interpreted as nested paths)
+		if model.ExtraBody != nil {
+			for k := range model.ExtraBody {
+				if strings.Contains(k, ".") {
+					log.WithFields(log.Fields{
+						"model":    info.ID,
+						"provider": compat.Name,
+						"key":      k,
+					}).Warn("openai-compatibility: extra_body key contains '.', will be treated as nested path")
+				}
+			}
+		}
+
 		info.Thinking = modelconfig.NormalizeThinkingSupport(thinkingSupport)
 		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
 		info.SupportedOutputModalities = normalizeCompatConfigModalities(model.OutputModalities)
+		if model.ContextLength > 0 {
+			info.ContextLength = model.ContextLength
+		}
+		info.MaxCompletionTokens = model.MaxCompletionTokens
+		info.ExtraBody = model.ExtraBody
 		models = append(models, info)
+	}
+	if modelsWithoutThinking > 0 {
+		log.WithFields(log.Fields{
+			"provider":       compat.Name,
+			"models_without": modelsWithoutThinking,
+		}).Warn("openai-compatibility: some models have no thinking config — " +
+			"treated as 'does not support reasoning'. " +
+			"Set thinking: {levels: [low,medium,high]} explicitly " +
+			"if reasoning is supported.")
 	}
 	return models
 }
@@ -809,6 +869,13 @@ func buildXAIConfigModels(entry *config.XAIKey) []*ModelInfo {
 		return nil
 	}
 	return buildConfigModels(entry.Models, "xai", "xai")
+}
+
+func buildZAIConfigModels(entry *config.ZAIKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "zai", "zai")
 }
 
 func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {

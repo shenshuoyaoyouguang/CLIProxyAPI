@@ -112,6 +112,9 @@ type Config struct {
 	// XAIKey defines xAI API key configurations using the same structure as Codex API keys.
 	XAIKey []XAIKey `yaml:"xai-api-key" json:"xai-api-key"`
 
+	// ZAIKey defines Z.ai GLM API key configurations using the same structure as Codex API keys.
+	ZAIKey []ZAIKey `yaml:"zai-api-key" json:"zai-api-key"`
+
 	// XAI configures provider-wide xAI request behavior.
 	XAI XAIConfig `yaml:"xai" json:"xai"`
 

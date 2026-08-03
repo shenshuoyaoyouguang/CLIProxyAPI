@@ -19,6 +19,12 @@ const requestBodyOverrideContextKey = "REQUEST_BODY_OVERRIDE"
 const responseBodyOverrideContextKey = "RESPONSE_BODY_OVERRIDE"
 const websocketTimelineOverrideContextKey = "WEBSOCKET_TIMELINE_OVERRIDE"
 
+// maxBufferedResponseBodyBytes caps how much of a non-streaming response is
+// retained in memory for request logs. Large responses (image generation
+// base64, video content) are otherwise buffered in full on top of the bytes
+// already sent to the client, roughly doubling memory per request.
+const maxBufferedResponseBodyBytes = 16 << 20 // 16 MiB
+
 // RequestInfo holds essential details of an incoming HTTP request for logging purposes.
 type RequestInfo struct {
 	URL                 string                      // URL is the request URL.
@@ -35,6 +41,7 @@ type RequestInfo struct {
 type ResponseWriterWrapper struct {
 	gin.ResponseWriter
 	body                *bytes.Buffer              // body is a buffer to store the response body for non-streaming responses.
+	bodyTruncated       bool                       // bodyTruncated indicates the response log buffer was capped.
 	isStreaming         bool                       // isStreaming indicates whether the response is a streaming type (e.g., text/event-stream).
 	streamWriter        logging.StreamingLogWriter // streamWriter is a writer for handling streaming log entries.
 	chunkChannel        chan []byte                // chunkChannel is a channel for asynchronously passing response chunks to the logger.
@@ -95,7 +102,7 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.Write(data)
+		w.writeBufferedBody(data)
 	}
 
 	return n, err
@@ -142,9 +149,31 @@ func (w *ResponseWriterWrapper) WriteString(data string) (int, error) {
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.WriteString(data)
+		w.writeBufferedBody([]byte(data))
 	}
 	return n, err
+}
+
+// writeBufferedBody appends response bytes to the log buffer, capping the
+// retained size so large non-streaming responses cannot balloon memory when
+// request logging is enabled.
+func (w *ResponseWriterWrapper) writeBufferedBody(data []byte) {
+	if w.bodyTruncated {
+		return
+	}
+	remaining := maxBufferedResponseBodyBytes - w.body.Len()
+	if remaining <= 0 {
+		w.body.WriteString("[RESPONSE BODY TRUNCATED]")
+		w.bodyTruncated = true
+		return
+	}
+	if len(data) > remaining {
+		w.body.Write(data[:remaining])
+		w.body.WriteString("[RESPONSE BODY TRUNCATED]")
+		w.bodyTruncated = true
+		return
+	}
+	w.body.Write(data)
 }
 
 // WriteHeader wraps the underlying ResponseWriter's WriteHeader method.

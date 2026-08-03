@@ -537,17 +537,20 @@ func (a *executorAdapter) translateExecutorResponse(ctx context.Context, prepare
 	return sdktranslator.TranslateNonStream(ctx, prepared.outputFormat, prepared.requestedFormat, prepared.req.Model, originalRequest, prepared.req.Payload, payload, param)
 }
 
-func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, prepared preparedExecutorCall, in <-chan pluginapi.ExecutorStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
-	if prepared.requestedFormat == "" || prepared.outputFormat == prepared.requestedFormat {
-		return in
-	}
+func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, prepared preparedExecutorCall, in <-chan pluginapi.ExecutorStreamChunk) <-chan coreexecutor.StreamChunk {
 	if in == nil {
 		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	out := make(chan pluginapi.ExecutorStreamChunk)
+	if prepared.requestedFormat == "" || prepared.outputFormat == prepared.requestedFormat {
+		// No response translation: map plugin chunks to core stream chunks and
+		// clone each payload at this read boundary. Stream producers may reuse or
+		// pool their buffers, so the host must take ownership before exposing them.
+		return mapExecutorStreamChunks(ctx, in)
+	}
+	out := make(chan coreexecutor.StreamChunk)
 	go func() {
 		defer close(out)
 		var param any
@@ -561,12 +564,12 @@ func (a *executorAdapter) translateExecutorStreamChunks(ctx context.Context, pre
 					return
 				}
 				if chunk.Err != nil {
-					_ = sendExecutorPluginStreamChunk(ctx, out, chunk)
+					_ = sendExecutorMappedChunk(ctx, out, chunk)
 					continue
 				}
 				frames := a.translateExecutorStreamPayload(ctx, prepared, chunk.Payload, &param)
 				for _, frame := range frames {
-					if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
+					if !sendExecutorMappedChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
 						return
 					}
 				}
@@ -601,14 +604,14 @@ func executorStreamTranslationFellBack(prepared preparedExecutorCall, payload []
 	return executorNativeStreamResponseTranslatorExists(prepared.outputFormat, prepared.requestedFormat)
 }
 
-func (a *executorAdapter) emitTranslatedExecutorStreamTail(ctx context.Context, prepared preparedExecutorCall, out chan<- pluginapi.ExecutorStreamChunk, param *any) {
+func (a *executorAdapter) emitTranslatedExecutorStreamTail(ctx context.Context, prepared preparedExecutorCall, out chan<- coreexecutor.StreamChunk, param *any) {
 	tail := executorStreamDonePayload(prepared.outputFormat)
 	if len(tail) == 0 {
 		return
 	}
 	frames := a.translateExecutorStreamPayload(ctx, prepared, tail, param)
 	for _, frame := range frames {
-		if !sendExecutorPluginStreamChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
+		if !sendExecutorMappedChunk(ctx, out, pluginapi.ExecutorStreamChunk{Payload: frame}) {
 			return
 		}
 	}
@@ -623,9 +626,12 @@ func executorStreamDonePayload(format sdktranslator.Format) []byte {
 	}
 }
 
-func sendExecutorPluginStreamChunk(ctx context.Context, out chan<- pluginapi.ExecutorStreamChunk, chunk pluginapi.ExecutorStreamChunk) bool {
+// sendExecutorMappedChunk clones the chunk payload at this ownership boundary and
+// hands the mapped core stream chunk to out. Payloads reaching this point alias
+// either the plugin's buffer or a translated frame, so they are copied exactly once.
+func sendExecutorMappedChunk(ctx context.Context, out chan<- coreexecutor.StreamChunk, chunk pluginapi.ExecutorStreamChunk) bool {
 	select {
-	case out <- pluginapi.ExecutorStreamChunk{Payload: bytes.Clone(chunk.Payload), Err: chunk.Err}:
+	case out <- coreexecutor.StreamChunk{Payload: bytes.Clone(chunk.Payload), Err: chunk.Err}:
 		return true
 	case <-ctx.Done():
 		return false
@@ -681,7 +687,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 	}
 	return &coreexecutor.StreamResult{
 		Headers: cloneHeader(pluginResp.Headers),
-		Chunks:  mapExecutorStreamChunks(ctx, a.translateExecutorStreamChunks(ctx, prepared, pluginResp.Chunks)),
+		Chunks:  a.translateExecutorStreamChunks(ctx, prepared, pluginResp.Chunks),
 	}, nil
 }
 
@@ -891,6 +897,10 @@ func mergeExecutorMetadata(reqMetadata, optsMetadata map[string]any) map[string]
 	return merged
 }
 
+// mapExecutorStreamChunks maps plugin chunks to core stream chunks and clones each
+// payload at this read boundary. It is used for the no-translation passthrough path,
+// where incoming payloads still alias the plugin's buffers. Translated chunks are
+// already owned by the host and are emitted directly by translateExecutorStreamChunks.
 func mapExecutorStreamChunks(ctx context.Context, in <-chan pluginapi.ExecutorStreamChunk) <-chan coreexecutor.StreamChunk {
 	if ctx == nil {
 		ctx = context.Background()

@@ -56,14 +56,11 @@ func (m *Manager) NonStream(ctx context.Context, provider string, req *HTTPReque
 			return nil, ctx.Err()
 		case msg, ok := <-respCh:
 			if !ok {
+				// The channel closes without a terminal message only when the stream
+				// was cut short. Returning the buffered bytes as a success would hand
+				// the caller a silently truncated response.
 				if streamMode {
-					if streamResp == nil {
-						streamResp = &HTTPResponse{Status: http.StatusOK, Headers: make(http.Header)}
-					} else if streamResp.Headers == nil {
-						streamResp.Headers = make(http.Header)
-					}
-					streamResp.Body = append(streamResp.Body[:0], streamBody.Bytes()...)
-					return streamResp, nil
+					return nil, errors.New("wsrelay: stream closed before completion, response truncated")
 				}
 				return nil, errors.New("wsrelay: connection closed during response")
 			}

@@ -1,6 +1,7 @@
 package chat_completions
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -576,5 +577,38 @@ func TestConvertOpenAIRequestToClaude_DeveloperMessageCacheControlAppliesToLastB
 	}
 	if got := system[1].Get("cache_control.type").String(); got != "ephemeral" {
 		t.Fatalf("system[1].cache_control.type = %q, want ephemeral", got)
+	}
+}
+
+// TestConvertOpenAIRequestToClaude_DistinctUserIDPerCall guards against the
+// package-level user/account/session globals that were previously shared and
+// lazily initialized once. Those globals were both a data race (unsynchronized
+// lazy init under concurrent calls) and a per-request isolation bug (every
+// request was tagged with the same user_id). This test asserts each call gets a
+// unique metadata.user_id, and running it with -race would have caught the
+// original unsynchronized lazy init.
+func TestConvertOpenAIRequestToClaude_DistinctUserIDPerCall(t *testing.T) {
+	const calls = 200
+	ids := make([]string, calls)
+	var wg sync.WaitGroup
+	wg.Add(calls)
+	for i := 0; i < calls; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			out := ConvertOpenAIRequestToClaude("claude-sonnet-4-5", []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`), false)
+			ids[idx] = gjson.ParseBytes(out).Get("metadata.user_id").String()
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[string]struct{}, calls)
+	for _, id := range ids {
+		if id == "" {
+			t.Fatalf("metadata.user_id must not be empty")
+		}
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate metadata.user_id %q across concurrent calls; user identity is not per-request", id)
+		}
+		seen[id] = struct{}{}
 	}
 }

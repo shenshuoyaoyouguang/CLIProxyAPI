@@ -632,8 +632,16 @@ func evictOldestAntigravityReasoningReplayEntries(count int) {
 	for key, entry := range antigravityReasoningReplayEntries {
 		candidates = append(candidates, candidate{key: key, timestamp: entry.Timestamp})
 	}
+	// Coarse wall clocks (notably on Windows) stamp entries written microseconds
+	// apart with the exact same time. Without a tie-break the victim is picked by
+	// randomized map iteration order through an unstable sort, so identical
+	// workloads evict different entries on every run. Break ties on the key so
+	// eviction is deterministic.
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].timestamp.Before(candidates[j].timestamp)
+		if !candidates[i].timestamp.Equal(candidates[j].timestamp) {
+			return candidates[i].timestamp.Before(candidates[j].timestamp)
+		}
+		return candidates[i].key < candidates[j].key
 	})
 	if count > len(candidates) {
 		count = len(candidates)

@@ -23,16 +23,11 @@ type ConvertOpenAIResponseToGeminiParams struct {
 	ToolCallsAccumulator map[int]*ToolCallAccumulator
 	// Content accumulator for streaming
 	ContentAccumulator strings.Builder
-	// Track if this is the first chunk
-	IsFirstChunk bool
 }
 
-// ToolCallAccumulator holds the state for accumulating tool call data
-type ToolCallAccumulator struct {
-	ID        string
-	Name      string
-	Arguments strings.Builder
-}
+// ToolCallAccumulator is an alias to common.ToolCallAccumulator, unifying the
+// three previous duplicate definitions.
+type ToolCallAccumulator = translatorcommon.ToolCallAccumulator
 
 // ConvertOpenAIResponseToGemini converts OpenAI Chat Completions streaming response format to Gemini API format.
 // This function processes OpenAI streaming chunks and transforms them into Gemini-compatible JSON responses.
@@ -51,12 +46,20 @@ func ConvertOpenAIResponseToGemini(_ context.Context, _ string, originalRequestR
 		*param = &ConvertOpenAIResponseToGeminiParams{
 			ToolCallsAccumulator: nil,
 			ContentAccumulator:   strings.Builder{},
-			IsFirstChunk:         false,
 		}
 	}
 
 	// Handle [DONE] marker
 	if bytes.Equal(bytes.TrimSpace(rawJSON), []byte("[DONE]")) {
+		// Some OpenAI-compatible upstreams end the stream with [DONE] without
+		// emitting a finish_reason chunk; flush accumulated tool calls so they
+		// are not silently lost.
+		params := (*param).(*ConvertOpenAIResponseToGeminiParams)
+		if len(params.ToolCallsAccumulator) > 0 {
+			flushTemplate := []byte(`{"candidates":[{"content":{"parts":[],"role":"model"},"index":0}]}`)
+			flushTemplate = flushOpenAIToolCallsToGemini(flushTemplate, params)
+			return [][]byte{flushTemplate}
+		}
 		return [][]byte{}
 	}
 
@@ -105,17 +108,6 @@ func ConvertOpenAIResponseToGemini(_ context.Context, _ string, originalRequestR
 			delta := choice.Get("delta")
 			baseTemplate := append([]byte(nil), template...)
 
-			// Handle role (only in first chunk)
-			if role := delta.Get("role"); role.Exists() && (*param).(*ConvertOpenAIResponseToGeminiParams).IsFirstChunk {
-				// OpenAI assistant -> Gemini model
-				if role.String() == "assistant" {
-					template, _ = sjson.SetBytes(template, "candidates.0.content.role", "model")
-				}
-				(*param).(*ConvertOpenAIResponseToGeminiParams).IsFirstChunk = false
-				results = append(results, template)
-				return true
-			}
-
 			var chunkOutputs [][]byte
 
 			// Handle reasoning/thinking delta
@@ -140,11 +132,6 @@ func ConvertOpenAIResponseToGemini(_ context.Context, _ string, originalRequestR
 				contentTemplate := append([]byte(nil), baseTemplate...)
 				contentTemplate, _ = sjson.SetBytes(contentTemplate, "candidates.0.content.parts.0.text", contentText)
 				chunkOutputs = append(chunkOutputs, contentTemplate)
-			}
-
-			if len(chunkOutputs) > 0 {
-				results = append(results, chunkOutputs...)
-				return true
 			}
 
 			// Handle tool calls delta
@@ -196,8 +183,15 @@ func ConvertOpenAIResponseToGemini(_ context.Context, _ string, originalRequestR
 					return true
 				})
 
-				// Don't output anything for tool call deltas - wait for completion
-				return true
+				// Don't output anything for tool call deltas - wait for completion.
+				// Fall through so a chunk mixing content and tool_calls still
+				// accumulates the tool call deltas.
+			}
+
+			// Emit any content/reasoning deltas of this chunk before the
+			// terminal handlers below (the finish chunk must follow them).
+			if len(chunkOutputs) > 0 {
+				results = append(results, chunkOutputs...)
 			}
 
 			// Handle finish reason
@@ -205,23 +199,11 @@ func ConvertOpenAIResponseToGemini(_ context.Context, _ string, originalRequestR
 				geminiFinishReason := mapOpenAIFinishReasonToGemini(finishReason.String())
 				template, _ = sjson.SetBytes(template, "candidates.0.finishReason", geminiFinishReason)
 
-				// If we have accumulated tool calls, output them now
+				// If we have accumulated tool calls, output them now. The finish
+				// template is fresh, so the calls start at parts.0 and cannot
+				// collide with a text part (text lives in separate chunks).
 				if len((*param).(*ConvertOpenAIResponseToGeminiParams).ToolCallsAccumulator) > 0 {
-					partIndex := 0
-					for _, accumulator := range (*param).(*ConvertOpenAIResponseToGeminiParams).ToolCallsAccumulator {
-						idPath := fmt.Sprintf("candidates.0.content.parts.%d.functionCall.id", partIndex)
-						namePath := fmt.Sprintf("candidates.0.content.parts.%d.functionCall.name", partIndex)
-						argsPath := fmt.Sprintf("candidates.0.content.parts.%d.functionCall.args", partIndex)
-						if accumulator.ID != "" {
-							template, _ = sjson.SetBytes(template, idPath, accumulator.ID)
-						}
-						template, _ = sjson.SetBytes(template, namePath, accumulator.Name)
-						template, _ = sjson.SetRawBytes(template, argsPath, []byte(parseArgsToObjectRaw(accumulator.Arguments.String())))
-						partIndex++
-					}
-
-					// Clear accumulators
-					(*param).(*ConvertOpenAIResponseToGeminiParams).ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
+					template = flushOpenAIToolCallsToGemini(template, (*param).(*ConvertOpenAIResponseToGeminiParams))
 				}
 
 				results = append(results, template)
@@ -240,6 +222,25 @@ func ConvertOpenAIResponseToGemini(_ context.Context, _ string, originalRequestR
 		return results
 	}
 	return [][]byte{}
+}
+
+// flushOpenAIToolCallsToGemini writes all accumulated tool calls as functionCall
+// parts into template and clears the accumulator.
+func flushOpenAIToolCallsToGemini(template []byte, params *ConvertOpenAIResponseToGeminiParams) []byte {
+	partIndex := 0
+	for _, accumulator := range params.ToolCallsAccumulator {
+		idPath := fmt.Sprintf("candidates.0.content.parts.%d.functionCall.id", partIndex)
+		namePath := fmt.Sprintf("candidates.0.content.parts.%d.functionCall.name", partIndex)
+		argsPath := fmt.Sprintf("candidates.0.content.parts.%d.functionCall.args", partIndex)
+		if accumulator.ID != "" {
+			template, _ = sjson.SetBytes(template, idPath, accumulator.ID)
+		}
+		template, _ = sjson.SetBytes(template, namePath, accumulator.Name)
+		template, _ = sjson.SetRawBytes(template, argsPath, []byte(parseArgsToObjectRaw(accumulator.Arguments.String())))
+		partIndex++
+	}
+	params.ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
+	return template
 }
 
 // mapOpenAIFinishReasonToGemini maps OpenAI finish reasons to Gemini finish reasons
@@ -542,12 +543,18 @@ func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, origina
 	if choices := root.Get("choices"); choices.Exists() && choices.IsArray() {
 		choices.ForEach(func(choiceIndex, choice gjson.Result) bool {
 			choiceIdx := int(choice.Get("index").Int())
+			if choiceIdx < 0 {
+				choiceIdx = int(choiceIndex.Int())
+			}
+			// Each upstream choice maps to its own candidate; writing everything
+			// to candidates.0 would keep only the last choice for n>1 requests.
+			candPath := fmt.Sprintf("candidates.%d", choiceIdx)
 			message := choice.Get("message")
 
 			// Set role
 			if role := message.Get("role"); role.Exists() {
 				if role.String() == "assistant" {
-					out, _ = sjson.SetBytes(out, "candidates.0.content.role", "model")
+					out, _ = sjson.SetBytes(out, candPath+".content.role", "model")
 				}
 			}
 
@@ -559,15 +566,15 @@ func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, origina
 					if reasoningText == "" {
 						continue
 					}
-					out, _ = sjson.SetBytes(out, fmt.Sprintf("candidates.0.content.parts.%d.thought", partIndex), true)
-					out, _ = sjson.SetBytes(out, fmt.Sprintf("candidates.0.content.parts.%d.text", partIndex), reasoningText)
+					out, _ = sjson.SetBytes(out, fmt.Sprintf("%s.content.parts.%d.thought", candPath, partIndex), true)
+					out, _ = sjson.SetBytes(out, fmt.Sprintf("%s.content.parts.%d.text", candPath, partIndex), reasoningText)
 					partIndex++
 				}
 			}
 
 			// Handle content first
 			if content := message.Get("content"); content.Exists() && content.String() != "" {
-				out, _ = sjson.SetBytes(out, fmt.Sprintf("candidates.0.content.parts.%d.text", partIndex), content.String())
+				out, _ = sjson.SetBytes(out, fmt.Sprintf("%s.content.parts.%d.text", candPath, partIndex), content.String())
 				partIndex++
 			}
 
@@ -580,9 +587,9 @@ func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, origina
 						functionArgs := function.Get("arguments").String()
 						functionID := toolCall.Get("id").String()
 
-						idPath := fmt.Sprintf("candidates.0.content.parts.%d.functionCall.id", partIndex)
-						namePath := fmt.Sprintf("candidates.0.content.parts.%d.functionCall.name", partIndex)
-						argsPath := fmt.Sprintf("candidates.0.content.parts.%d.functionCall.args", partIndex)
+						idPath := fmt.Sprintf("%s.content.parts.%d.functionCall.id", candPath, partIndex)
+						namePath := fmt.Sprintf("%s.content.parts.%d.functionCall.name", candPath, partIndex)
+						argsPath := fmt.Sprintf("%s.content.parts.%d.functionCall.args", candPath, partIndex)
 						if functionID != "" {
 							out, _ = sjson.SetBytes(out, idPath, functionID)
 						}
@@ -597,11 +604,11 @@ func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, origina
 			// Handle finish reason
 			if finishReason := choice.Get("finish_reason"); finishReason.Exists() {
 				geminiFinishReason := mapOpenAIFinishReasonToGemini(finishReason.String())
-				out, _ = sjson.SetBytes(out, "candidates.0.finishReason", geminiFinishReason)
+				out, _ = sjson.SetBytes(out, candPath+".finishReason", geminiFinishReason)
 			}
 
 			// Set index
-			out, _ = sjson.SetBytes(out, "candidates.0.index", choiceIdx)
+			out, _ = sjson.SetBytes(out, candPath+".index", choiceIdx)
 
 			return true
 		})

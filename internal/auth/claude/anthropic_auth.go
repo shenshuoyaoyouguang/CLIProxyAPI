@@ -34,11 +34,24 @@ const (
 	RedirectURI      = "http://localhost:54545/callback"
 	ClaudeOAuthScope = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 
-	claudeRefreshMinBackoff       = 5 * time.Second
-	claudeRefreshMaxBackoff       = 5 * time.Minute
+	claudeRefreshMinBackoff = 5 * time.Second
+	claudeRefreshMaxBackoff = 5 * time.Minute
+	// claudeRefreshTimeout bounds a single token exchange so a hung token
+	// endpoint cannot block every refresh caller inside the singleflight group.
 	claudeRefreshTimeout          = 30 * time.Second
 	claudeRefreshHandshakeTimeout = 10 * time.Second
 )
+
+// truncatedTokenResponseBody caps the upstream error body embedded in errors:
+// a provider may echo the submitted refresh_token on a non-200 response, and
+// those errors are logged by refresh retry loops.
+func truncatedTokenResponseBody(body []byte) string {
+	const maxTokenErrorBody = 500
+	if len(body) <= maxTokenErrorBody {
+		return string(body)
+	}
+	return string(body[:maxTokenErrorBody]) + "...[truncated]"
+}
 
 var (
 	claudeRefreshGroup singleflight.Group
@@ -420,7 +433,9 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	// log.Debugf("Token response: %s", string(body))
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(body))
+		// Truncate: a provider may echo the submitted refresh_token in the error
+		// body, and these errors are logged by refresh retry loops.
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, truncatedTokenResponseBody(body))
 	}
 	// log.Debugf("Token response: %s", string(body))
 
@@ -555,7 +570,9 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		message := string(body)
+		// Truncate the body: a provider may echo the submitted refresh_token,
+		// and refreshHTTPError messages are surfaced in logs.
+		message := truncatedTokenResponseBody(body)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			retryAfter := parseClaudeRetryAfter(resp)
 			setClaudeRefreshBlockedUntil(refreshToken, time.Now().Add(retryAfter))

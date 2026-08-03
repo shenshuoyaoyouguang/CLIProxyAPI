@@ -70,6 +70,12 @@ type ModelInfo struct {
 	// This is optional and currently used for Gemini thinking budget normalization.
 	Thinking *ThinkingSupport `json:"thinking,omitempty"`
 
+	// ExtraBody holds additional JSON paths to inject into the request body
+	// when this model is used. Only paths absent from the payload are written
+	// (merge semantics, never overwrite). Used for provider-specific fields
+	// such as extra_body.chat_template_kwargs.enable_thinking.
+	ExtraBody map[string]any `json:"-"`
+
 	// Config holds model-specific runtime overrides loaded from models.json.
 	Config *ModelConfig `json:"config,omitempty"`
 
@@ -589,6 +595,9 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		}
 		copyModel.Thinking = &copyThinking
 	}
+	if model.ExtraBody != nil {
+		copyModel.ExtraBody = cloneModelExtraBody(model.ExtraBody)
+	}
 	if model.Config != nil {
 		copyConfig := *model.Config
 		if len(model.Config.OverrideHeader) > 0 {
@@ -600,6 +609,19 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		copyModel.Config = &copyConfig
 	}
 	return &copyModel
+}
+
+// cloneModelExtraBody recursively deep-clones an ExtraBody map so the
+// clone does not share references with the original.
+func cloneModelExtraBody(extraBody map[string]any) map[string]any {
+	if extraBody == nil {
+		return nil
+	}
+	copyMap := make(map[string]any, len(extraBody))
+	for key, entry := range extraBody {
+		copyMap[key] = cloneModelMapValue(entry)
+	}
+	return copyMap
 }
 
 func cloneModelInfosUnique(models []*ModelInfo) []*ModelInfo {
@@ -1101,24 +1123,57 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 		count int
 	}
 	providers := make([]providerCount, 0, len(registration.Providers))
-	// suspendedByProvider := make(map[string]int)
-	// if registration.SuspendedClients != nil {
-	// 	for clientID := range registration.SuspendedClients {
-	// 		if provider, ok := r.clientProviders[clientID]; ok && provider != "" {
-	// 			suspendedByProvider[provider]++
-	// 		}
-	// 	}
-	// }
+	now := time.Now()
 	for name, count := range registration.Providers {
 		if count <= 0 {
 			continue
 		}
-		// adjusted := count - suspendedByProvider[name]
-		// if adjusted <= 0 {
-		// 	continue
-		// }
-		// providers = append(providers, providerCount{name: name, count: adjusted})
-		providers = append(providers, providerCount{name: name, count: count})
+
+		// Subtract clients that are unavailable for this model, attributed by provider,
+		// mirroring buildAvailableModelsLocked accounting: over-quota clients still inside
+		// the recovery window and non-quota suspended clients. Quota-reasoned
+		// suspensions (cooldown) are deliberately NOT part of the unavailable set —
+		// buildAvailableModelsLocked keeps a model available when only cooldown or
+		// expired clients remain — so a provider in cooldown must still be reported
+		// as a supply source. A provider with no usable clients left must not be
+		// reported at all.
+		// NOTE: the quota and suspended sets can contain the same client (a 429 marks
+		// both via conductor MarkResult), so unavailable clients are counted as a
+		// union, not as two independent subtractions.
+		unavailable := make(map[string]struct{})
+		if registration.QuotaExceededClients != nil {
+			for clientID, quotaTime := range registration.QuotaExceededClients {
+				if clientID == "" {
+					continue
+				}
+				if p, okProvider := r.clientProviders[clientID]; !okProvider || p != name {
+					continue
+				}
+				if quotaTime != nil && now.Sub(*quotaTime) < modelQuotaExceededWindow {
+					unavailable[clientID] = struct{}{}
+				}
+			}
+		}
+		if registration.SuspendedClients != nil {
+			for clientID, reason := range registration.SuspendedClients {
+				if clientID == "" {
+					continue
+				}
+				if p, okProvider := r.clientProviders[clientID]; !okProvider || p != name {
+					continue
+				}
+				if strings.EqualFold(reason, "quota") {
+					continue
+				}
+				unavailable[clientID] = struct{}{}
+			}
+		}
+
+		adjusted := count - len(unavailable)
+		if adjusted <= 0 {
+			continue
+		}
+		providers = append(providers, providerCount{name: name, count: adjusted})
 	}
 	if len(providers) == 0 {
 		return nil

@@ -27,6 +27,8 @@ var nativeProviderAppliers = map[string]ProviderApplier{
 	"antigravity": nil,
 	"kimi":        nil,
 	"xai":         nil,
+	"deepseek":    nil,
+	"nvidia":      nil,
 }
 
 // pluginProviderAppliers maps plugin-owned provider names to their implementations.
@@ -48,6 +50,10 @@ func GetProviderApplier(provider string) ProviderApplier {
 }
 
 // RegisterProvider registers a provider applier by name.
+//
+// Native registrations always win over plugin registrations at lookup time
+// (see GetProvider). Shadowing a plugin-owned applier is therefore a silent
+// behaviour change for that plugin, so it is reported explicitly.
 func RegisterProvider(name string, applier ProviderApplier) {
 	name = normalizedProviderName(name)
 	if name == "" {
@@ -55,6 +61,9 @@ func RegisterProvider(name string, applier ProviderApplier) {
 	}
 	providerAppliersMu.Lock()
 	defer providerAppliersMu.Unlock()
+	if plugin, shadowed := pluginProviderAppliers[name]; shadowed {
+		log.Warnf("thinking: native provider applier %q shadows plugin applier owned by %q; the plugin applier will no longer be used", name, plugin.owner)
+	}
 	nativeProviderAppliers[name] = applier
 }
 
@@ -82,7 +91,7 @@ func RegisterPluginProvider(owner string, name string, priority int, applier Pro
 	return true
 }
 
-// UnregisterPluginProviders removes all provider appliers owned by one plugin.
+// UnregisterPluginProviders removes all provider appliers and extractors owned by one plugin.
 func UnregisterPluginProviders(owner string) {
 	owner = strings.TrimSpace(owner)
 	if owner == "" {
@@ -95,6 +104,11 @@ func UnregisterPluginProviders(owner string) {
 			delete(pluginProviderAppliers, provider)
 		}
 	}
+	for provider, record := range pluginProviderExtractors {
+		if record.owner == owner {
+			delete(pluginProviderExtractors, provider)
+		}
+	}
 }
 
 // ClearPluginProviders removes all plugin-owned provider appliers.
@@ -102,6 +116,88 @@ func ClearPluginProviders() {
 	providerAppliersMu.Lock()
 	defer providerAppliersMu.Unlock()
 	pluginProviderAppliers = map[string]pluginProviderApplier{}
+	pluginProviderExtractors = map[string]pluginProviderExtractor{}
+}
+
+type pluginProviderExtractor struct {
+	owner     string
+	priority  int
+	extractor func(body []byte) ThinkingConfig
+}
+
+// nativeProviderExtractors maps built-in provider names to their body config extractors.
+var nativeProviderExtractors = map[string]func(body []byte) ThinkingConfig{
+	"claude":       extractClaudeConfig,
+	"gemini":       func(body []byte) ThinkingConfig { return extractGeminiConfig(body, "gemini") },
+	"antigravity":  func(body []byte) ThinkingConfig { return extractGeminiConfig(body, "antigravity") },
+	"interactions": extractInteractionsConfig,
+	"openai":       extractOpenAIConfig,
+	"codex":        extractCodexConfig,
+	"xai":          extractCodexConfig,
+	"deepseek":     extractDeepSeekConfig,
+	"kimi":         extractKimiConfig,
+	"nvidia":       extractNvidiaConfig,
+	"zai":          extractOpenAIConfig,
+}
+
+// pluginProviderExtractors maps plugin-owned provider names to their body config extractors.
+var pluginProviderExtractors = map[string]pluginProviderExtractor{}
+
+// GetProviderExtractor returns the body config extractor for the given provider name.
+// Returns nil if the provider is not registered.
+func GetProviderExtractor(provider string) func(body []byte) ThinkingConfig {
+	provider = normalizedProviderName(provider)
+	if provider == "" {
+		return nil
+	}
+	providerAppliersMu.RLock()
+	defer providerAppliersMu.RUnlock()
+	if nativeExtractor, okNative := nativeProviderExtractors[provider]; okNative {
+		return nativeExtractor
+	}
+	return pluginProviderExtractors[provider].extractor
+}
+
+// RegisterProviderExtractor registers a body config extractor by provider name.
+//
+// Native registrations always win over plugin registrations at lookup time
+// (see GetProviderExtractor). Shadowing a plugin-owned extractor is therefore a
+// silent behaviour change for that plugin, so it is reported explicitly.
+func RegisterProviderExtractor(name string, extractor func(body []byte) ThinkingConfig) {
+	name = normalizedProviderName(name)
+	if name == "" || extractor == nil {
+		return
+	}
+	providerAppliersMu.Lock()
+	defer providerAppliersMu.Unlock()
+	if plugin, shadowed := pluginProviderExtractors[name]; shadowed {
+		log.Warnf("thinking: native provider extractor %q shadows plugin extractor owned by %q; the plugin extractor will no longer be used", name, plugin.owner)
+	}
+	nativeProviderExtractors[name] = extractor
+}
+
+// RegisterPluginProviderExtractor registers a plugin-owned body config extractor.
+func RegisterPluginProviderExtractor(owner string, name string, priority int, extractor func(body []byte) ThinkingConfig) bool {
+	owner = strings.TrimSpace(owner)
+	name = normalizedProviderName(name)
+	if owner == "" || name == "" || extractor == nil {
+		return false
+	}
+	providerAppliersMu.Lock()
+	defer providerAppliersMu.Unlock()
+	if _, native := nativeProviderExtractors[name]; native {
+		return false
+	}
+	current, exists := pluginProviderExtractors[name]
+	if exists && (current.priority > priority || (current.priority == priority && current.owner <= owner)) {
+		return false
+	}
+	pluginProviderExtractors[name] = pluginProviderExtractor{
+		owner:     owner,
+		priority:  priority,
+		extractor: extractor,
+	}
+	return true
 }
 
 func normalizedProviderName(provider string) string {
@@ -180,7 +276,10 @@ func ApplyThinkingWithSummary(body []byte, model string, fromFormat string, toFo
 // visibility from the original source body.
 func ApplyThinkingWithModelInfo(body, sourceBody []byte, model string, fromFormat string, toFormat string, providerKey string, modelInfo *registry.ModelInfo) ([]byte, error) {
 	summaryConfig := ExtractSummaryConfig(sourceBody, fromFormat)
-	if len(sourceBody) == 0 {
+	// The source body is authoritative, but a summary intent produced by the
+	// translation into the target body (e.g. a normalizer that materialized the
+	// visibility field) must not be discarded when the source carries none.
+	if summaryConfig.Mode == SummaryUnspecified {
 		summaryConfig = ExtractSummaryConfig(body, toFormat)
 	}
 	return ApplyThinkingWithModelInfoAndSummary(body, sourceBody, model, fromFormat, toFormat, providerKey, modelInfo, summaryConfig)
@@ -354,14 +453,18 @@ func thinkingIsFullyDisabled(config ThinkingConfig) bool {
 func shouldMapConfiguredHighIntent(fromFormat, toFormat string, modelInfo *registry.ModelInfo) bool {
 	fromFormat = strings.ToLower(strings.TrimSpace(fromFormat))
 	toFormat = strings.ToLower(strings.TrimSpace(toFormat))
+	// Different wire formats (e.g. openai-response vs codex) carry different
+	// effort vocabularies, so high intent maps to the closest supported level
+	// even when both belong to the same provider family. Identical wire formats
+	// keep the explicit level authoritative unless the model family differs.
 	if fromFormat != toFormat {
 		return true
 	}
-	if modelInfo == nil {
-		return false
-	}
-	modelType := strings.ToLower(strings.TrimSpace(modelInfo.Type))
-	return modelType != "" && !isSameProviderFamily(toFormat, modelType)
+	// A model whose family differs from the wire format (e.g. a non-Claude model
+	// served over the Claude wire) maps high intent to the closest supported level.
+	// providerFamily falls back to the wire format when the model type is unknown,
+	// in which case the families match and no mapping is needed.
+	return providerFamily(modelInfo, toFormat) != normalizeProviderFamily(toFormat)
 }
 
 func mapConfiguredHighIntent(level ThinkingLevel, modelInfo *registry.ModelInfo) ThinkingLevel {
@@ -490,7 +593,11 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 		return body, nil
 	}
 
-	config = normalizeUserDefinedConfig(config, fromFormat, toFormat)
+	// The provider appliers route ModeLevel to their level format natively (e.g.
+	// Gemini 3.x thinkingLevel), so a request's explicit level must not be
+	// coerced to a budget here: a user-defined Gemini 3 model would otherwise
+	// receive thinkingBudget and be rejected or ignored by level-only upstreams.
+	// ModeBudget requests are left untouched as well.
 	log.WithFields(log.Fields{
 		"provider": toFormat,
 		"model":    modelID,
@@ -508,52 +615,25 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	return applySummaryConfigForProvider(applied, toFormat, modelID, providerKey, modelInfo, summaryConfig), nil
 }
 
-func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat string) ThinkingConfig {
-	if config.Mode != ModeLevel {
-		return config
-	}
-	if toFormat == "claude" {
-		return config
-	}
-	if !isBudgetCapableProvider(toFormat) {
-		return config
-	}
-	budget, ok := ConvertLevelToBudget(string(config.Level))
-	if !ok {
-		return config
-	}
-	config.Mode = ModeBudget
-	config.Budget = budget
-	config.Level = ""
-	return config
-}
-
 // extractThinkingConfig extracts provider-specific thinking config from request body.
 func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return ThinkingConfig{}
 	}
-
-	switch provider {
-	case "claude":
-		return extractClaudeConfig(body)
-	case "gemini", "antigravity":
-		return extractGeminiConfig(body, provider)
-	case "interactions":
-		return extractInteractionsConfig(body)
-	case "openai":
-		return extractOpenAIConfig(body)
-	case "codex", "xai":
-		return extractCodexConfig(body)
-	case "kimi":
-		return extractKimiConfig(body)
-	default:
+	extractor := GetProviderExtractor(provider)
+	if extractor == nil {
 		return ThinkingConfig{}
 	}
+	return extractor(body)
 }
 
+// hasThinkingConfig reports whether the extracted config carries any thinking
+// intent. The zero ThinkingConfig is {Mode: ModeBudget, Budget: 0, Level: ""}
+// because ModeBudget is the iota zero value, so "no config found" is exactly
+// that triple; anything else means at least one field was populated.
 func hasThinkingConfig(config ThinkingConfig) bool {
-	return config.Mode != ModeBudget || config.Budget != 0 || config.Level != ""
+	isZeroValue := config.Mode == ModeBudget && config.Budget == 0 && config.Level == ""
+	return !isZeroValue
 }
 
 // ExtractReasoningEffort returns the request's thinking setting as a canonical
@@ -572,6 +652,8 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 			config = extractCodexConfig(body)
 		case "openai":
 			config = extractCodexConfig(body)
+		case "deepseek":
+			config = extractOpenAIConfig(body)
 		}
 	}
 	return reasoningEffortFromConfig(config)
@@ -584,11 +666,21 @@ func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 	config := extractThinkingConfig(body, provider)
 	if !hasThinkingConfig(config) {
 		switch provider {
-		case "openai", "openai-response":
+		case "openai-response":
+			// No native extractor is registered for "openai-response", so probe
+			// both payload shapes: Responses API (reasoning.effort) first, then
+			// Chat Completions (reasoning_effort).
 			config = extractCodexConfig(body)
 			if !hasThinkingConfig(config) {
 				config = extractOpenAIConfig(body)
 			}
+		case "openai":
+			// extractThinkingConfig already ran extractOpenAIConfig for this
+			// provider and it is deterministic, so only the Responses-style
+			// reasoning.effort shape is still worth probing.
+			config = extractCodexConfig(body)
+		case "deepseek":
+			config = extractOpenAIConfig(body)
 		}
 	}
 	return reasoningEffortFromConfig(config)
@@ -621,6 +713,16 @@ func reasoningEffortFromConfig(config ThinkingConfig) string {
 	default:
 		return ""
 	}
+}
+
+// fieldNonNil reports whether the gjson Result represents a present,
+// non-null JSON value. gjson.Result.Exists() returns true for JSON null,
+// which causes callers that then read .Int()/.String() to misinterpret a
+// null field as 0/"none"/"" and apply an unintended thinking mode (e.g.
+// "enabled" silently becoming disabled, or a 400 rejection). Guard every
+// optional-field presence check with fieldNonNil.
+func fieldNonNil(r gjson.Result) bool {
+	return r.Exists() && r.Type != gjson.Null
 }
 
 // extractClaudeConfig extracts thinking configuration from Claude format request body.
@@ -659,7 +761,7 @@ func extractClaudeConfig(body []byte) ThinkingConfig {
 	}
 
 	// Check budget_tokens
-	if budget := gjson.GetBytes(body, "thinking.budget_tokens"); budget.Exists() {
+	if budget := gjson.GetBytes(body, "thinking.budget_tokens"); fieldNonNil(budget) {
 		value := int(budget.Int())
 		switch value {
 		case 0:
@@ -701,7 +803,7 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 		// Google official Gemini Python SDK sends snake_case field names
 		level = gjson.GetBytes(body, prefix+".thinking_level")
 	}
-	if level.Exists() {
+	if fieldNonNil(level) {
 		value := level.String()
 		switch value {
 		case "none":
@@ -719,7 +821,7 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 		// Google official Gemini Python SDK sends snake_case field names
 		budget = gjson.GetBytes(body, prefix+".thinking_budget")
 	}
-	if budget.Exists() {
+	if fieldNonNil(budget) {
 		value := int(budget.Int())
 		switch value {
 		case 0:
@@ -793,7 +895,7 @@ func extractInteractionsConfig(body []byte) ThinkingConfig {
 // The "none" value is treated specially to return ModeNone.
 func extractOpenAIConfig(body []byte) ThinkingConfig {
 	// Check reasoning_effort (OpenAI Chat Completions format)
-	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+	if effort := gjson.GetBytes(body, "reasoning_effort"); fieldNonNil(effort) {
 		value := effort.String()
 		if value == "none" {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
@@ -856,7 +958,7 @@ func extractKimiConfig(body []byte) ThinkingConfig {
 // This is similar to OpenAI but uses nested field "reasoning.effort" instead of "reasoning_effort".
 func extractCodexConfig(body []byte) ThinkingConfig {
 	// Check reasoning.effort (Codex / OpenAI Responses API format)
-	if effort := gjson.GetBytes(body, "reasoning.effort"); effort.Exists() {
+	if effort := gjson.GetBytes(body, "reasoning.effort"); fieldNonNil(effort) {
 		value := effort.String()
 		if value == "none" {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
@@ -865,4 +967,98 @@ func extractCodexConfig(body []byte) ThinkingConfig {
 	}
 
 	return ThinkingConfig{}
+}
+
+// extractDeepSeekConfig extracts thinking configuration from DeepSeek format request body.
+//
+// DeepSeek API format:
+//   - thinking.type: "enabled"/"disabled" (thought toggle)
+//   - reasoning_effort: "none", "low", "medium", "high", "xhigh", "max", "auto" (discrete levels)
+//
+// thinking.type takes precedence. When thinking.type="disabled", any reasoning_effort is ignored.
+// When thinking.type="enabled" without reasoning_effort, returns empty config to let the
+// upstream use its default effort.
+//
+// When thinking.type="enabled" and reasoning_effort="none", thinking must stay enabled.
+// Returning ModeNone would call applyDisabledThinking (thinking.type=disabled), contradicting
+// the explicit enabled flag. Returning ModeLevel+LevelNone is also unsafe because ValidateConfig
+// normalizes it back to ModeNone. We therefore return an empty config so the body passes through
+// unchanged: the upstream receives thinking.type=enabled + reasoning_effort=none exactly as the
+// client intended.
+func extractDeepSeekConfig(body []byte) ThinkingConfig {
+	thinkingType := gjson.GetBytes(body, "thinking.type")
+	thinkingEnabled := false
+	if thinkingType.Exists() {
+		switch strings.ToLower(strings.TrimSpace(thinkingType.String())) {
+		case "disabled":
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "enabled":
+			thinkingEnabled = true
+			// A JSON null reasoning_effort is treated exactly like a missing
+			// field (gjson.Exists() reports true for null, so check the type):
+			// the upstream then receives thinking.type=enabled without effort.
+			if effort := gjson.GetBytes(body, "reasoning_effort"); !effort.Exists() || effort.Type == gjson.Null {
+				return ThinkingConfig{}
+			}
+		}
+	}
+
+	// Check reasoning_effort (OpenAI-compatible top-level field)
+	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() && effort.Type != gjson.Null {
+		value := strings.ToLower(strings.TrimSpace(effort.String()))
+		switch value {
+		case "":
+			return ThinkingConfig{}
+		case "none":
+			// When thinking.type=enabled, "none" must not disable thinking.
+			// Passthrough so the upstream sees thinking.type=enabled + effort=none.
+			if thinkingEnabled {
+				return ThinkingConfig{}
+			}
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		case "auto":
+			return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+		default:
+			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+		}
+	}
+
+	return ThinkingConfig{}
+}
+
+// extractNvidiaConfig extracts thinking configuration from NVIDIA format request body.
+//
+// NVIDIA Nemotron API format:
+//   - enable_thinking: true/false (primary toggle)
+//   - reasoning_budget: integer (optional token budget)
+//   - medium_effort: true/false (reduced thinking depth)
+//
+// Falls back to reasoning_effort for cross-compatibility with OpenAI format clients.
+func extractNvidiaConfig(body []byte) ThinkingConfig {
+	// Check enable_thinking first (NVIDIA-native)
+	enabled := gjson.GetBytes(body, "enable_thinking")
+	if enabled.Exists() {
+		if !enabled.Bool() {
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		}
+
+		// Check medium_effort for level mapping
+		if effort := gjson.GetBytes(body, "medium_effort"); effort.Exists() && effort.Bool() {
+			return ThinkingConfig{Mode: ModeLevel, Level: LevelLow}
+		}
+
+		// Check reasoning_budget
+		if budget := gjson.GetBytes(body, "reasoning_budget"); budget.Exists() {
+			value := int(budget.Int())
+			if value > 0 {
+				return ThinkingConfig{Mode: ModeBudget, Budget: value}
+			}
+		}
+
+		// Thinking enabled without specific config - treat as auto
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+	}
+
+	// Fall back to reasoning_effort (OpenAI-compat client compatibility)
+	return extractOpenAIConfig(body)
 }

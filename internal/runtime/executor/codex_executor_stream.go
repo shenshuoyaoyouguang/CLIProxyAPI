@@ -199,13 +199,16 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return
 			}
 		}
+		var streamErr error = newCodexIncompleteStreamError()
 		if errScan := scanner.Err(); errScan != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
+			// A read failure is not a stream that ended without a terminal event;
+			// collapsing both into 408 hides the real transport error.
+			streamErr = newCodexStreamReadError(errScan)
 		}
-		streamErr := newCodexIncompleteStreamError()
 		helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 		reporter.PublishFailure(ctx, streamErr)
 		select {

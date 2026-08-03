@@ -61,10 +61,22 @@ func codexReasoningReplayScopeFromRequest(ctx context.Context, from sdktranslato
 	if modelName == "" {
 		modelName = thinking.ParseSuffix(req.Model).ModelName
 	}
+	sessionKey := codexReasoningReplaySessionKey(ctx, from, req, opts, body)
+	// Client-controlled session keys are caller-isolated so two callers cannot
+	// overwrite or read each other's reasoning replay state by reusing the same
+	// session key. Trusted "execution:" keys pass through unchanged; anonymous
+	// callers share a process-local degraded namespace. The namespace derives
+	// from the downstream CPA API key, not the selected upstream credential, so
+	// it is stable across upstream credential rotation and preserves replay
+	// continuity (see reasoningReplayCacheKey). Entries cached before this
+	// isolation land under a different key and expire via the normal TTL.
+	if isolated := helps.IsolateClientControlledSessionKey(ctx, sessionKey); isolated != "" {
+		sessionKey = isolated
+	}
 	inputItems := gjson.GetBytes(body, "input").Array()
 	return codexReasoningReplayScope{
 		modelName:          modelName,
-		sessionKey:         codexReasoningReplaySessionKey(ctx, from, req, opts, body),
+		sessionKey:         sessionKey,
 		requestFingerprint: codexReplayInputPrefixFingerprint(inputItems, len(inputItems)),
 	}
 }

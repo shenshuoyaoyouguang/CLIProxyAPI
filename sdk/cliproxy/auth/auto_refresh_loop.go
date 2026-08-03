@@ -233,7 +233,7 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 	}
 	next, shouldSchedule := nextRefreshCheckAt(now, auth, l.interval)
 	shouldRefresh := manager.shouldRefresh(auth, now)
-	exec := manager.executors[auth.Provider]
+	exec := manager.executors[executorKeyFromAuth(auth)]
 	manager.mu.RUnlock()
 
 	if !shouldSchedule {
@@ -268,6 +268,11 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 	case <-ctx.Done():
 		return
 	case l.jobs <- authID:
+	default:
+		// All refresh workers are busy: never let the send block the
+		// scheduling loop. Re-schedule this auth promptly so the refresh
+		// is not lost (H24m).
+		l.queueReschedule(authID)
 	}
 }
 
@@ -339,7 +344,9 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 	if auth == nil {
 		return time.Time{}, false
 	}
-	if hasUnauthorizedAuthFailure(auth) {
+	// Exclude a 401-bricked credential only while no retry is scheduled: the
+	// backoff set on unauthorized refresh failure lets the loop self-heal.
+	if hasUnauthorizedAuthFailure(auth) && auth.NextRefreshAfter.IsZero() {
 		return time.Time{}, false
 	}
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
@@ -47,6 +48,28 @@ func NewKimiExecutor(cfg *config.Config) *KimiExecutor {
 
 // Identifier returns the executor identifier.
 func (e *KimiExecutor) Identifier() string { return "kimi" }
+
+// setKimiBaseURLAttr writes the Kimi upstream base_url into auth.Attributes,
+// which the shared ClaudeExecutor reads when proxying Claude-format requests.
+// Kimi OAuth credentials are created with only Metadata populated, so
+// Attributes may be nil; assigning to a nil map panics
+// ("assignment to entry in nil map"), and a nil auth would dereference
+// fatally. Guard both before writing.
+func setKimiBaseURLAttr(auth *cliproxyauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	// Respect an explicitly configured endpoint (self-hosted gateway, corporate
+	// relay, regional mirror). Only fill in the Kimi default when nothing was
+	// provided; overwriting unconditionally silently breaks those deployments.
+	if strings.TrimSpace(auth.Attributes["base_url"]) != "" {
+		return
+	}
+	auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
+}
 
 // PrepareRequest injects Kimi credentials into the outgoing HTTP request.
 func (e *KimiExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
@@ -85,7 +108,7 @@ func (e *KimiExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth,
 func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
+		setKimiBaseURLAttr(auth)
 		preparedReq, replayScope := prepareKimiThinkingReplayRequest(ctx, req, opts)
 		claudeResp, errExecute := e.ClaudeExecutor.Execute(ctx, auth, preparedReq, opts)
 		if errExecute != nil {
@@ -204,7 +227,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	from := opts.SourceFormat
 	if from.String() == "claude" {
-		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
+		setKimiBaseURLAttr(auth)
 		preparedReq, replayScope := prepareKimiThinkingReplayRequest(ctx, req, opts)
 		claudeResult, errExecute := e.ClaudeExecutor.ExecuteStream(ctx, auth, preparedReq, opts)
 		if errExecute != nil {
@@ -318,10 +341,18 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		var param any
 		var streamUsage helps.StreamUsageBuffer
 		defer streamUsage.Publish(ctx, reporter)
+		sawDone := false
 		for scanner.Scan() {
 			line := scanner.Bytes()
+			trimmed := bytes.TrimSpace(line)
+			if len(trimmed) == 0 || !bytes.HasPrefix(trimmed, []byte("data:")) {
+				continue
+			}
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			streamUsage.ObserveOpenAIStream(line)
+			if bytes.Equal(bytes.TrimSpace(trimmed[len("data:"):]), []byte("[DONE]")) {
+				sawDone = true
+			}
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param, claudeInputTokens)
 			for i := range chunks {
 				select {
@@ -331,20 +362,25 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				}
 			}
 		}
-		doneChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param, claudeInputTokens)
-		for i := range doneChunks {
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Payload: doneChunks[i]}:
-			case <-ctx.Done():
-				return
-			}
-		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
+			}
+		} else if !sawDone {
+			// The upstream closed the stream without a terminal [DONE] marker.
+			// Feed a synthetic one through the translator so pending completion
+			// events are still emitted; when the stream already carried [DONE],
+			// nothing is synthesized, so the terminal event is never duplicated.
+			doneChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, []byte("data: [DONE]"), &param, claudeInputTokens)
+			for i := range doneChunks {
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: doneChunks[i]}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()
@@ -353,7 +389,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 // CountTokens estimates token count for Kimi requests.
 func (e *KimiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
+	setKimiBaseURLAttr(auth)
 	return e.ClaudeExecutor.countTokensUpstream(ctx, auth, req, opts)
 }
 
@@ -730,13 +766,26 @@ func applyKimiHeadersWithAuth(r *http.Request, token string, stream bool, auth *
 	}
 }
 
-// getKimiHostname returns the machine hostname.
+var (
+	kimiHostnameOnce sync.Once
+	kimiHostnameVal  string
+
+	kimiDeviceIDOnce sync.Once
+	kimiDeviceIDVal  string
+)
+
+// getKimiHostname returns the machine hostname (cached: it runs os.Hostname on
+// every request header build otherwise).
 func getKimiHostname() string {
-	hostname, err := os.Hostname()
-	if err != nil {
-		return "unknown"
-	}
-	return hostname
+	kimiHostnameOnce.Do(func() {
+		hostname, err := os.Hostname()
+		if err != nil {
+			kimiHostnameVal = "unknown"
+			return
+		}
+		kimiHostnameVal = hostname
+	})
+	return kimiHostnameVal
 }
 
 // getKimiDeviceModel returns a device model string matching kimi-cli format.
@@ -746,6 +795,16 @@ func getKimiDeviceModel() string {
 
 // getKimiDeviceID returns a stable device ID, matching kimi-cli storage location.
 func getKimiDeviceID() string {
+	kimiDeviceIDOnce.Do(func() {
+		kimiDeviceIDVal = resolveKimiDeviceIDFromDisk()
+	})
+	return kimiDeviceIDVal
+}
+
+// resolveKimiDeviceIDFromDisk reads the device ID from kimi-cli's storage
+// location. It is called once and cached: the home-directory probing and file
+// read would otherwise run on every request header build.
+func resolveKimiDeviceIDFromDisk() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "cli-proxy-api-device"

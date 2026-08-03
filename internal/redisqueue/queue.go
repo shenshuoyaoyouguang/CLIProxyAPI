@@ -146,17 +146,22 @@ func (q *queue) publishToSubscribers(payload []byte) bool {
 		return false
 	}
 
-	for id, subscriber := range q.subscribers {
+	delivered := false
+	for _, subscriber := range q.subscribers {
 		cloned := append([]byte(nil), payload...)
 		select {
 		case subscriber <- cloned:
+			delivered = true
 		default:
-			delete(q.subscribers, id)
-			close(subscriber)
+			// Backpressure: the subscriber's buffer is full. Drop this record for this
+			// subscriber only; keep the subscription active so it can resume receiving
+			// once its consumer drains the buffer.
 		}
 	}
 
-	return true
+	// Return true only when at least one subscriber accepted the payload so the
+	// caller (Enqueue) falls through to the queue when nothing was delivered.
+	return delivered
 }
 
 func (q *queue) subscribe(buffer int, initialPayload []byte) (<-chan []byte, func()) {

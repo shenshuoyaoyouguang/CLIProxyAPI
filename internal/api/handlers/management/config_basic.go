@@ -21,6 +21,10 @@ import (
 const (
 	latestReleaseURL       = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
 	latestReleaseUserAgent = "CLIProxyAPI"
+
+	// maxConfigYAMLBytes bounds the config-upload body; a real config is a few
+	// hundred KiB at most.
+	maxConfigYAMLBytes = 8 << 20 // 8 MiB
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {
@@ -28,7 +32,15 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		c.JSON(200, gin.H{})
 		return
 	}
-	c.JSON(200, new(*h.cfg))
+	// CloneForRuntime performs a deep copy (independent maps/slices) so that
+	// JSON marshalling does not race with concurrent management writers. The
+	// clone is taken under the writers' lock and serialized outside it. The
+	// previous shallow copy shared map headers with the live config, so a GET
+	// during a PUT could trigger a fatal "concurrent map read and map write".
+	h.mu.Lock()
+	clone := h.cfg.CloneForRuntime()
+	h.mu.Unlock()
+	c.JSON(200, clone)
 }
 
 type releaseInfo struct {
@@ -109,9 +121,15 @@ func WriteConfig(path string, data []byte) error {
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	// Bound the body: an unbounded read plus yaml.v3 alias expansion (a YAML
+	// bomb) could exhaust CPU/memory from a small payload.
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxConfigYAMLBytes+1))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
+		return
+	}
+	if int64(len(body)) > maxConfigYAMLBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "config_too_large", "message": fmt.Sprintf("config exceeds %d bytes", maxConfigYAMLBytes)})
 		return
 	}
 	var cfg config.Config
@@ -159,7 +177,12 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		return
 	}
 	h.cfg = newCfg
+	snapshot := h.reloadSnapshotConfigLocked()
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
+	// Route through the standard management reload pipeline (same as every
+	// other management save) so runtime state tracks h.cfg even when the
+	// external file watcher is disabled.
+	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
 }
 
 // GetConfigYAML returns the raw config.yaml file bytes without re-encoding.

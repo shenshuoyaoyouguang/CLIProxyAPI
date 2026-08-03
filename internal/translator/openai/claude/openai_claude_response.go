@@ -45,6 +45,14 @@ type ConvertOpenAIResponseToAnthropicParams struct {
 	ContentBlocksStopped bool
 	// Track if message_delta has been sent
 	MessageDeltaSent bool
+	// Accumulated token usage seen across chunks. OpenAI-compatible upstreams
+	// may stream usage in a chunk that precedes or follows the finish_reason
+	// chunk; we carry it here so the single message_delta carries both the
+	// correct stop_reason and the usage regardless of upstream ordering.
+	UsageSeen         bool
+	UsageInputTokens  int64
+	UsageOutputTokens int64
+	UsageCachedTokens int64
 	// Track if message_start has been sent
 	MessageStarted bool
 	// Track if message_stop has been sent
@@ -59,15 +67,9 @@ type ConvertOpenAIResponseToAnthropicParams struct {
 	NextContentBlockIndex int
 }
 
-// ToolCallAccumulator holds the state for accumulating tool call data
-type ToolCallAccumulator struct {
-	ID        string
-	Name      string
-	Arguments strings.Builder
-	// StartEmitted tracks whether content_block_start has already been sent
-	// for this tool index.
-	StartEmitted bool
-}
+// ToolCallAccumulator aliases the shared common.ToolCallAccumulator, unifying
+// the three previously duplicated definitions.
+type ToolCallAccumulator = translatorcommon.ToolCallAccumulator
 
 // ConvertOpenAIResponseToClaude converts OpenAI streaming response format to Anthropic API format.
 // This function processes OpenAI streaming chunks and transforms them into Anthropic-compatible JSON responses.
@@ -119,7 +121,7 @@ func ConvertOpenAIResponseToClaude(_ context.Context, _ string, originalRequestR
 
 	streamResult := gjson.GetBytes(originalRequestRawJSON, "stream")
 	if !streamResult.Exists() || (streamResult.Exists() && streamResult.Type == gjson.False) {
-		return convertOpenAINonStreamingToAnthropic(rawJSON)
+		return convertOpenAINonStreamingToAnthropic(rawJSON, (*param).(*ConvertOpenAIResponseToAnthropicParams).ToolNameMap)
 	} else {
 		return convertOpenAIStreamingChunkToAnthropic(rawJSON, (*param).(*ConvertOpenAIResponseToAnthropicParams))
 	}
@@ -334,26 +336,21 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 		// Don't send message_delta here - wait for usage info or [DONE]
 	}
 
-	// Handle usage information separately (this comes in a later chunk)
-	// Only process if usage has actual values (not null)
-	if param.FinishReason != "" && !param.MessageDeltaSent {
-		usage := root.Get("usage")
-		var inputTokens, outputTokens, cachedTokens int64
-		if usage.Exists() && usage.Type != gjson.Null {
-			inputTokens, outputTokens, cachedTokens = extractOpenAIUsage(usage)
-			// Send message_delta with usage
-			messageDeltaJSON := []byte(`{"type":"message_delta","delta":{"stop_reason":"","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`)
-			messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "delta.stop_reason", mapOpenAIFinishReasonToAnthropic(effectiveOpenAIFinishReason(param)))
-			messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.input_tokens", inputTokens)
-			messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.output_tokens", outputTokens)
-			if cachedTokens > 0 {
-				messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.cache_read_input_tokens", cachedTokens)
-			}
-			results = append(results, translatorcommon.AppendSSEEventBytes(nil, "message_delta", messageDeltaJSON, 2))
-			param.MessageDeltaSent = true
-
-			emitMessageStopIfNeeded(param, &results)
-		}
+	// Accumulate token usage whenever it appears. OpenAI-compatible upstreams
+	// may stream usage in a chunk that precedes or follows the finish_reason
+	// chunk, so usage must NOT be gated on FinishReason being set -- gating it
+	// dropped usage whenever the usage chunk arrived first.
+	if usage := root.Get("usage"); usage.Exists() && usage.Type != gjson.Null {
+		param.UsageInputTokens, param.UsageOutputTokens, param.UsageCachedTokens = extractOpenAIUsage(usage)
+		param.UsageSeen = true
+	}
+	// Emit the single message_delta event as soon as we have both a stop
+	// reason and the (possibly already-arrived) usage. Emitting only once, and
+	// only after both are known, keeps the final stop_reason and usage correct
+	// for every upstream ordering. Remaining cases (no finish_reason, or usage
+	// never arrives) are handled at [DONE].
+	if !param.MessageDeltaSent && param.FinishReason != "" && param.UsageSeen {
+		emitMessageDeltaWithUsage(param, &results)
 	}
 
 	return results
@@ -402,12 +399,23 @@ func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams)
 		param.ContentBlocksStopped = true
 	}
 
-	// If we haven't sent message_delta yet (no usage info was received), send it now
-	if param.FinishReason != "" && !param.MessageDeltaSent {
-		messageDeltaJSON := []byte(`{"type":"message_delta","delta":{"stop_reason":"","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`)
-		messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "delta.stop_reason", mapOpenAIFinishReasonToAnthropic(effectiveOpenAIFinishReason(param)))
-		results = append(results, translatorcommon.AppendSSEEventBytes(nil, "message_delta", messageDeltaJSON, 2))
-		param.MessageDeltaSent = true
+	// A usage-only or empty upstream (or an immediate [DONE]) must not emit
+	// message_delta/message_stop without message_start: clients reject the
+	// resulting malformed SSE. Backfill message_start first in that case.
+	if !param.MessageStarted {
+		messageStartJSON := []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
+		messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.id", param.MessageID)
+		messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.model", param.Model)
+		results = append(results, translatorcommon.AppendSSEEventBytes(nil, "message_start", messageStartJSON, 2))
+		param.MessageStarted = true
+	}
+
+	// Unconditionally emit the final message_delta if it has not been sent yet
+	// (e.g. the upstream ended with [DONE] without ever sending a finish_reason,
+	// or usage never arrived). This guarantees the Anthropic stream terminates
+	// with a proper message_delta + message_stop instead of hanging.
+	if !param.MessageDeltaSent {
+		emitMessageDeltaWithUsage(param, &results)
 	}
 
 	emitMessageStopIfNeeded(param, &results)
@@ -416,7 +424,7 @@ func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams)
 }
 
 // convertOpenAINonStreamingToAnthropic converts OpenAI non-streaming response to Anthropic format
-func convertOpenAINonStreamingToAnthropic(rawJSON []byte) [][]byte {
+func convertOpenAINonStreamingToAnthropic(rawJSON []byte, toolNameMap map[string]string) [][]byte {
 	root := gjson.ParseBytes(rawJSON)
 
 	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
@@ -449,7 +457,7 @@ func convertOpenAINonStreamingToAnthropic(rawJSON []byte) [][]byte {
 			toolCalls.ForEach(func(_, toolCall gjson.Result) bool {
 				toolUseBlock := []byte(`{"type":"tool_use","id":"","name":"","input":{}}`)
 				toolUseBlock, _ = sjson.SetBytes(toolUseBlock, "id", util.SanitizeClaudeToolID(toolCall.Get("id").String()))
-				toolUseBlock, _ = sjson.SetBytes(toolUseBlock, "name", toolCall.Get("function.name").String())
+				toolUseBlock, _ = sjson.SetBytes(toolUseBlock, "name", util.MapToolName(toolNameMap, toolCall.Get("function.name").String()))
 
 				argsStr := util.FixJSON(toolCall.Get("function.arguments").String())
 				if argsStr != "" && gjson.Valid(argsStr) {
@@ -564,6 +572,29 @@ func emitMessageStopIfNeeded(param *ConvertOpenAIResponseToAnthropicParams, resu
 	}
 	*results = append(*results, translatorcommon.AppendSSEEventBytes(nil, "message_stop", []byte(`{"type":"message_stop"}`), 2))
 	param.MessageStopSent = true
+}
+
+// emitMessageDeltaWithUsage emits the single terminating message_delta event,
+// carrying the current stop_reason and any usage accumulated so far. It is a
+// no-op if message_delta was already emitted, which keeps the exactly-once
+// contract even when both the usage chunk and the [DONE] marker would trigger
+// emission.
+func emitMessageDeltaWithUsage(param *ConvertOpenAIResponseToAnthropicParams, results *[][]byte) {
+	if param.MessageDeltaSent {
+		return
+	}
+	messageDeltaJSON := []byte(`{"type":"message_delta","delta":{"stop_reason":"","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`)
+	messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "delta.stop_reason", mapOpenAIFinishReasonToAnthropic(effectiveOpenAIFinishReason(param)))
+	if param.UsageSeen {
+		messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.input_tokens", param.UsageInputTokens)
+		messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.output_tokens", param.UsageOutputTokens)
+		if param.UsageCachedTokens > 0 {
+			messageDeltaJSON, _ = sjson.SetBytes(messageDeltaJSON, "usage.cache_read_input_tokens", param.UsageCachedTokens)
+		}
+	}
+	*results = append(*results, translatorcommon.AppendSSEEventBytes(nil, "message_delta", messageDeltaJSON, 2))
+	param.MessageDeltaSent = true
+	emitMessageStopIfNeeded(param, results)
 }
 
 func stopTextContentBlock(param *ConvertOpenAIResponseToAnthropicParams, results *[][]byte) {

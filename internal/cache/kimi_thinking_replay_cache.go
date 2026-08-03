@@ -402,6 +402,11 @@ func evictOldestKimiThinkingReplayEntriesLocked(count int) {
 		candidates = append(candidates, candidate{key: key, timestamp: entry.Timestamp})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].timestamp.Equal(candidates[j].timestamp) {
+			// Deterministic tie-break: entries created in the same clock tick
+			// must not be evicted in map-iteration (random) order.
+			return candidates[i].key < candidates[j].key
+		}
 		return candidates[i].timestamp.Before(candidates[j].timestamp)
 	})
 	if count > len(candidates) {

@@ -50,6 +50,21 @@ func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
 	t.Fatalf("expected xAI builtin model %s", xaiBuiltinVideo15PreviewModelID)
 }
 
+func TestGetZAIModelsIncludesGLM52(t *testing.T) {
+	models := GetZAIModels()
+
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if model.ID == "glm-5.2" {
+			return
+		}
+	}
+
+	t.Fatalf("expected Z.ai model glm-5.2 in GetZAIModels")
+}
+
 func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing.T) {
 	registryRef := GetGlobalRegistry()
 	registryRef.RegisterClient("test-antigravity-websearch-route", "antigravity", []*ModelInfo{
@@ -79,5 +94,60 @@ func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing
 	}
 	if got := AntigravityWebSearchModelFor("unknown-model"); got != "" {
 		t.Fatalf("unknown model should not get Antigravity web search model, got %q", got)
+	}
+}
+
+// TestDeepSeekModelsDeserializedFromCatalog verifies that the "deepseek"
+// section of models.json is deserialized and retrievable (issue #1).
+func TestDeepSeekModelsDeserializedFromCatalog(t *testing.T) {
+	models := GetDeepSeekModels()
+	if len(models) == 0 {
+		t.Fatal("GetDeepSeekModels returned empty slice; deepseek section not deserialized")
+	}
+
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		if m == nil {
+			continue
+		}
+		seen[m.ID] = true
+	}
+	for _, want := range []string{"deepseek-v4-pro", "deepseek-v4-flash"} {
+		if !seen[want] {
+			t.Errorf("deepseek models missing %q", want)
+		}
+	}
+}
+
+// TestDeepSeekModelsAvailableViaChannel verifies GetStaticModelDefinitionsByChannel
+// returns DeepSeek models for the "deepseek" channel (issue #1).
+func TestDeepSeekModelsAvailableViaChannel(t *testing.T) {
+	models := GetStaticModelDefinitionsByChannel("deepseek")
+	if len(models) == 0 {
+		t.Fatal(`GetStaticModelDefinitionsByChannel("deepseek") returned empty slice`)
+	}
+}
+
+// TestLookupStaticModelInfoFindsDeepSeek verifies LookupStaticModelInfo
+// searches the DeepSeek section (issue #1).
+func TestLookupStaticModelInfoFindsDeepSeek(t *testing.T) {
+	info := LookupStaticModelInfo("deepseek-v4-pro")
+	if info == nil {
+		t.Fatal("LookupStaticModelInfo(deepseek-v4-pro) = nil; deepseek section not searched")
+	}
+	if info.ID != "deepseek-v4-pro" {
+		t.Errorf("LookupStaticModelInfo returned ID %q, want deepseek-v4-pro", info.ID)
+	}
+}
+
+// TestDeepSeekV4ProRetainsThinkingBlock verifies that thinking-capable
+// DeepSeek models still carry thinking metadata (regression guard for #14).
+func TestDeepSeekV4ProRetainsThinkingBlock(t *testing.T) {
+	info := LookupStaticModelInfo("deepseek-v4-pro")
+	if info == nil {
+		t.Fatal("LookupStaticModelInfo(deepseek-v4-pro) = nil")
+	}
+	if info.Thinking == nil {
+		t.Error("deepseek-v4-pro Thinking = nil, want non-nil (thinking-capable model)")
 	}
 }

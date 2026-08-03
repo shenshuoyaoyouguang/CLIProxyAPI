@@ -447,9 +447,19 @@ func sortedStringSet(values map[string]struct{}) []string {
 
 func websocketJSONPayloadsFromChunk(chunk []byte) [][]byte {
 	payloads := make([][]byte, 0, 2)
-	lines := bytes.Split(chunk, []byte("\n"))
-	for i := range lines {
-		line := bytes.TrimSpace(lines[i])
+	// Scan newline boundaries in place so the streaming hot path does not
+	// allocate a per-chunk line slice.
+	for start := 0; start < len(chunk); {
+		end := bytes.IndexByte(chunk[start:], '\n')
+		var line []byte
+		if end < 0 {
+			line = chunk[start:]
+			start = len(chunk)
+		} else {
+			line = chunk[start : start+end]
+			start += end + 1
+		}
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 || bytes.HasPrefix(line, []byte("event:")) {
 			continue
 		}

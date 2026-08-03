@@ -27,16 +27,13 @@ func InspectGPTReasoningSignature(rawSignature string) (*GPTReasoningSignatureIn
 	if sig == "" {
 		return nil, fmt.Errorf("empty GPT reasoning signature")
 	}
-	if len(sig) > MaxGPTReasoningSignatureLen {
-		return nil, fmt.Errorf("GPT reasoning signature exceeds maximum length (%d bytes)", MaxGPTReasoningSignatureLen)
-	}
-	// The literal prefix is the cheapest discriminator and rejects every other
-	// provider's envelope outright, so it runs before the full charset scan.
-	// Probing this validator is on the hot path for signatures of every provider,
-	// and scanning a multi-kilobyte payload only to reject it on five bytes was
-	// pure waste.
+	// Reject on the constant-cost prefix check before scanning or decoding the
+	// payload, which can be up to MaxGPTReasoningSignatureLen bytes.
 	if !strings.HasPrefix(sig, "gAAAA") {
 		return nil, fmt.Errorf("invalid GPT reasoning signature: expected gAAAA prefix")
+	}
+	if len(sig) > MaxGPTReasoningSignatureLen {
+		return nil, fmt.Errorf("GPT reasoning signature exceeds maximum length (%d bytes)", MaxGPTReasoningSignatureLen)
 	}
 	if index, r, ok := firstInvalidGPTReasoningSignatureChar(sig); ok {
 		return nil, fmt.Errorf("invalid GPT reasoning signature: contains non-base64url character U+%04X at byte %d", r, index)

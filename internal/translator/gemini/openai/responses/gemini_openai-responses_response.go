@@ -158,11 +158,11 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		st.SanitizedNameMap = util.SanitizedToolNameMap(originalRequestRawJSON)
 	}
 
-	if bytes.HasPrefix(rawJSON, []byte("data:")) {
-		rawJSON = bytes.TrimSpace(rawJSON[5:])
+	if payload, ok := translatorcommon.SSEDataPayload(rawJSON); ok {
+		rawJSON = payload
+	} else {
+		rawJSON = bytes.TrimSpace(rawJSON)
 	}
-
-	rawJSON = bytes.TrimSpace(rawJSON)
 	if len(rawJSON) == 0 || st.Completed {
 		return [][]byte{}
 	}

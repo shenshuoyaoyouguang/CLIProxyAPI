@@ -33,6 +33,11 @@ type attemptInfo struct {
 // attemptCleanupInterval controls how often stale IP entries are purged
 const attemptCleanupInterval = 1 * time.Hour
 
+// maxFailedAttemptEntries bounds the failedAttempts map; entries otherwise live
+// up to attemptMaxIdleTime, which an attacker spreading attempts across many
+// source IPs could grow without bound.
+const maxFailedAttemptEntries = 10_000
+
 // attemptMaxIdleTime controls how long an IP can be idle before cleanup
 const attemptMaxIdleTime = 2 * time.Hour
 
@@ -342,6 +347,23 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 		h.attemptsMu.Lock()
 		aip := h.failedAttempts[clientIP]
 		if aip == nil {
+			if len(h.failedAttempts) >= maxFailedAttemptEntries {
+				// Distributed brute force across many source IPs would otherwise
+				// grow the map without bound (entries live attemptMaxIdleTime).
+				// Evict the least-recently-active entry; a re-offending IP is
+				// re-tracked after maxFailures attempts anyway.
+				var oldestIP string
+				var oldest time.Time
+				for ip, entry := range h.failedAttempts {
+					if oldestIP == "" || entry.lastActivity.Before(oldest) {
+						oldestIP = ip
+						oldest = entry.lastActivity
+					}
+				}
+				if oldestIP != "" {
+					delete(h.failedAttempts, oldestIP)
+				}
+			}
 			aip = &attemptInfo{}
 			h.failedAttempts[clientIP] = aip
 		}
@@ -421,7 +443,9 @@ func (h *Handler) persistLocked(c *gin.Context) bool {
 	return true
 }
 
-// Helper methods for simple types
+// Helper methods for simple types. The mutation runs under h.mu so the config
+// field write does not race with concurrent readers (the persist step locks
+// again internally).
 func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 	var body struct {
 		Value *bool `json:"value"`
@@ -430,7 +454,9 @@ func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
 	set(*body.Value)
+	h.mu.Unlock()
 	h.persist(c)
 }
 
@@ -442,7 +468,9 @@ func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
 	set(*body.Value)
+	h.mu.Unlock()
 	h.persist(c)
 }
 
@@ -454,6 +482,8 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	h.mu.Lock()
 	set(*body.Value)
+	h.mu.Unlock()
 	h.persist(c)
 }

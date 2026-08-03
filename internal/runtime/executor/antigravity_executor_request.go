@@ -82,7 +82,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			payloadStr, _ = sjson.Delete(payloadStr, "request.generationConfig.maxOutputTokens")
 		}
 
-		payloadStrBytes := applyAntigravityNativeSignatureReplayIfNeeded(modelName, []byte(payloadStr))
+		payloadStrBytes := []byte(payloadStr)
 		bodyReader = bytes.NewReader(payloadStrBytes)
 		if e.cfg != nil && e.cfg.RequestLog {
 			payloadLog = append([]byte(nil), payloadStrBytes...)
@@ -94,7 +94,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			payload, _ = sjson.DeleteBytes(payload, "request.generationConfig.maxOutputTokens")
 		}
 
-		payload = applyAntigravityNativeSignatureReplayIfNeeded(modelName, payload)
 		bodyReader = bytes.NewReader(payload)
 		if e.cfg != nil && e.cfg.RequestLog {
 			payloadLog = append([]byte(nil), payload...)
@@ -118,7 +117,6 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if errReq != nil {
 		return nil, errReq
 	}
-	httpReq.Close = true
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
@@ -457,7 +455,21 @@ func generateStableSessionID(payload []byte) string {
 			if content.Get("role").String() == "user" {
 				text := content.Get("parts.0.text").String()
 				if text != "" {
-					h := sha256.Sum256([]byte(text))
+					// Hash the opening text together with the system
+					// instruction and tool surface so identical opening
+					// lines in different agent contexts do not collide
+					// into a shared reasoning-replay ledger (H24i).
+					var seed strings.Builder
+					seed.WriteString(text)
+					for _, path := range []string{"request.systemInstruction", "request.tools", "request.toolConfig"} {
+						if value := gjson.GetBytes(payload, path); value.Exists() {
+							seed.WriteByte(0)
+							seed.WriteString(path)
+							seed.WriteByte(0)
+							seed.Write(antigravityCanonicalReplayJSON([]byte(value.Raw)))
+						}
+					}
+					h := sha256.Sum256([]byte(seed.String()))
 					n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
 					return "-" + strconv.FormatInt(n, 10)
 				}

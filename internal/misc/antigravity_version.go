@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -124,7 +125,7 @@ func antigravityBaseUserAgent(userAgent string) string {
 	}
 	lower := strings.ToLower(userAgent)
 	if isAntigravityFamilyUserAgent(lower) {
-		if idx := strings.Index(lower, " google-api-nodejs-client/"); idx >= 0 {
+		if idx := antigravityMarkerIndex(userAgent, " google-api-nodejs-client/"); idx >= 0 {
 			trimmed := strings.TrimSpace(userAgent[:idx])
 			if trimmed != "" {
 				return trimmed
@@ -132,6 +133,31 @@ func antigravityBaseUserAgent(userAgent string) string {
 		}
 	}
 	return userAgent
+}
+
+// antigravityMarkerIndex finds the byte offset of marker (lowercase ASCII) in
+// s, case-insensitively, in the ORIGINAL string. Searching the lowercased copy
+// and slicing the original with that offset can land mid-rune when lowercasing
+// changes byte length (e.g. U+0130), producing invalid UTF-8 upstream.
+func antigravityMarkerIndex(s, marker string) int {
+	if s == "" || marker == "" {
+		return -1
+	}
+	rs := []rune(s)
+	rm := []rune(marker)
+	for i := 0; i+len(rm) <= len(rs); i++ {
+		match := true
+		for j := range rm {
+			if unicode.ToLower(rs[i+j]) != rm[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return len(string(rs[:i]))
+		}
+	}
+	return -1
 }
 
 // AntigravityRequestUserAgent returns the short Antigravity runtime UA used by

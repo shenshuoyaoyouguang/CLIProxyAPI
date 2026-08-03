@@ -19,7 +19,13 @@ import (
 )
 
 func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
-	log.Debugf("Executing Codex Websockets stream request with auth ID: %s, model: %s", auth.ID, req.Model)
+	// auth may be nil for anonymous / pre-authorized transports; mirror Execute's
+	// guard so the entry log cannot panic before the request is even built.
+	authIDForLog := ""
+	if auth != nil {
+		authIDForLog = auth.ID
+	}
+	log.Debugf("Executing Codex Websockets stream request with auth ID: %s, model: %s", authIDForLog, req.Model)
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -85,10 +91,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	applyModelHeaderOverrides(wsHeaders, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 
+	// auth may be nil for anonymous / pre-authorized transports (see the entry
+	// guard above); the request log below then carries empty identity fields.
 	var authID, authLabel, authType, authValue string
-	authID = auth.ID
-	authLabel = auth.Label
-	authType, authValue = auth.AccountInfo()
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
 
 	executionSessionID := executionSessionIDFromOptions(opts)
 	var sess *codexWebsocketSession
@@ -180,8 +190,12 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	var readCh chan codexWebsocketRead
+	var readToken uint64
 	if sess != nil {
 		readCh = sess.activate(conn)
+		// Snapshot the read counter before writing so the reader pump drops any
+		// trailing event from the previous turn on this reused connection.
+		readToken = sess.currentReadToken(conn)
 	}
 
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
@@ -223,6 +237,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, errBind
 			}
 			readCh = sess.activate(conn)
+			readToken = sess.currentReadToken(conn)
 			wsReqBodyRetry := buildCodexWebsocketRequestBody(upstreamBody)
 			helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 				URL:       wsURL,
@@ -290,6 +305,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
+		sawResponseCreated := false
 		for {
 			if ctx != nil && ctx.Err() != nil {
 				terminateReason = "context_done"
@@ -297,7 +313,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 				return
 			}
-			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+			msgType, payload, errRead := e.readMessage(ctx, sess, conn, readCh, readToken)
 			if errRead != nil {
 				if sess != nil && ctx != nil && ctx.Err() != nil {
 					terminateReason = "context_done"
@@ -360,8 +376,13 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				terminateReason = "upstream_error"
 				terminateErr = streamErr
 				if sess != nil {
-					unlockStreamSession()
+					// Invalidate before releasing reqMu: unlocking first opens a
+					// window where a queued request acquires the session and reuses
+					// the connection that is about to be closed.
+					// invalidateUpstreamConn only takes connMu, so holding reqMu here
+					// cannot deadlock.
 					e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)
+					unlockStreamSession()
 				}
 				if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 					terminateErr = errClearReplay
@@ -377,15 +398,37 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 
 			eventType := gjson.GetBytes(payload, "type").String()
-			isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+			if eventType == "response.created" {
+				sawResponseCreated = true
+			}
+			// response.incomplete terminates the turn upstream (for example when
+			// max_output_tokens is hit). Without treating it as terminal the reader
+			// blocks until the websocket liveness deadline and the client sees a
+			// misleading i/o timeout instead of the partial result.
+			isCompletionEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete"
+			isTerminalEvent := isCompletionEvent || eventType == "error"
+			if eventType == "response.done" && !sawResponseCreated && readToken > 0 {
+				// On a reused connection every turn begins with response.created;
+				// a trailing response.done from the previous turn (sent after its
+				// response.completed) is stale and must not terminate this turn
+				// with an empty/partial response. response.completed and
+				// response.incomplete are legitimate turn-starting completions for
+				// upstreams that omit response.created, so only the duplicate
+				// trailing marker is dropped. Fresh connections (readToken == 0)
+				// cannot carry stale events.
+				continue
+			}
 			if eventType == "response.output_item.done" {
 				collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
 			}
 			completedPayload := payload
-			if eventType == "response.completed" || eventType == "response.done" {
+			if isCompletionEvent {
 				completedPayload = normalizeCodexWebsocketCompletion(completedPayload)
 				completedPayload = patchCodexCompletedOutput(completedPayload, outputItemsByIndex, outputItemsFallback)
-				cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
+				// Only fully completed turns are safe to cache for replay.
+				if eventType != "response.incomplete" {
+					cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
+				}
 				if detail, ok := helps.ParseCodexUsage(completedPayload); ok {
 					reporter.Publish(ctx, detail)
 				}
@@ -405,10 +448,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 
 			payload = normalizeCodexWebsocketCompletion(payload)
-			if eventType == "response.completed" || eventType == "response.done" {
+			if isCompletionEvent {
 				payload = completedPayload
 			}
-			eventType = gjson.GetBytes(payload, "type").String()
 			clientPayload = applyCodexIdentityExposeResponsePayload(payload, identityState)
 			line := encodeCodexWebsocketAsSSE(clientPayload)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, originalPayload, clientBody, line, &param, claudeInputTokens)
@@ -419,7 +461,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 					return
 				}
 			}
-			if eventType == "response.completed" || eventType == "response.done" {
+			if isCompletionEvent {
 				return
 			}
 		}

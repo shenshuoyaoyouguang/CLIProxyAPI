@@ -182,6 +182,34 @@ func (s *authScheduler) setSelector(selector Selector) {
 	clear(s.mixedWeightedStates)
 }
 
+// maxMixedCursorKeys bounds the mixed-provider cursor tables so adversarial model
+// strings cannot grow them without limit. Evicting an entry only resets that provider
+// set's round-robin cursor or smooth weighted state, which is also what happens on
+// every rebuild; legitimate working sets far below the cap are never touched.
+const maxMixedCursorKeys = 4096
+
+// trimMixedCursorTablesLocked evicts arbitrary keys once the mixed-provider cursor
+// tables exceed maxMixedCursorKeys.
+func (s *authScheduler) trimMixedCursorTablesLocked() {
+	trimMixedCursorKeys(s.mixedCursors)
+	trimMixedCursorKeys(s.mixedWeightedStates)
+}
+
+// trimMixedCursorKeys removes arbitrary keys until the table holds at most half of
+// maxMixedCursorKeys, amortizing the eviction cost across many inserts.
+func trimMixedCursorKeys[V any](table map[string]V) {
+	if len(table) <= maxMixedCursorKeys {
+		return
+	}
+	target := maxMixedCursorKeys / 2
+	for key := range table {
+		if len(table) <= target {
+			break
+		}
+		delete(table, key)
+	}
+}
+
 // rebuild recreates the complete scheduler state from an auth snapshot.
 func (s *authScheduler) rebuild(auths []*Auth) {
 	if s == nil {
@@ -312,6 +340,12 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
+		if shard == nil {
+			// No auth in this provider supports the model: mirror the guarded
+			// call sites below instead of relying on the nil receivers inside
+			// pickReadyLocked/availabilitySummaryLocked to return the same error.
+			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+		}
 		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 		if picked := shard.pickReadyLocked(false, strategy, predicate); picked != nil {
 			return picked, providerKey, nil
@@ -387,6 +421,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		}
 		state := s.mixedWeightedStates[cursorKey]
 		if state == nil {
+			s.trimMixedCursorTablesLocked()
 			state = &smoothWeightedState{}
 			s.mixedWeightedStates[cursorKey] = state
 		}
@@ -447,6 +482,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		if picked == nil {
 			continue
 		}
+		s.trimMixedCursorTablesLocked()
 		s.mixedCursors[cursorKey] = slot + 1
 		return picked, providerKey, nil
 	}
@@ -551,6 +587,7 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 	if previousProvider := s.authProviders[authID]; previousProvider != "" && previousProvider != providerKey {
 		if previousState := s.providers[previousProvider]; previousState != nil {
 			previousState.removeAuthLocked(authID)
+			s.pruneEmptyProviderLocked(previousProvider, previousState)
 		}
 	}
 	meta := buildScheduledAuthMeta(auth)
@@ -566,9 +603,19 @@ func (s *authScheduler) removeAuthLocked(authID string) {
 	if providerKey := s.authProviders[authID]; providerKey != "" {
 		if providerState := s.providers[providerKey]; providerState != nil {
 			providerState.removeAuthLocked(authID)
+			s.pruneEmptyProviderLocked(providerKey, providerState)
 		}
 		delete(s.authProviders, authID)
 	}
+}
+
+// pruneEmptyProviderLocked drops a provider scheduler once it holds no auths so
+// provider keys removed from configuration do not leak scheduler state forever.
+func (s *authScheduler) pruneEmptyProviderLocked(providerKey string, providerState *providerScheduler) {
+	if providerState == nil || len(providerState.auths) > 0 {
+		return
+	}
+	delete(s.providers, providerKey)
 }
 
 // ensureProviderLocked returns the provider scheduler for providerKey, creating it when needed.
@@ -637,6 +684,9 @@ func (p *providerScheduler) upsertAuthLocked(meta *scheduledAuthMeta, now time.T
 		}
 		if !meta.supportsModel(modelKey) {
 			shard.removeEntryLocked(meta.auth.ID)
+			if len(shard.entries) == 0 {
+				delete(p.modelShards, modelKey)
+			}
 			continue
 		}
 		shard.upsertEntryLocked(meta, now)
@@ -649,14 +699,20 @@ func (p *providerScheduler) removeAuthLocked(authID string) {
 		return
 	}
 	delete(p.auths, authID)
-	for _, shard := range p.modelShards {
-		if shard != nil {
-			shard.removeEntryLocked(authID)
+	for modelKey, shard := range p.modelShards {
+		if shard == nil {
+			continue
+		}
+		shard.removeEntryLocked(authID)
+		if len(shard.entries) == 0 {
+			delete(p.modelShards, modelKey)
 		}
 	}
 }
 
-// ensureModelLocked returns the shard for modelKey, building it lazily from provider auths.
+// ensureModelLocked returns the shard for modelKey, building it lazily from provider
+// auths. It returns nil when no auth supports the model, and empty shards are never
+// retained so arbitrary model strings cannot grow modelShards without limit.
 func (p *providerScheduler) ensureModelLocked(modelKey string, now time.Time) *modelScheduler {
 	if p == nil {
 		return nil
@@ -676,6 +732,9 @@ func (p *providerScheduler) ensureModelLocked(modelKey string, now time.Time) *m
 			continue
 		}
 		shard.upsertEntryLocked(meta, now)
+	}
+	if len(shard.entries) == 0 {
+		return nil
 	}
 	p.modelShards[modelKey] = shard
 	return shard
@@ -910,10 +969,16 @@ func (m *modelScheduler) availabilitySummaryLocked(predicate func(*scheduledAuth
 		if predicate != nil && !predicate(entry) {
 			continue
 		}
-		total++
 		if entry == nil || entry.auth == nil {
 			continue
 		}
+		// Disabled entries are dropped from the ready/blocked views by
+		// rebuildIndexesLocked and can never serve a request; counting them
+		// here would make cooldownCount != total and mask the cooldown error.
+		if entry.state == scheduledStateDisabled {
+			continue
+		}
+		total++
 		if entry.state != scheduledStateCooldown {
 			continue
 		}

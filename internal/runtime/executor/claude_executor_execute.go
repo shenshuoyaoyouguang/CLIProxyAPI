@@ -221,13 +221,13 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 		commitClaudeDiagnostics(diagnosticsState, claudeMessageIDFromSSE(data))
 		lines := bytes.Split(data, []byte("\n"))
+		var usageAcc helps.ClaudeStreamUsageAccumulator
 		for i, line := range lines {
-			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
+			usageAcc.Observe(line)
 			lines[i] = restoreClaudeOAuthToolNamesFromStreamLine(line, oauthToolNamesReverseMap)
 		}
 		data = bytes.Join(lines, []byte("\n"))
+		usageAcc.Publish(ctx, reporter)
 	} else {
 		commitClaudeDiagnostics(diagnosticsState, claudeMessageIDFromResponse(data))
 		reporter.Publish(ctx, helps.ParseClaudeUsage(data))

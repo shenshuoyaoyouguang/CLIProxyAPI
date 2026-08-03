@@ -42,6 +42,11 @@ type ConvertCodexResponseToClaudeParams struct {
 	ActiveFunctionCall     *codexFunctionCallStream
 	LastFunctionCall       *codexFunctionCallStream
 	DeferredStreamEvents   [][]byte
+	// OriginalRequestRawJSON is the unmodified Claude request for resolving
+	// shortened tool names; the reverse map is built lazily once per request
+	// instead of re-parsing the full request on every tool-use event.
+	OriginalRequestRawJSON []byte
+	claudeToolNameRevMap   map[string]string
 }
 
 type codexFunctionCallStream struct {
@@ -76,7 +81,8 @@ type codexFunctionCallStream struct {
 func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRawJSON, _ []byte, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
 		*param = &ConvertCodexResponseToClaudeParams{
-			BlockIndex: 0,
+			BlockIndex:             0,
+			OriginalRequestRawJSON: originalRequestRawJSON,
 		}
 	}
 
@@ -100,6 +106,16 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 
 	switch typeStr {
 	case "error":
+		// Close any open blocks before surfacing the error so a Claude client
+		// does not see a dangling thinking/text/function-call block followed by
+		// an error with no terminal event.
+		output = append(output, finalizeCodexThinkingBlock(params)...)
+		output = append(output, stopCodexTextBlock(params)...)
+		if active := params.ActiveFunctionCall; active != nil && active.Started {
+			output = appendCodexFunctionCallStop(output, active.BlockIndex)
+			active.Closed = true
+			params.ActiveFunctionCall = nil
+		}
 		output = append(output, codexStreamErrorToClaudeError(rootResult)...)
 	case "response.created":
 		template = []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"claude-opus-4-1-20250805","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0},"content":[],"stop_reason":null}}`)
@@ -632,11 +648,11 @@ func updateCodexFunctionCallArguments(call *codexFunctionCallStream, arguments s
 	}
 }
 
-func appendCodexFunctionCallStart(output []byte, originalRequestRawJSON []byte, callID, name string, blockIndex int) []byte {
+func appendCodexFunctionCallStart(output []byte, params *ConvertCodexResponseToClaudeParams, callID, name string, blockIndex int) []byte {
 	template := []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"","name":"","input":{}}}`)
 	template, _ = sjson.SetBytes(template, "index", blockIndex)
 	template, _ = sjson.SetBytes(template, "content_block.id", shortenCodexCallIDIfNeeded(util.SanitizeClaudeToolID(callID)))
-	template, _ = sjson.SetBytes(template, "content_block.name", resolveCodexClaudeToolUseName(originalRequestRawJSON, name))
+	template, _ = sjson.SetBytes(template, "content_block.name", params.resolveCodexClaudeToolUseName(name))
 	return translatorcommon.AppendSSEEventBytes(output, "content_block_start", template, 2)
 }
 
@@ -699,7 +715,7 @@ func appendCodexFunctionCallQueue(output []byte, params *ConvertCodexResponseToC
 		}
 
 		call.BlockIndex = params.BlockIndex
-		output = appendCodexFunctionCallStart(output, originalRequestRawJSON, call.CallID, call.Name, call.BlockIndex)
+		output = appendCodexFunctionCallStart(output, params, call.CallID, call.Name, call.BlockIndex)
 		if call.EmitInitialEmptyDelta {
 			output = appendCodexFunctionCallArgumentDelta(output, "", call.BlockIndex)
 		}
@@ -781,9 +797,11 @@ func clearCodexFunctionCalls(params *ConvertCodexResponseToClaudeParams) {
 	params.LastFunctionCall = nil
 }
 
-func resolveCodexClaudeToolUseName(originalRequestRawJSON []byte, name string) string {
-	rev := buildReverseMapFromClaudeOriginalShortToOriginal(originalRequestRawJSON)
-	if orig, ok := rev[name]; ok {
+func (p *ConvertCodexResponseToClaudeParams) resolveCodexClaudeToolUseName(name string) string {
+	if p.claudeToolNameRevMap == nil && len(p.OriginalRequestRawJSON) > 0 {
+		p.claudeToolNameRevMap = buildReverseMapFromClaudeOriginalShortToOriginal(p.OriginalRequestRawJSON)
+	}
+	if orig, ok := p.claudeToolNameRevMap[name]; ok {
 		return orig
 	}
 	return name

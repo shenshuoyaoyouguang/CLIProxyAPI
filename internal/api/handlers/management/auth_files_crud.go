@@ -22,6 +22,12 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
+// maxAuthFileBytes caps uploaded auth-file payloads to prevent an authenticated
+// client from exhausting server memory with an unbounded request body.
+const maxAuthFileBytes = 8 << 20 // 8 MiB
+
+var errAuthFileTooLarge = errors.New("auth file exceeds maximum size of 8 MiB")
+
 // Download single auth file by name
 func (h *Handler) DownloadAuthFile(c *gin.Context) {
 	name := strings.TrimSpace(c.Query("name"))
@@ -64,6 +70,10 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		if _, errUpload := h.storeUploadedAuthFile(ctx, fileHeaders[0]); errUpload != nil {
 			if errors.Is(errUpload, errAuthFileMustBeJSON) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "file must be .json"})
+				return
+			}
+			if errors.Is(errUpload, errAuthFileTooLarge) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errUpload.Error()})
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": errUpload.Error()})
@@ -116,9 +126,13 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "name must end with .json"})
 		return
 	}
-	data, err := io.ReadAll(c.Request.Body)
+	data, err := io.ReadAll(io.LimitReader(c.Request.Body, maxAuthFileBytes+1))
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	if len(data) > maxAuthFileBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errAuthFileTooLarge.Error()})
 		return
 	}
 	if err = h.writeAuthFile(ctx, filepath.Base(name), data); err != nil {
@@ -248,9 +262,12 @@ func (h *Handler) storeUploadedAuthFile(ctx context.Context, file *multipart.Fil
 	}
 	defer src.Close()
 
-	data, err := io.ReadAll(src)
+	data, err := io.ReadAll(io.LimitReader(src, maxAuthFileBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("failed to read uploaded file: %w", err)
+	}
+	if len(data) > maxAuthFileBytes {
+		return "", errAuthFileTooLarge
 	}
 	if err := h.writeAuthFile(ctx, name, data); err != nil {
 		return "", err
@@ -287,9 +304,12 @@ func requestedAuthFileNamesForDelete(c *gin.Context) ([]string, error) {
 		return names, nil
 	}
 
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxAuthFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read body")
+	}
+	if int64(len(body)) > maxAuthFileBytes {
+		return nil, fmt.Errorf("request body exceeds %d bytes", maxAuthFileBytes)
 	}
 	body = bytes.TrimSpace(body)
 	if len(body) == 0 {
@@ -347,18 +367,36 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 
 	targetPath := filepath.Join(h.cfg.AuthDir, filepath.Base(name))
 	targetID := ""
+	recordPath := ""
 	if targetAuth := h.findAuthForDelete(name); targetAuth != nil {
 		if !isPluginVirtualSourceDelete(name, targetAuth) {
 			return filepath.Base(name), http.StatusConflict, errPluginVirtualAuth
 		}
 		targetID = strings.TrimSpace(targetAuth.ID)
 		if path := strings.TrimSpace(authAttribute(targetAuth, "path")); path != "" {
-			targetPath = path
+			recordPath = path
 		}
 	}
 	if !filepath.IsAbs(targetPath) {
 		if abs, errAbs := filepath.Abs(targetPath); errAbs == nil {
 			targetPath = abs
+		}
+	}
+	// The name-derived path comes from untrusted query input. filepath.Base
+	// already strips traversal components, so this containment check is
+	// defense-in-depth keeping deletion inside the auth directory.
+	if !h.authDirContains(targetPath) {
+		return filepath.Base(name), http.StatusBadRequest, fmt.Errorf("invalid name")
+	}
+	if recordPath != "" {
+		// A managed auth record may store its file outside the default auth
+		// directory (e.g. an explicitly configured location). Honor that stored
+		// path when present.
+		targetPath = recordPath
+		if !filepath.IsAbs(targetPath) {
+			if abs, errAbs := filepath.Abs(targetPath); errAbs == nil {
+				targetPath = abs
+			}
 		}
 	}
 	if errRemove := os.Remove(targetPath); errRemove != nil {
@@ -372,6 +410,44 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 	}
 	h.removeAuthsForPath(ctx, targetPath, targetID)
 	return filepath.Base(name), http.StatusOK, nil
+}
+
+// authDirContains reports whether target resolves inside the configured auth
+// directory. Both sides are made absolute and cleaned; on Windows the
+// comparison is case-insensitive because the filesystem is.
+func (h *Handler) authDirContains(target string) bool {
+	if h == nil || h.cfg == nil {
+		return false
+	}
+	authDir := strings.TrimSpace(h.cfg.AuthDir)
+	if resolvedAuthDir, errResolve := util.ResolveAuthDir(authDir); errResolve == nil && resolvedAuthDir != "" {
+		authDir = resolvedAuthDir
+	}
+	if authDir == "" {
+		return false
+	}
+	absDir, errDir := filepath.Abs(authDir)
+	if errDir != nil {
+		return false
+	}
+	absDir = filepath.Clean(absDir)
+	absTarget, errTarget := filepath.Abs(strings.TrimSpace(target))
+	if errTarget != nil {
+		return false
+	}
+	absTarget = filepath.Clean(absTarget)
+	if runtime.GOOS == "windows" {
+		absDir = strings.ToLower(absDir)
+		absTarget = strings.ToLower(absTarget)
+	}
+	rel, errRel := filepath.Rel(absDir, absTarget)
+	if errRel != nil {
+		return false
+	}
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	return true
 }
 
 func isPluginVirtualSourceDelete(name string, auth *coreauth.Auth) bool {
@@ -450,17 +526,6 @@ func (h *Handler) authIDForPath(path string) string {
 	return id
 }
 
-func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []byte) error {
-	if h.authManager == nil {
-		return nil
-	}
-	auth, err := h.buildAuthFromFileData(path, data)
-	if err != nil {
-		return err
-	}
-	return h.upsertAuthRecord(ctx, auth)
-}
-
 func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Auth, error) {
 	if path == "" {
 		return nil, fmt.Errorf("auth path is empty")
@@ -498,11 +563,7 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 			Now:         time.Now(),
 			IDGenerator: synthesizer.NewStableIDGenerator(),
 		}
-		generated, errSynthesize := synthesizer.SynthesizeAuthFile(sctx, path, data)
-		if errSynthesize != nil {
-			return nil, fmt.Errorf("invalid auth file: %w", errSynthesize)
-		}
-		if len(generated) > 0 && generated[0] != nil {
+		if generated, errSynth := synthesizer.SynthesizeAuthFile(sctx, path, data); errSynth == nil && len(generated) > 0 && generated[0] != nil {
 			auth = generated[0].Clone()
 		}
 	}

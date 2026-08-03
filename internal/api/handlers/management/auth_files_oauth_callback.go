@@ -49,7 +49,9 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 		stopForwarderInstance(port, prev)
 	}
 
-	addr := fmt.Sprintf("0.0.0.0:%d", port)
+	// Bind loopback only: the forwarder serves OAuth callbacks for the local
+	// CLI/browser flow and must not be reachable from the LAN.
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", addr, err)

@@ -22,12 +22,6 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var (
-	user    = ""
-	account = ""
-	session = ""
-)
-
 // ConvertOpenAIRequestToClaude parses and transforms an OpenAI Chat Completions API request into Claude Code API format.
 // It extracts the model name, system instruction, message contents, and tool declarations
 // from the raw JSON request and returns them in the format expected by the Claude Code API.
@@ -48,18 +42,18 @@ var (
 func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 
-	if account == "" {
-		u, _ := uuid.NewRandom()
-		account = u.String()
-	}
-	if session == "" {
-		u, _ := uuid.NewRandom()
-		session = u.String()
-	}
-	if user == "" {
-		sum := sha256.Sum256([]byte(account + session))
-		user = hex.EncodeToString(sum[:])
-	}
+	// Generate a per-request user/account/session identity. These MUST NOT be
+	// package-level globals: ConvertOpenAIRequestToClaude is invoked
+	// concurrently for independent requests, and shared mutable package state
+	// is both a data race (unsynchronized lazy init) and a per-request
+	// isolation bug -- every request would be tagged with the same user_id,
+	// collapsing distinct clients into one identity for billing/cloaking.
+	accountUUID, _ := uuid.NewRandom()
+	account := accountUUID.String()
+	sessionUUID, _ := uuid.NewRandom()
+	session := sessionUUID.String()
+	sum := sha256.Sum256([]byte(account + session))
+	user := hex.EncodeToString(sum[:])
 	userID := fmt.Sprintf("user_%s_account_%s_session_%s", user, account, session)
 
 	// Base Claude Code API template with default max_tokens value
@@ -345,7 +339,10 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 			choice := toolChoice.String()
 			switch choice {
 			case "none":
-				// Don't set tool_choice, Claude Code will not use tools
+				// Explicit opt-out: drop the tools array so Claude cannot invoke
+				// tools (without tool_choice Claude defaults to auto and may call
+				// the tools that were already written above).
+				out, _ = sjson.DeleteBytes(out, "tools")
 			case "auto":
 				out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"auto"}`))
 			case "required":

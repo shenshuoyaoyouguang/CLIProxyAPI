@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -110,7 +111,7 @@ func TestCodexExecutorReasoningReplayCacheStoresFinalDoneAndInjectsNextClaudeReq
 	}
 }
 
-func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossClientKeys(t *testing.T) {
+func TestCodexExecutorReasoningReplayCacheIsolatesSessionsAcrossCallers(t *testing.T) {
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
@@ -129,15 +130,30 @@ func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossClientKeys(t *t
 	}
 	cacheCodexReasoningReplayFromCompleted(firstScope, []byte(`{"response":{"output":[{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+encryptedContent+`"}]}}`))
 
+	// A second caller reusing the same client-controlled session key must land in
+	// its own caller-isolated cache slot and receive no replay of caller A's turn.
 	secondBody, secondScope := applyCodexReasoningReplayCache(codexReplaySessionOnlyContext("client-key-b"), from, req, opts, body)
-	if secondScope != firstScope {
-		t.Fatalf("replay scope should ignore client API key for the same session: first=%#v second=%#v", firstScope, secondScope)
+	if secondScope.sessionKey == firstScope.sessionKey {
+		t.Fatalf("caller isolation failed: session key %q shared across callers", secondScope.sessionKey)
 	}
-	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
-		t.Fatalf("input.0.type = %q, want same-session replay; body=%s", got, string(secondBody))
+	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got == "reasoning" {
+		t.Fatalf("caller B must not receive caller A's cached reasoning; body=%s", string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != encryptedContent {
-		t.Fatalf("injected encrypted_content = %q, want cached value", got)
+	if got := gjson.GetBytes(secondBody, "input.0.role").String(); got != "user" {
+		t.Fatalf("input.0.role = %q, want user; body=%s", got, string(secondBody))
+	}
+
+	// Caller A still reads its own cached turn: isolation must not break the
+	// caller's own replay continuity.
+	firstAgain, firstScopeAgain := applyCodexReasoningReplayCache(codexReplaySessionOnlyContext("client-key-a"), from, req, opts, body)
+	if firstScopeAgain.sessionKey != firstScope.sessionKey {
+		t.Fatalf("caller A scope is not stable: first=%q again=%q", firstScope.sessionKey, firstScopeAgain.sessionKey)
+	}
+	if got := gjson.GetBytes(firstAgain, "input.0.type").String(); got != "reasoning" {
+		t.Fatalf("caller A lost its own cached reasoning after isolation; body=%s", string(firstAgain))
+	}
+	if got := gjson.GetBytes(firstAgain, "input.0.encrypted_content").String(); got != encryptedContent {
+		t.Fatalf("caller A injected encrypted_content = %q, want cached value", got)
 	}
 }
 
@@ -270,7 +286,11 @@ func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossCodexAuths(t *t
 		Stream:       false,
 	}
 
-	_, err := executor.Execute(context.Background(), firstAuth, cliproxyexecutor.Request{
+	// Both turns come from the same downstream CPA caller ("caller-a") while the
+	// upstream credential changes (firstAuth -> secondAuth). The caller-isolated
+	// session key must stay stable across this rotation so replay continuity
+	// survives upstream credential failover (reasoningReplayCacheKey).
+	_, err := executor.Execute(codexReplaySessionOnlyContext("caller-a"), firstAuth, cliproxyexecutor.Request{
 		Model:   "gpt-5.4",
 		Payload: []byte(`{"model":"gpt-5.4","metadata":{"user_id":"{\"device_id\":\"device-test\",\"account_uuid\":\"\",\"session_id\":\"session-auth-switch\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`),
 	}, opts)
@@ -278,7 +298,7 @@ func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossCodexAuths(t *t
 		t.Fatalf("first Execute error: %v", err)
 	}
 
-	_, err = executor.Execute(context.Background(), secondAuth, cliproxyexecutor.Request{
+	_, err = executor.Execute(codexReplaySessionOnlyContext("caller-a"), secondAuth, cliproxyexecutor.Request{
 		Model:   "gpt-5.4",
 		Payload: []byte(`{"model":"gpt-5.4","metadata":{"user_id":"{\"device_id\":\"device-test\",\"account_uuid\":\"\",\"session_id\":\"session-auth-switch\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"next"}]}]}`),
 	}, opts)
@@ -393,7 +413,7 @@ func TestCodexExecutorReasoningReplayCacheDoesNotDuplicateClaudeClientReasoning(
 
 	cachedEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(5)
 	clientEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(6)
-	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", "claude:session-2:agent:main", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
+	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-2:agent:main"), []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
 
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -444,7 +464,7 @@ func TestCodexExecutorReasoningReplayCacheInsertsReasoningBeforeAssistantOutputI
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
 	cachedEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(7)
-	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", "claude:session-history:agent:main", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
+	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-history:agent:main"), []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
 
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -572,7 +592,8 @@ func TestCodexExecutorReasoningReplayCacheClearsOnNonStreamResponseFailedInvalid
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
 	cachedEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(9)
-	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", "claude:session-invalid-nonstream:agent:main", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
+	isolatedSessionKey := helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-invalid-nonstream:agent:main")
+	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", isolatedSessionKey, []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -598,7 +619,7 @@ func TestCodexExecutorReasoningReplayCacheClearsOnNonStreamResponseFailedInvalid
 	if err == nil {
 		t.Fatal("expected invalid signature error")
 	}
-	if _, ok := internalcache.GetCodexReasoningReplayItem("gpt-5.4", "claude:session-invalid-nonstream:agent:main"); ok {
+	if _, ok := internalcache.GetCodexReasoningReplayItem("gpt-5.4", isolatedSessionKey); ok {
 		t.Fatal("invalid signature response.failed should clear cached replay item")
 	}
 }
@@ -608,7 +629,8 @@ func TestCodexExecutorReasoningReplayCacheClearsOnStreamResponseFailedInvalidSig
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
 	cachedEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(10)
-	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", "claude:session-invalid-stream:agent:main", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
+	isolatedSessionKey := helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-invalid-stream:agent:main")
+	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", isolatedSessionKey, []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -644,7 +666,7 @@ func TestCodexExecutorReasoningReplayCacheClearsOnStreamResponseFailedInvalidSig
 	if !gotChunkErr {
 		t.Fatal("expected stream chunk error for invalid signature response.failed")
 	}
-	if _, ok := internalcache.GetCodexReasoningReplayItem("gpt-5.4", "claude:session-invalid-stream:agent:main"); ok {
+	if _, ok := internalcache.GetCodexReasoningReplayItem("gpt-5.4", isolatedSessionKey); ok {
 		t.Fatal("invalid signature response.failed should clear cached replay item")
 	}
 }
@@ -742,7 +764,7 @@ func TestCodexExecutorReasoningReplayCacheRestoresCumulativeToolTurns(t *testing
 
 	scope := codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
-		sessionKey: "claude:session-cumulative-tools:agent:main",
+		sessionKey: helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-cumulative-tools:agent:main"),
 	}
 	firstEncrypted := validCodexReasoningEncryptedContentForTestSeed(21)
 	secondEncrypted := validCodexReasoningEncryptedContentForTestSeed(22)
@@ -791,7 +813,7 @@ func TestCodexExecutorReasoningReplayCacheRestoresCumulativeAssistantTurns(t *te
 
 	scope := codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
-		sessionKey: "claude:session-cumulative-messages:agent:main",
+		sessionKey: helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-cumulative-messages:agent:main"),
 	}
 	firstEncrypted := validCodexReasoningEncryptedContentForTestSeed(23)
 	secondEncrypted := validCodexReasoningEncryptedContentForTestSeed(24)
@@ -840,7 +862,7 @@ func TestCodexExecutorReasoningReplayCacheSkipsDetachedTurnAfterCompaction(t *te
 
 	scope := codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
-		sessionKey: "claude:session-compacted:agent:main",
+		sessionKey: helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-compacted:agent:main"),
 	}
 	detachedEncrypted := validCodexReasoningEncryptedContentForTestSeed(25)
 	retainedEncrypted := validCodexReasoningEncryptedContentForTestSeed(26)
@@ -880,7 +902,7 @@ func TestCodexExecutorReasoningReplayCacheMatchesNewestDuplicateAssistantAfterCo
 
 	scope := codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
-		sessionKey: "claude:session-duplicate-compaction:agent:main",
+		sessionKey: helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-duplicate-compaction:agent:main"),
 	}
 	oldEncrypted := validCodexReasoningEncryptedContentForTestSeed(27)
 	newEncrypted := validCodexReasoningEncryptedContentForTestSeed(28)
@@ -926,7 +948,7 @@ func TestCodexExecutorReasoningReplayCacheUsesRequestPrefixForDuplicateOutOfOrde
 	inputItems := gjson.GetBytes(body, "input").Array()
 	baseScope := codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
-		sessionKey: "claude:session-duplicate-prefix:agent:main",
+		sessionKey: helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-duplicate-prefix:agent:main"),
 	}
 	oldEncrypted := validCodexReasoningEncryptedContentForTestSeed(29)
 	newEncrypted := validCodexReasoningEncryptedContentForTestSeed(30)
@@ -961,7 +983,7 @@ func TestCodexExecutorReasoningReplayCacheDropsFunctionCallWithoutMatchingOutput
 	encryptedContent := validCodexReasoningEncryptedContentForTestSeed(14)
 	scope := codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
-		sessionKey: "claude:session-dropped-tool:agent:main",
+		sessionKey: helps.IsolateClientControlledSessionKey(context.Background(), "claude:session-dropped-tool:agent:main"),
 	}
 	cacheCodexReasoningReplayFromCompleted(scope, []byte(`{"response":{"output":[`+
 		`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+encryptedContent+`"},`+

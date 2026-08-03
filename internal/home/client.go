@@ -1553,7 +1553,22 @@ func processPluginSyncCommand(ctx context.Context, options *redis.Options, comma
 	if pluginSyncClient == nil {
 		return ErrNotConnected
 	}
-	errProcess := pluginSyncClient.Process(ctx, command)
+	// Race Process against ctx cancellation. Closing the one-shot client unblocks
+	// an in-flight read even when go-redis has refreshed SetReadDeadline to the
+	// long plugin-sync ReadTimeout (which would otherwise ignore cancel-only contexts).
+	done := make(chan error, 1)
+	go func() {
+		done <- pluginSyncClient.Process(ctx, command)
+	}()
+
+	var errProcess error
+	select {
+	case errProcess = <-done:
+	case <-ctx.Done():
+		_ = pluginSyncClient.Close()
+		errProcess = <-done
+	}
+
 	errClose := pluginSyncClient.Close()
 	if errContext := ctx.Err(); errContext != nil {
 		return errContext
@@ -1618,9 +1633,9 @@ func newPluginSyncCancelableConn(ctx context.Context, conn net.Conn) net.Conn {
 	go func() {
 		select {
 		case <-ctx.Done():
-			if errDeadline := conn.SetDeadline(time.Now()); errDeadline != nil {
-				_ = conn.Close()
-			}
+			// Close rather than a one-shot SetDeadline: go-redis refreshes
+			// SetReadDeadline(now+ReadTimeout) per op and would override an expired deadline.
+			_ = conn.Close()
 		case <-wrapped.done:
 		}
 	}()

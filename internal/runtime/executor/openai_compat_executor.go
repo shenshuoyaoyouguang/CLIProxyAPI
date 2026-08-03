@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -42,11 +44,19 @@ const (
 type OpenAICompatExecutor struct {
 	provider string
 	cfg      *config.Config
+
+	// modelLookup is an injectable function for resolving model info. Defaults to
+	// registry.LookupModelInfo. Override in tests to avoid global registry pollution.
+	modelLookup func(modelID string, provider ...string) *registry.ModelInfo
 }
 
 // NewOpenAICompatExecutor creates an executor bound to a provider key (e.g., "openrouter").
 func NewOpenAICompatExecutor(provider string, cfg *config.Config) *OpenAICompatExecutor {
-	return &OpenAICompatExecutor{provider: provider, cfg: cfg}
+	return &OpenAICompatExecutor{
+		provider:    provider,
+		cfg:         cfg,
+		modelLookup: registry.LookupModelInfo,
+	}
 }
 
 // Identifier implements cliproxyauth.ProviderExecutor.
@@ -109,22 +119,33 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		to = sdktranslator.FromString("openai-response")
 		endpoint = "/responses/compact"
 	}
-	originalPayloadSource := req.Payload
-	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
-	}
-	originalPayload := originalPayloadSource
-	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, opts.Stream)
+	// When opts.OriginalRequest is empty both translated views derive from the same
+	// req.Payload bytes; translate once and copy for the read-only original view.
 	translated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, opts.Stream)
-
-	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
-	if err != nil {
-		return resp, err
+	originalTranslated := append([]byte(nil), translated...)
+	if len(opts.OriginalRequest) > 0 {
+		originalTranslated = helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, opts.Stream)
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	// thinking -> PayloadConfig -> passback (D7). SkipPassback for responses/compact.
+	translated, err = helps.PrepareOpenAICompatChatBody(helps.OpenAICompatChatPrepareInput{
+		Body:          translated,
+		ModelForApply: req.Model,
+		BaseModel:     baseModel,
+		FromFormat:    from.String(),
+		WireToFormat:  to.String(),
+		ProviderKey:   e.Identifier(),
+		SkipPassback:  opts.Alt == "responses/compact",
+		Middle: func(b []byte) []byte {
+			return helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", b, originalTranslated, requestedModel, requestPath, opts.Headers)
+		},
+	})
+	if err != nil {
+		return resp, err
+	}
+	translated = e.enhanceModelParams(translated, baseModel)
 	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
 		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
 	}
@@ -324,17 +345,30 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true)
+	// When opts.OriginalRequest is empty both translated views derive from the same
+	// req.Payload bytes; translate once and copy for the read-only original view.
 	translated := helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true)
-
-	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
-	if err != nil {
-		return nil, err
+	originalTranslated := append([]byte(nil), translated...)
+	if len(opts.OriginalRequest) > 0 {
+		originalTranslated = helps.TranslateRequestWithCodexMultiAgentV2(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, true)
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	// SkipPassback from Alt for symmetry (Stream is chat-only today).
+	translated, err = helps.PrepareOpenAICompatChatBody(helps.OpenAICompatChatPrepareInput{
+		Body:          translated,
+		ModelForApply: req.Model,
+		BaseModel:     baseModel,
+		FromFormat:    from.String(),
+		WireToFormat:  to.String(),
+		ProviderKey:   e.Identifier(),
+		SkipPassback:  opts.Alt == "responses/compact",
+		Middle: func(b []byte) []byte {
+			return helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", b, originalTranslated, requestedModel, requestPath, opts.Headers)
+		},
+	})
+	translated = e.enhanceModelParams(translated, baseModel)
 	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
 		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
 	}
@@ -343,6 +377,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if err != nil {
 			return nil, err
 		}
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	// Request usage data in the final streaming chunk so that token statistics
@@ -411,60 +448,98 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				log.Errorf("openai compat executor: close response body error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800) // 50MB
+		// Read the SSE stream incrementally with a fixed-size bufio.Reader instead
+		// of a 50MiB-max bufio.Scanner, so a single pathological line can no longer
+		// terminate the stream with ErrTooLong. Lines beyond maxSSELineBytes still
+		// fail the stream explicitly so a broken upstream cannot accumulate an
+		// unbounded line in memory.
+		reader := bufio.NewReaderSize(httpResp.Body, 64<<10)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
 		var streamUsage helps.StreamUsageBuffer
 		defer streamUsage.Publish(ctx, reporter)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			streamUsage.ObserveOpenAIStream(line)
-			trimmedLine := bytes.TrimSpace(line)
-			if len(trimmedLine) == 0 {
-				continue
-			}
-
-			if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
-				if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
-					bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+		var readErr error
+		sawDone := false
+		for {
+			line, errRead := readSSELine(reader)
+			if len(line) > 0 {
+				// bufio.Reader keeps the trailing newline; trim it the same way
+				// bufio.Scanner used to (one trailing "\n" and one "\r").
+				line = bytes.TrimSuffix(line, []byte("\n"))
+				line = bytes.TrimSuffix(line, []byte("\r"))
+				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+				streamUsage.ObserveOpenAIStream(line)
+				trimmedLine := bytes.TrimSpace(line)
+				if len(trimmedLine) == 0 {
 					continue
 				}
-				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
-					streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
-					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					reporter.PublishFailure(ctx, streamErr)
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
-					case <-ctx.Done():
-					}
-					return
-				}
-				continue
-			}
 
-			// OpenAI-compatible streams must use SSE data lines.
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param, claudeInputTokens)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return
+				if !bytes.HasPrefix(trimmedLine, []byte("data:")) {
+					if bytes.HasPrefix(trimmedLine, []byte(":")) || bytes.HasPrefix(trimmedLine, []byte("event:")) ||
+						bytes.HasPrefix(trimmedLine, []byte("id:")) || bytes.HasPrefix(trimmedLine, []byte("retry:")) {
+						continue
+					}
+					if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
+						// Some OpenAI-compatible providers emit a final bare-JSON
+						// chunk (usage or error) without an SSE data: prefix. JSON
+						// error objects are terminal; forward anything else as a
+						// data line instead of failing the whole stream.
+						if gjson.ValidBytes(trimmedLine) && gjson.GetBytes(trimmedLine, "error").Exists() {
+							streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+							helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+							reporter.PublishFailure(ctx, streamErr)
+							select {
+							case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+							case <-ctx.Done():
+							}
+							return
+						}
+						chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, append([]byte("data: "), trimmedLine...), &param, claudeInputTokens)
+						for i := range chunks {
+							select {
+							case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+							case <-ctx.Done():
+								return
+							}
+						}
+						continue
+					}
+					continue
 				}
+
+				// OpenAI-compatible streams must use SSE data lines.
+				if bytes.Equal(bytes.TrimSpace(trimmedLine[5:]), []byte("[DONE]")) {
+					sawDone = true
+				}
+				chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param, claudeInputTokens)
+				for i := range chunks {
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+			if errRead != nil {
+				if errRead != io.EOF {
+					readErr = errRead
+				}
+				break
 			}
 		}
-		if errScan := scanner.Err(); errScan != nil {
-			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+		if readErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
+			reporter.PublishFailure(ctx, readErr)
 			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case out <- cliproxyexecutor.StreamChunk{Err: readErr}:
 			case <-ctx.Done():
 			}
-		} else {
+		} else if !sawDone {
 			// In case the upstream close the stream without a terminal [DONE] marker.
 			// Feed a synthetic done marker through the translator so pending
-			// response.completed events are still emitted exactly once.
+			// response.completed events are still emitted exactly once. Skip it
+			// when the upstream already sent [DONE]: passthrough response formats
+			// would otherwise emit a duplicated terminal marker.
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, []byte("data: [DONE]"), &param, claudeInputTokens)
 			for i := range chunks {
 				select {
@@ -479,6 +554,44 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+// maxSSELineBytes caps a single SSE line. bufio.Reader.ReadBytes grows its
+// result without bound until the newline, so a pathological upstream line (for
+// example a stream that lost its newline terminator) must not accumulate the
+// whole stream in memory. Lines beyond the cap fail the stream explicitly.
+const maxSSELineBytes = 64 << 20
+
+var errSSELineTooLong = errors.New("openai compat executor: SSE line exceeds 64 MiB cap")
+
+// readSSELine reads one newline-terminated line from reader with a hard size
+// cap. The result is owned by the caller. A trailing partial line at EOF is
+// returned together with the EOF error, mirroring bufio.Reader.ReadBytes.
+func readSSELine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, errSlice := reader.ReadSlice('\n')
+		line = append(line, fragment...)
+		if len(line) > maxSSELineBytes {
+			if errSlice == bufio.ErrBufferFull {
+				// Drain the remainder of the oversized line so the stream
+				// position stays aligned with the frame boundaries.
+				for {
+					_, errDrain := reader.ReadSlice('\n')
+					if errDrain == nil || errDrain != bufio.ErrBufferFull {
+						break
+					}
+				}
+			}
+			return line, errSSELineTooLong
+		}
+		if errSlice == nil {
+			return line, nil
+		}
+		if errSlice != bufio.ErrBufferFull {
+			return line, errSlice
+		}
+	}
 }
 
 func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, endpointPath string) (_ *cliproxyexecutor.StreamResult, err error) {
@@ -608,10 +721,22 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 
 	modelForCounting := baseModel
 
-	translated, err := helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
+	// Same thinking+passback prepare as Execute (issue #6). CountTokens does not
+	// apply PayloadConfig (documented residual - not full Execute body parity).
+	translated, err := helps.PrepareOpenAICompatChatBody(helps.OpenAICompatChatPrepareInput{
+		Body:          translated,
+		ModelForApply: req.Model,
+		BaseModel:     baseModel,
+		FromFormat:    from.String(),
+		WireToFormat:  to.String(),
+		ProviderKey:   e.Identifier(),
+		SkipPassback:  opts.Alt == "responses/compact",
+		Middle:        nil,
+	})
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
+	translated = e.enhanceModelParams(translated, baseModel)
 
 	enc, err := helps.TokenizerForModel(modelForCounting)
 	if err != nil {
@@ -635,6 +760,109 @@ func (e *OpenAICompatExecutor) Refresh(ctx context.Context, auth *cliproxyauth.A
 		return refreshed, err
 	}
 	return auth, nil
+}
+
+// enhanceModelParams fills in model-level default parameters when the request
+// payload is missing them. It never overwrites existing values.
+//
+// Order of operations:
+//  1. max_tokens / max_completion_tokens: inject MaxCompletionTokens when both absent
+//  2. extra_body: deep merge model ExtraBody paths that are absent from the payload
+//     (leaf-level merge: existing nested keys are preserved, missing leaf keys are added)
+//
+// reasoning_effort is intentionally NOT injected here. ApplyRequestThinking runs
+// before enhanceModelParams and sets reasoning_effort when the user enables
+// thinking; injecting based solely on model capability would re-enable thinking
+// for users who explicitly left it disabled.
+func (e *OpenAICompatExecutor) enhanceModelParams(body []byte, modelID string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+
+	info := e.modelLookup(modelID, e.Identifier())
+	if info == nil {
+		return body
+	}
+
+	// 1. max_tokens / max_completion_tokens default
+	if info.MaxCompletionTokens > 0 {
+		if !gjson.GetBytes(body, "max_tokens").Exists() && !gjson.GetBytes(body, "max_completion_tokens").Exists() {
+			body, _ = sjson.SetBytes(body, "max_tokens", info.MaxCompletionTokens)
+			log.WithFields(log.Fields{
+				"model": modelID,
+				"field": "max_tokens",
+				"value": info.MaxCompletionTokens,
+			}).Debug("enhanceModelParams: injected default")
+		}
+	}
+
+	// 2. reasoning_effort is NOT injected here. ApplyRequestThinking runs before
+	// enhanceModelParams and sets reasoning_effort when the user enables thinking;
+	// injecting based solely on model capability (info.Thinking.Levels) would
+	// re-enable thinking for users who explicitly left it disabled.
+
+	// 3. extra_body deep merge (leaf-level, never overwrite)
+	if info.ExtraBody != nil {
+		body = deepMergeExtraBody(body, "extra_body", info.ExtraBody)
+		// Avoid the getMapKeys + fmt.Sprintf allocation unless the Debug log is emitted.
+		if log.IsLevelEnabled(log.DebugLevel) {
+			log.WithFields(log.Fields{
+				"model": modelID,
+				"keys":  fmt.Sprintf("%v", getMapKeys(info.ExtraBody)),
+			}).Debug("enhanceModelParams: merged extra_body")
+		}
+	}
+
+	return body
+}
+
+// getMapKeys returns the keys of a map[string]any as a string slice.
+func getMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// maxExtraBodyMergeDepth limits recursive extra_body merging to prevent
+// stack overflow from deeply nested configuration.
+const maxExtraBodyMergeDepth = 10
+
+// deepMergeExtraBody recursively merges extraBodyConfig into body at the given basePath.
+// It only adds missing leaf values; existing values are never overwritten.
+// Note: key paths are joined with "." (e.g., "chat_template_kwargs.enable_thinking").
+// Keys containing literal dots are not escaped; this is unlikely in practice but noted here.
+func deepMergeExtraBody(body []byte, basePath string, extraBodyConfig map[string]any) []byte {
+	return deepMergeExtraBodyDepth(body, basePath, extraBodyConfig, 0)
+}
+
+// deepMergeExtraBodyDepth is the recursive implementation with depth tracking.
+func deepMergeExtraBodyDepth(body []byte, basePath string, extraBodyConfig map[string]any, depth int) []byte {
+	if depth >= maxExtraBodyMergeDepth {
+		log.WithFields(log.Fields{
+			"path":  basePath,
+			"depth": depth,
+		}).Warn("deepMergeExtraBody: max depth reached, stopping recursion")
+		return body
+	}
+	for k, v := range extraBodyConfig {
+		path := basePath + "." + k
+		existing := gjson.GetBytes(body, path)
+		if existing.Exists() {
+			// If both existing and config are objects, recurse for deep merge
+			if existing.IsObject() {
+				if configMap, ok := v.(map[string]any); ok {
+					body = deepMergeExtraBodyDepth(body, path, configMap, depth+1)
+				}
+			}
+			// Otherwise, leaf exists - skip (never overwrite)
+			continue
+		}
+		// Path doesn't exist - set the entire value
+		body, _ = sjson.SetBytes(body, path, v)
+	}
+	return body
 }
 
 func openAICompatImageEndpointPath(opts cliproxyexecutor.Options) string {

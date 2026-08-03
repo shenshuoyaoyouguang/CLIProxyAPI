@@ -21,6 +21,7 @@ import (
 
 const (
 	maxErrorOnlyCapturedRequestBodyBytes int64 = 1 << 20  // 1 MiB
+	maxEagerRequestBodyBytes             int64 = 1 << 20  // 1 MiB
 	maxDeferredErrorRequestBodyBytes     int64 = 32 << 20 // 32 MiB
 )
 
@@ -52,8 +53,9 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		// Capture request information
 		requestInfo, err := captureRequestInfo(c, captureBody)
 		if err != nil {
-			// Log error but continue processing
-			// In a real implementation, you might want to use a proper logger here
+			// Log error but continue processing; response logging is skipped only
+			// when the request body itself failed to read.
+			log.WithError(err).Debug("failed to capture request info, continuing without request logging")
 			c.Next()
 			return
 		}
@@ -73,7 +75,7 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		// Finalize logging after request processing
 		if err = wrapper.Finalize(c); err != nil {
 			// Log error but don't interrupt the response
-			// In a real implementation, you might want to use a proper logger here
+			log.WithError(err).Debug("failed to finalize request log entry")
 		}
 	}
 }
@@ -319,24 +321,43 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	// Capture method
 	method := c.Request.Method
 
-	// Capture headers
+	// Capture headers, masking sensitive values (e.g. Authorization, X-Management-Key).
 	headers := make(map[string][]string)
 	for key, values := range c.Request.Header {
-		headers[key] = values
+		masked := make([]string, len(values))
+		for i, v := range values {
+			masked[i] = util.MaskSensitiveHeaderValue(key, v)
+		}
+		headers[key] = masked
 	}
 
 	// Capture request body
 	var body []byte
 	if captureBody && c.Request.Body != nil {
-		// Read the body
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+		// Read at most maxEagerRequestBodyBytes+1 bytes so that a body whose
+		// declared Content-Length is smaller than its actual size (or one that
+		// expands far beyond its compressed size) cannot cause an unbounded
+		// allocation while capturing it.
+		bodyBytes, err := io.ReadAll(io.LimitReader(c.Request.Body, maxEagerRequestBodyBytes+1))
 		if err != nil {
 			return nil, err
 		}
-
-		// Restore the body for the actual request processing
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		body = decodeCapturedRequestBodyForLog(bodyBytes, c.Request.Header.Get("Content-Encoding"))
+		if int64(len(bodyBytes)) > maxEagerRequestBodyBytes {
+			// Skip eager capture for oversized bodies, but preserve the full body
+			// for downstream handlers by recombining the bytes already read with
+			// whatever remains in the original reader. The request is still
+			// logged with its headers and response, just without the body, so an
+			// oversized payload cannot silently disable request logging.
+			c.Request.Body = io.NopCloser(io.MultiReader(bytes.NewReader(bodyBytes), c.Request.Body))
+			log.WithFields(log.Fields{
+				"url":    url,
+				"method": method,
+			}).Debugf("request body exceeds %d bytes, skipping body capture", maxEagerRequestBodyBytes)
+		} else {
+			// Restore the body for the actual request processing
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			body = decodeCapturedRequestBodyForLogWithLimit(bodyBytes, c.Request.Header.Get("Content-Encoding"), maxEagerRequestBodyBytes)
+		}
 	}
 
 	return &RequestInfo{
@@ -347,18 +368,6 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 		RequestID: logging.GetGinRequestID(c),
 		Timestamp: time.Now(),
 	}, nil
-}
-
-func decodeCapturedRequestBodyForLog(raw []byte, encoding string) []byte {
-	if len(raw) == 0 {
-		return raw
-	}
-
-	decoded, errDecode := decodeCapturedRequestBody(raw, encoding)
-	if errDecode != nil {
-		return raw
-	}
-	return decoded
 }
 
 func decodeCapturedRequestBodyForLogWithLimit(raw []byte, encoding string, limit int64) []byte {
@@ -394,46 +403,6 @@ func decodeCapturedRequestBodyForLogWithLimit(raw []byte, encoding string, limit
 		}
 	}
 	return body
-}
-
-func decodeCapturedRequestBody(raw []byte, encoding string) ([]byte, error) {
-	encoding = strings.TrimSpace(encoding)
-	if encoding == "" || strings.EqualFold(encoding, "identity") {
-		return raw, nil
-	}
-
-	parts := strings.Split(encoding, ",")
-	body := raw
-	for i := len(parts) - 1; i >= 0; i-- {
-		enc := strings.ToLower(strings.TrimSpace(parts[i]))
-		switch enc {
-		case "", "identity":
-			continue
-		case "zstd":
-			decoded, errDecode := decodeCapturedZstdRequestBody(body)
-			if errDecode != nil {
-				return nil, errDecode
-			}
-			body = decoded
-		default:
-			return nil, fmt.Errorf("unsupported request content encoding: %s", enc)
-		}
-	}
-	return body, nil
-}
-
-func decodeCapturedZstdRequestBody(raw []byte) ([]byte, error) {
-	decoder, errNewReader := zstd.NewReader(bytes.NewReader(raw))
-	if errNewReader != nil {
-		return nil, fmt.Errorf("failed to create zstd request decoder: %w", errNewReader)
-	}
-	defer decoder.Close()
-
-	decoded, errRead := io.ReadAll(decoder)
-	if errRead != nil {
-		return nil, fmt.Errorf("failed to decode zstd request body: %w", errRead)
-	}
-	return decoded, nil
 }
 
 func decodeCapturedZstdRequestBodyWithLimit(raw []byte, limit int64) ([]byte, bool, error) {

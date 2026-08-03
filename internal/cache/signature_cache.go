@@ -24,8 +24,17 @@ const (
 	// SignatureCacheTTL is how long signatures are valid
 	SignatureCacheTTL = 3 * time.Hour
 
-	// SignatureTextHashLen is the length of the hash key (16 hex chars = 64-bit key space)
-	SignatureTextHashLen = 16
+	// SignatureTextHashLen is the hex length of the thinking-text key.
+	// Full SHA-256 (32 bytes → 64 hex chars) avoids 64-bit birthday collisions
+	// that could map distinct thinking blocks onto the same signature entry.
+	SignatureTextHashLen = 64
+
+	// legacySignatureTextHashLen is the hex length used before the
+	// 64-bit-collision fix. Pre-upgrade in-memory entries may still live under
+	// this shorter key; GetCachedSignatureRequired / DeleteCachedSignatureRequired
+	// consult it as a fallback so historical cache entries remain readable /
+	// removable during the upgrade window (issue #10).
+	legacySignatureTextHashLen = 16
 
 	// MinValidSignatureLen is the minimum length for a signature to be considered valid
 	MinValidSignatureLen = 50
@@ -57,10 +66,28 @@ type groupCache struct {
 	entries map[string]SignatureEntry
 }
 
-// hashText creates a stable, Unicode-safe key from text content
+// hashText creates a stable, Unicode-safe key from text content.
+// Uses the full SHA-256 digest (SignatureTextHashLen hex chars).
 func hashText(text string) string {
 	h := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(h[:])[:SignatureTextHashLen]
+	return hex.EncodeToString(h[:])
+}
+
+// hashTextLegacy produces the pre-64-bit-collision-fix key shape (first 8 bytes
+// of the SHA-256 digest → 16 hex chars). It is consulted only as a read /
+// delete fallback so in-memory entries written by older code remain accessible
+// during the upgrade window (issue #10). New writes always use hashText.
+func hashTextLegacy(text string) string {
+	h := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(h[:legacySignatureTextHashLen/2])
+}
+
+// hashTextKeys derives both the full and legacy key shapes from a single
+// SHA-256 pass, avoiding a duplicate digest computation on the hot read/delete
+// paths (thinking texts can be tens of KB).
+func hashTextKeys(text string) (full, legacy string) {
+	h := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(h[:]), hex.EncodeToString(h[:legacySignatureTextHashLen/2])
 }
 
 // getOrCreateGroupCache gets or creates a cache bucket for a model group
@@ -206,34 +233,89 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 	}
 	sc := val.(*groupCache)
 
-	textHash := hashText(text)
+	textHash, legacyTextHash := hashTextKeys(text)
 
 	now := time.Now()
 
-	sc.mu.Lock()
-	entry, exists := sc.entries[textHash]
-	if !exists {
-		sc.mu.Unlock()
-		if groupKey == "gemini" {
-			return "skip_thought_signature_validator", nil
-		}
-		return "", nil
+	// Resolve the entry under a read lock so concurrent readers of the same
+	// model-group bucket (all claude/gpt/gemini models share one bucket) do not
+	// serialize on a single exclusive lock. A fresh entry with the current key
+	// shape and a TTL that has not yet decayed past half its window is returned
+	// directly, so steady-state cache hits never take the exclusive write lock.
+	sc.mu.RLock()
+	entry, ok := sc.entries[textHash]
+	hitLegacy := false
+	// issue #10: fall back to the legacy 16-char key shape so entries written
+	// by pre-upgrade code remain readable. On hit, migrate the entry to the
+	// new 64-char key so future lookups skip the fallback path.
+	if !ok {
+		entry, ok = sc.entries[legacyTextHash]
+		hitLegacy = true
 	}
-	if now.Sub(entry.Timestamp) > SignatureCacheTTL {
-		delete(sc.entries, textHash)
-		sc.mu.Unlock()
+	if ok && !hitLegacy {
+		age := now.Sub(entry.Timestamp)
+		if age <= SignatureCacheTTL && age <= SignatureCacheTTL/2 {
+			sc.mu.RUnlock()
+			return entry.Signature, nil
+		}
+	}
+	// Legacy hits fall through to the write lock so the entry migrates to the
+	// current key shape.
+	sc.mu.RUnlock()
+
+	if !ok {
 		if groupKey == "gemini" {
 			return "skip_thought_signature_validator", nil
 		}
 		return "", nil
 	}
 
-	// Refresh TTL on access (sliding expiration).
-	entry.Timestamp = now
-	sc.entries[textHash] = entry
+	// Migration, expiry cleanup, and the sliding-TTL refresh all mutate the
+	// bucket, so promote to the write lock and re-resolve from the current
+	// state (the read lock was released, so another goroutine may have changed
+	// or removed the entry in the meantime).
+	sc.mu.Lock()
+	var signature string
+	found := false
+	if entry, ok := sc.entries[textHash]; ok {
+		if now.Sub(entry.Timestamp) > SignatureCacheTTL {
+			// Expired: remove both key shapes for this text.
+			delete(sc.entries, textHash)
+			delete(sc.entries, legacyTextHash)
+		} else {
+			// Refresh TTL on access (sliding expiration).
+			entry.Timestamp = now
+			sc.entries[textHash] = entry
+			signature = entry.Signature
+			found = true
+		}
+	} else if entry, ok := sc.entries[legacyTextHash]; ok {
+		if now.Sub(entry.Timestamp) > SignatureCacheTTL {
+			// Expired legacy entry: remove it.
+			delete(sc.entries, legacyTextHash)
+			delete(sc.entries, textHash)
+		} else {
+			// Migrate the legacy entry to the full-hash key and refresh TTL.
+			entry.Timestamp = now
+			sc.entries[textHash] = entry
+			delete(sc.entries, legacyTextHash)
+			signature = entry.Signature
+			found = true
+		}
+	}
 	sc.mu.Unlock()
 
-	return entry.Signature, nil
+	// The entry state is tracked explicitly: an entry is only ever stored with a
+	// non-empty signature (CacheSignatureBestEffort rejects empty values), so a
+	// missing entry and an empty signature must not be conflated with a
+	// "not found" decision that returns the gemini skip marker.
+	if !found {
+		if groupKey == "gemini" {
+			return "skip_thought_signature_validator", nil
+		}
+		return "", nil
+	}
+	return signature, nil
 }
 
 // ClearSignatureCache clears signature cache for a specific model group or all groups.
@@ -262,14 +344,17 @@ func DeleteCachedSignatureRequired(ctx context.Context, modelName, text string) 
 		return errDel
 	}
 	groupKey := GetModelGroup(modelName)
-	textHash := hashText(text)
+	textHash, legacyTextHash := hashTextKeys(text)
 	val, ok := signatureCache.Load(groupKey)
 	if !ok {
 		return nil
 	}
 	sc := val.(*groupCache)
 	sc.mu.Lock()
+	// issue #10: delete both new and legacy key shapes so stale entries from
+	// either generation are cleaned up regardless of which version wrote them.
 	delete(sc.entries, textHash)
+	delete(sc.entries, legacyTextHash)
 	isEmpty := len(sc.entries) == 0
 	sc.mu.Unlock()
 	if isEmpty {

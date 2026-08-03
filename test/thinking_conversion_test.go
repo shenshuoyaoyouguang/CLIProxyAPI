@@ -1992,15 +1992,16 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "auto",
 			expectErr:   false,
 		},
-		// Case 76: OpenAI reasoning_effort=medium to Gemini → 8192
+		// Case 76: OpenAI reasoning_effort=medium to Gemini → thinkingLevel
+		// (user-defined models pass the level through natively; no budget coercion)
 		{
 			name:            "76",
 			from:            "openai",
 			to:              "gemini",
 			model:           "user-defined-model",
 			inputJSON:       `{"model":"user-defined-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"medium"}`,
-			expectField:     "generationConfig.thinkingConfig.thinkingBudget",
-			expectValue:     "8192",
+			expectField:     "generationConfig.thinkingConfig.thinkingLevel",
+			expectValue:     "medium",
 			includeThoughts: "true",
 			expectErr:       false,
 		},
@@ -2015,15 +2016,16 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "8192",
 			expectErr:   false,
 		},
-		// Case 78: OpenAI-Response reasoning.effort=medium to Gemini → 8192
+		// Case 78: OpenAI-Response reasoning.effort=medium to Gemini → thinkingLevel
+		// (user-defined models pass the level through natively; no budget coercion)
 		{
 			name:            "78",
 			from:            "openai-response",
 			to:              "gemini",
 			model:           "user-defined-model",
 			inputJSON:       `{"model":"user-defined-model","input":[{"role":"user","content":"hi"}],"reasoning":{"effort":"medium"}}`,
-			expectField:     "generationConfig.thinkingConfig.thinkingBudget",
-			expectValue:     "8192",
+			expectField:     "generationConfig.thinkingConfig.thinkingLevel",
+			expectValue:     "medium",
 			includeThoughts: "",
 			expectErr:       false,
 		},

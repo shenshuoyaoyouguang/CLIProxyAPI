@@ -188,7 +188,14 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			return resp, err
 		}
 		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+		// A local read failure is not the same condition as "upstream closed the
+		// stream without a terminal event". Collapsing both into 408 hides the
+		// real transport error from the caller and from retry classification.
+		err = newCodexStreamReadError(errRead)
+		return resp, err
 	}
+	// The stream was read to completion but no response.completed/response.incomplete
+	// event ever arrived.
 	err = newCodexIncompleteStreamError()
 	return resp, err
 }

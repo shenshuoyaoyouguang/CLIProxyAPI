@@ -53,6 +53,7 @@ const (
 
 	MethodThinkingIdentifier = "thinking.identifier"
 	MethodThinkingApply      = "thinking.apply"
+	MethodThinkingExtract    = "thinking.extract"
 
 	MethodUsageHandle = "usage.handle"
 

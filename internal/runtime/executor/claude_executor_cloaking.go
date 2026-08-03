@@ -619,6 +619,14 @@ func isClaudeCodeCurrentDateReminder(text string) bool {
 	return strings.HasPrefix(text, "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is ")
 }
 
+// leadsWithToolResult reports whether a message content array starts with a
+// tool_result block. Such a message answers a preceding assistant tool_use turn,
+// and Anthropic requires its tool_result blocks to remain first.
+func leadsWithToolResult(content gjson.Result) bool {
+	first := content.Get("0")
+	return first.Exists() && first.Get("type").String() == "tool_result"
+}
+
 func injectClaudeCodeCurrentDate(payload []byte, now time.Time) []byte {
 	firstUserIdx := firstClaudeUserMessageIndex(payload)
 	if firstUserIdx < 0 {
@@ -633,6 +641,7 @@ func injectClaudeCodeCurrentDate(payload []byte, now time.Time) []byte {
 	if content.Type == gjson.String {
 		userBlock := buildTextBlock(content.String(), map[string]string{"type": "ephemeral"})
 		newArray := "[" + dateBlock + "," + userBlock + "]"
+
 		payload, _ = sjson.SetRawBytes(payload, contentPath, []byte(newArray))
 		return payload
 	}
@@ -660,7 +669,14 @@ func injectClaudeCodeCurrentDate(payload []byte, now time.Time) []byte {
 
 	rawBlocks = append(rawBlocks, "")
 	copy(rawBlocks[1:], rawBlocks)
-	rawBlocks[0] = dateBlock
+	if leadsWithToolResult(content) {
+		// Anthropic requires the user message that immediately follows an
+		// assistant tool_use turn to lead with its tool_result blocks.
+		// Append the reminder so those blocks stay at the head.
+		rawBlocks[len(rawBlocks)-1] = dateBlock
+	} else {
+		rawBlocks[0] = dateBlock
+	}
 	payload, _ = sjson.SetRawBytes(payload, contentPath, []byte("["+strings.Join(rawBlocks, ",")+"]"))
 	return payload
 }
@@ -713,6 +729,8 @@ func resolveClaudeWirePolicy(cfg *config.Config, auth *cliproxyauth.Auth, apiKey
 
 	cloakMode := "auto"
 	if cfg != nil && cfg.DisableClaudeCloakMode {
+		// The global switch is a hard kill-switch: per-credential and per-key
+		// settings below cannot re-enable cloaking.
 		cloakMode = "never"
 	}
 	settings := claudeCloakSettings{
@@ -720,10 +738,10 @@ func resolveClaudeWirePolicy(cfg *config.Config, auth *cliproxyauth.Auth, apiKey
 		sensitiveWords: attrWords,
 		cacheUserID:    attrCache,
 	}
-	if attrMode != "" {
+	if cloakMode != "never" && attrMode != "" {
 		cloakMode = attrMode
 	}
-	if cloakCfg != nil {
+	if cloakMode != "never" && cloakCfg != nil {
 		if mode := strings.TrimSpace(cloakCfg.Mode); mode != "" {
 			cloakMode = mode
 		}
@@ -737,7 +755,6 @@ func resolveClaudeWirePolicy(cfg *config.Config, auth *cliproxyauth.Auth, apiKey
 			settings.cacheUserID = *cloakCfg.CacheUserID
 		}
 	}
-
 	policy := claudeWirePolicy{
 		OAuth:               isClaudeOAuthToken(apiKey),
 		ConfirmedClaudeCode: confirmedClaudeCode,

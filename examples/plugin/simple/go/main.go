@@ -85,6 +85,7 @@ type registrationCapability struct {
 	ResponseBeforeTranslator bool                         `json:"response_before_translator"`
 	ResponseAfterTranslator  bool                         `json:"response_after_translator"`
 	ThinkingApplier          bool                         `json:"thinking_applier"`
+	ThinkingExtractor        bool                         `json:"thinking_extractor"`
 	UsagePlugin              bool                         `json:"usage_plugin"`
 	CommandLinePlugin        bool                         `json:"command_line_plugin"`
 	ManagementAPI            bool                         `json:"management_api"`
@@ -196,6 +197,8 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(identifierResponse{Identifier: "plugin-example"})
 	case pluginabi.MethodThinkingApply:
 		return applyThinking(request)
+	case pluginabi.MethodThinkingExtract:
+		return extractThinking(request)
 	case pluginabi.MethodUsageHandle:
 		usageCount.Add(1)
 		return okEnvelope(map[string]any{})
@@ -256,6 +259,7 @@ func exampleRegistration() registration {
 			ResponseBeforeTranslator: true,
 			ResponseAfterTranslator:  true,
 			ThinkingApplier:          true,
+			ThinkingExtractor:        true,
 			UsagePlugin:              true,
 			CommandLinePlugin:        true,
 			ManagementAPI:            true,
@@ -320,6 +324,22 @@ func applyThinking(raw []byte) ([]byte, error) {
 		return nil, errMarshal
 	}
 	return okEnvelope(pluginapi.PayloadResponse{Body: out})
+}
+
+func extractThinking(raw []byte) ([]byte, error) {
+	var req pluginapi.ThinkingExtractRequest
+	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	body := map[string]any{}
+	_ = json.Unmarshal(req.Body, &body)
+	effort, _ := body["reasoning_effort"].(string)
+	if effort == "" {
+		return okEnvelope(pluginapi.ThinkingExtractResponse{})
+	}
+	return okEnvelope(pluginapi.ThinkingExtractResponse{
+		Config: pluginapi.ThinkingConfig{Mode: "level", Level: effort},
+	})
 }
 
 func okEnvelope(v any) ([]byte, error) {

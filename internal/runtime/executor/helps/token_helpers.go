@@ -82,6 +82,9 @@ func collectOpenAIMessages(messages gjson.Result, segments *[]string) {
 		addIfNotEmpty(segments, message.Get("role").String())
 		addIfNotEmpty(segments, message.Get("name").String())
 		collectOpenAIContent(message.Get("content"), segments)
+		// Multi-turn DeepSeek / OpenAI-compat CoT lives on reasoning_content after
+		// passback prepare; empty "" placeholders add no tokens (addIfNotEmpty).
+		addIfNotEmpty(segments, message.Get("reasoning_content").String())
 		collectOpenAIToolCalls(message.Get("tool_calls"), segments)
 		collectOpenAIFunctionCall(message.Get("function_call"), segments)
 		return true

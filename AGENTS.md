@@ -24,9 +24,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 
 ## Architecture
 - `cmd/server/` — Server entrypoint
-- `internal/api/` — Gin HTTP API (routes, middleware, modules)
-- `internal/api/modules/amp/` — Amp integration (Amp-style routes + reverse proxy)
-- `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Do not break this "canonical representation → per-provider translation" architecture.
+- `internal/api/` — Gin HTTP API (routes, middleware, protocol multiplexer, management handlers)
+- `internal/thinking/` — Main thinking/reasoning pipeline. `ApplyThinking()` (apply.go) parses suffixes (`suffix.go`, suffix overrides body), normalizes config to canonical `ThinkingConfig` (`types.go`), normalizes and validates centrally (`validate.go`/`convert.go`), then applies provider-specific output via `ProviderApplier`. Multi-turn CoT field hygiene is orthogonal (`multi_turn_passback.go` / DeepSeek in `deepseek_passback.go`); OpenAI-compat chat goes through `internal/runtime/executor/helps/openai_compat_chat_prepare.go` (`PrepareOpenAICompatChatBody`). Do not break this "canonical representation → per-provider translation" architecture, and do not fold passback into `ApplyThinking`.
 - `internal/runtime/executor/` — Per-provider runtime executors (incl. Codex WebSocket)
 - `internal/translator/` — Provider protocol translators (and shared `common`)
 - `internal/registry/` — Model registry + remote updater (`StartModelsUpdater`); `--local-model` disables remote updates
@@ -35,7 +34,8 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - `internal/cache/` — Request signature caching
 - `internal/watcher/` — Config hot-reload and watchers
 - `internal/wsrelay/` — WebSocket relay sessions
-- `internal/usage/` — Usage and token accounting
+- `sdk/cliproxy/usage/` — Usage manager, plugins, and canonical token accounting (`TokenAccountingSchemaVersion`)
+- `internal/redisqueue/` — Redis usage-queue plugin (registers on `sdk/cliproxy/usage`)
 - `internal/tui/` — Bubbletea terminal UI (`--tui`, `--standalone`)
 - `sdk/cliproxy/` — Embeddable SDK entry (service/builder/watchers/pipeline)
 - `test/` — Cross-module integration tests
@@ -55,4 +55,4 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Wrap defer errors: `defer func() { if err := f.Close(); err != nil { log.Errorf(...) } }()`
 - Use logrus structured logging; avoid leaking secrets/tokens in logs
 - Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
-- Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
+- Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the xAI websocket idle read deadline in `internal/runtime/executor/xai_websockets_executor.go` (both applied by the shared websocket session runtime `internal/runtime/executor/websocket_session_runtime.go`), the wsrelay session deadlines in `internal/wsrelay/session.go`, the downstream responses websocket liveness deadline and ping period in `sdk/api/handlers/openai/openai_responses_websocket.go` (ping-based only; data-flow timing is unaffected), the management APICall timeout in `internal/api/handlers/management/api_tools.go`, the Antigravity credits-hint background probe timeout (`antigravityCreditsHintRefreshTimeout` in `internal/runtime/executor/antigravity_executor.go`, consumed by `internal/runtime/executor/antigravity_executor_credits.go`), the utls connection-establishment deadline (`utlsConnectTimeout` in `internal/runtime/executor/helps/utls_client.go`, cleared once the HTTP/2 connection is usable), and the `cmd/fetch_antigravity_models` utility timeouts

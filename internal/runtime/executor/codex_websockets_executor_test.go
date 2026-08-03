@@ -17,6 +17,7 @@ import (
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -91,7 +92,7 @@ func TestCodexWebsocketsExecuteRestoresClaudeAgentReasoningReplay(t *testing.T) 
 	encryptedContent := validCodexReasoningEncryptedContentForTestSeed(31)
 	cacheCodexReasoningReplayFromCompleted(codexReasoningReplayScope{
 		modelName:  "gpt-5.4",
-		sessionKey: "claude:ws-replay-session:agent:agent-a",
+		sessionKey: helps.IsolateClientControlledSessionKey(context.Background(), "claude:ws-replay-session:agent:agent-a"),
 	}, []byte(`{"response":{"output":[`+
 		`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+encryptedContent+`"},`+
 		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"previous answer"}]}`+

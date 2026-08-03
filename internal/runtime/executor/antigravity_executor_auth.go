@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -146,13 +147,27 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 }
 
 func (e *AntigravityExecutor) refreshTokenSingleFlight(ctx context.Context, auth *cliproxyauth.Auth, refreshToken string) (*antigravityTokenRefreshData, error) {
+	// The caller passes a context detached from request cancellation
+	// (WithoutCancel) so a successful refresh can be written back even if the
+	// originating request was cancelled. However the OAuth token endpoint must
+	// not be allowed to hang forever: a server that accepts the connection but
+	// never responds would block io.ReadAll indefinitely, and because the
+	// singleflight is keyed by refresh token, that one stuck call would wedge
+	// every subsequent request on the same credential (cancellation cannot
+	// rescue it since ctx is uncancellable). Credential acquisition is an
+	// explicitly timeout-allowed phase (AGENTS.md), so enforce a hard deadline
+	// on the refresh round-trip while still leaving the post-refresh write-back
+	// on the uncancellable ctx.
+	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	form := url.Values{}
-	form.Set("client_id", antigravityClientID)
-	form.Set("client_secret", antigravityClientSecret)
+	form.Set("client_id", antigravity.ClientID)
+	form.Set("client_secret", antigravity.ClientSecret)
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 
-	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
+	httpReq, errReq := http.NewRequestWithContext(refreshCtx, http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
 	if errReq != nil {
 		return nil, errReq
 	}

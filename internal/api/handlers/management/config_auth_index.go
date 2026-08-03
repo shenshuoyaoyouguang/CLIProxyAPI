@@ -308,3 +308,37 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 	}
 	return out
 }
+
+type zaiKeyWithAuthIndex struct {
+	config.ZAIKey
+	AuthIndex string `json:"auth-index,omitempty"`
+}
+
+func (h *Handler) zaiKeysWithAuthIndex() []zaiKeyWithAuthIndex {
+	if h == nil {
+		return nil
+	}
+	liveIndexByID := h.liveAuthIndexByID()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+
+	idGen := synthesizer.NewStableIDGenerator()
+	out := make([]zaiKeyWithAuthIndex, len(h.cfg.ZAIKey))
+	for i := range h.cfg.ZAIKey {
+		entry := h.cfg.ZAIKey[i]
+		authIndex := ""
+		if key := strings.TrimSpace(entry.APIKey); key != "" {
+			id, _ := idGen.Next("zai:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[id]
+		}
+		out[i] = zaiKeyWithAuthIndex{
+			ZAIKey:    entry,
+			AuthIndex: authIndex,
+		}
+	}
+	return out
+}

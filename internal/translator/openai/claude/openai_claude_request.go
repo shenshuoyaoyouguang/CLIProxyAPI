@@ -142,6 +142,11 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 	// Process Anthropic messages
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
+		// Top-level thinking.type=disabled is a hard-off: historical thinking
+		// blocks must not be lifted into reasoning_content. Symmetric with the
+		// executor-side hard-off gate (thinking.DeepSeekThinkingActive) so a
+		// client that turns thinking off does not upload prior CoT.
+		thinkingDisabled := strings.EqualFold(strings.TrimSpace(root.Get("thinking.type").String()), "disabled")
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
@@ -167,8 +172,8 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					switch partType {
 					case "thinking":
 						// Only map thinking to reasoning_content for assistant messages (security: prevent injection)
-						if role == "assistant" {
-							if !shouldMapClaudeThinkingToGPTReasoning(part) {
+						if role == "assistant" && !thinkingDisabled {
+							if !shouldMapClaudeThinkingToReasoning(part, modelName) {
 								return true
 							}
 							thinkingText := thinking.GetThinkingText(part)
@@ -177,7 +182,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 								reasoningParts = append(reasoningParts, thinkingText)
 							}
 						}
-						// Ignore thinking in user/system roles (AC4)
+					// Ignore thinking in user/system roles (AC4)
 
 					case "redacted_thinking":
 						// Explicitly ignore redacted_thinking - never map to reasoning_content (AC2)
@@ -370,6 +375,42 @@ func shouldMapClaudeThinkingToGPTReasoning(part gjson.Result) bool {
 	}
 	_, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderGPT, signature.String())
 	return ok
+}
+
+// shouldMapClaudeThinkingToReasoning decides whether a Claude thinking block
+// should be lifted into the OpenAI reasoning_content field for the target model.
+//
+// For GPT-family and other signed-reasoning targets, only blocks carrying a
+// provider-compatible signature are replayed. This preserves OpenAI reasoning
+// encrypted_content provenance and prevents unsigned thinking injection.
+//
+// For DeepSeek-family targets, the signature requirement is intentionally
+// bypassed. DeepSeek's reasoning_content has no cryptographically signed
+// provenance, so the response translator (openai_claude_response.go) emits
+// thinking blocks WITHOUT a signature field. Without this bypass, DeepSeek
+// multi-turn tool-calling breaks: the thinking text is silently dropped on the
+// Claude→OpenAI round-trip, which — combined with the executor's empty-string
+// fallback — causes either HTTP 400 ("reasoning_content must be passed back")
+// or silent CoT loss across tool turns (the "reasoning_content trap" documented
+// by LiteLLM #26660/#28057 and Vercel AI SDK V4).
+//
+// The lift is still gated by `role == "assistant"` at the call site, so
+// user/system thinking blocks remain ignored (AC4).
+//
+// Constraint: the bypass is driven by the client-supplied model name
+// (RequiresDeepSeekReasoningPassback), not by the actual upstream. Mapping a
+// deepseek-v4* alias to a strict non-DeepSeek upstream would lift unsigned
+// thinking blocks into reasoning_content, which strict upstreams may reject.
+// Model-name routing is the same assumption the executor-side passback makes,
+// so the two sides never drift; clients choosing deepseek-v4* models are
+// declaring DeepSeek-family upstream capability.
+func shouldMapClaudeThinkingToReasoning(part gjson.Result, targetModel string) bool {
+	// Shared allowlist with thinking.EnsureMultiTurnReasoningPassback so translator
+	// lift and last-mile passback never drift (see thinking.RequiresDeepSeekReasoningPassback).
+	if thinking.RequiresDeepSeekReasoningPassback(targetModel) {
+		return true
+	}
+	return shouldMapClaudeThinkingToGPTReasoning(part)
 }
 
 func convertClaudeContentPart(part gjson.Result) (string, bool) {

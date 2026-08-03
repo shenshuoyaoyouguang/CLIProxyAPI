@@ -256,6 +256,22 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 		}
 		if existing, errRead := os.ReadFile(path); errRead == nil {
 			if jsonEqual(existing, raw) {
+				// Content is unchanged, but still record the path/source attributes and
+				// keep the DB record in sync, mirroring GitTokenStore.Save. A DB row may
+				// be missing even when the file exists (e.g. spool restored from disk).
+				if auth.Attributes == nil {
+					auth.Attributes = make(map[string]string)
+				}
+				auth.Attributes[cliproxyauth.AttributePath] = path
+				auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourcePostgres
+				if relID, errRel := s.relativeAuthID(path); errRel == nil {
+					if errUpsert := s.upsertAuthRecord(ctx, relID, path); errUpsert != nil {
+						// A transient DB failure must not be silent: the file write
+						// succeeded, but the DB row (used for lookups) may now be
+						// missing until the next sync.
+						log.WithError(errUpsert).WithField("path", path).Warn("postgres store: keep DB record in sync failed")
+					}
+				}
 				return path, nil
 			}
 		} else if errRead != nil && !errors.Is(errRead, fs.ErrNotExist) {
@@ -374,15 +390,19 @@ func (s *PostgresStore) Delete(ctx context.Context, id string) error {
 		return err
 	}
 
+	// Validate the resolved path stays inside the managed auth directory BEFORE
+	// removing anything: resolveDeletePath passes separator/absolute ids through
+	// verbatim, so an unchecked os.Remove could delete arbitrary files.
+	relID, err := s.relativeAuthID(path)
+	if err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if err = os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("postgres store: delete auth file: %w", err)
-	}
-	relID, err := s.relativeAuthID(path)
-	if err != nil {
-		return err
 	}
 	return s.deleteAuthRecord(ctx, relID)
 }
@@ -487,13 +507,11 @@ func (s *PostgresStore) syncAuthFromDatabase(ctx context.Context) error {
 	}
 	defer rows.Close()
 
-	if err = os.RemoveAll(s.authDir); err != nil {
-		return fmt.Errorf("postgres store: reset auth directory: %w", err)
-	}
 	if err = os.MkdirAll(s.authDir, 0o700); err != nil {
-		return fmt.Errorf("postgres store: recreate auth directory: %w", err)
+		return fmt.Errorf("postgres store: ensure auth directory: %w", err)
 	}
 
+	expected := map[string]struct{}{}
 	for rows.Next() {
 		var (
 			id      string
@@ -502,6 +520,7 @@ func (s *PostgresStore) syncAuthFromDatabase(ctx context.Context) error {
 		if err = rows.Scan(&id, &payload); err != nil {
 			return fmt.Errorf("postgres store: scan auth row: %w", err)
 		}
+		expected[id] = struct{}{}
 		path, errPath := s.absoluteAuthPath(id)
 		if errPath != nil {
 			log.WithError(errPath).Warnf("postgres store: skipping auth %s outside spool", id)
@@ -517,7 +536,46 @@ func (s *PostgresStore) syncAuthFromDatabase(ctx context.Context) error {
 	if err = rows.Err(); err != nil {
 		return fmt.Errorf("postgres store: iterate auth rows: %w", err)
 	}
+
+	// Remove local mirror files that no longer exist in the database. Wiping
+	// the whole directory (os.RemoveAll) would emit a watcher delete event for
+	// every auth, which the watcher propagates as remote deletions and can race
+	// a concurrent watcher run (objectstore avoids the same pattern).
+	if err = s.removeStaleAuthFiles(expected); err != nil {
+		return fmt.Errorf("postgres store: remove stale auth files: %w", err)
+	}
 	return nil
+}
+
+// removeStaleAuthFiles removes local auth-mirror files whose relative id is not
+// present in expected. Only truly stale files are deleted, so a bootstrap sync
+// does not emit delete events for auths that still exist.
+func (s *PostgresStore) removeStaleAuthFiles(expected map[string]struct{}) error {
+	if s == nil {
+		return nil
+	}
+	return filepath.WalkDir(s.authDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, errRel := filepath.Rel(s.authDir, path)
+		if errRel != nil {
+			return nil
+		}
+		if _, ok := expected[filepath.ToSlash(rel)]; ok {
+			return nil
+		}
+		if errRemove := os.Remove(path); errRemove != nil && !errors.Is(errRemove, fs.ErrNotExist) {
+			return errRemove
+		}
+		return nil
+	})
 }
 
 func (s *PostgresStore) syncAuthFile(ctx context.Context, relID, path string) error {

@@ -35,6 +35,12 @@ type CooldownStateStore interface {
 	Save(context.Context, []CooldownStateRecord) error
 }
 
+// CooldownStateStorePerAuth is implemented by stores that can persist a single
+// auth's cooldown records without rewriting the full snapshot.
+type CooldownStateStorePerAuth interface {
+	SaveAuth(ctx context.Context, auth *Auth, records []CooldownStateRecord) error
+}
+
 // CooldownStateStoreProvider exposes a backend-specific cooldown state store.
 type CooldownStateStoreProvider interface {
 	CooldownStateStore() CooldownStateStore
@@ -80,6 +86,11 @@ func (s *FileCooldownStateStore) Load(ctx context.Context) ([]CooldownStateRecor
 	if errCtx := ctx.Err(); errCtx != nil {
 		return nil, errCtx
 	}
+
+	// Serialize with Save/SaveAuth so a load never observes the mid-save window
+	// between stale-file removal and new-file rename.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	records := make([]CooldownStateRecord, 0)
 	errWalk := filepath.WalkDir(s.dir, func(path string, entry fs.DirEntry, err error) error {
@@ -168,13 +179,63 @@ func (s *FileCooldownStateStore) Save(ctx context.Context, records []CooldownSta
 	}
 
 	desired := make(map[string]struct{}, len(groups))
+	for path := range groups {
+		desired[filepath.Clean(path)] = struct{}{}
+	}
+	// Remove stale files before writing new ones: if the process crashes mid-save,
+	// the residue is a missing cooldown file (benign — one retry re-records it)
+	// rather than a stale file that would resurrect a cleared cooldown on load.
+	if errRemove := s.removeStaleStateFiles(ctx, desired); errRemove != nil {
+		return errRemove
+	}
 	for path, groupedRecords := range groups {
 		if errSave := writeCooldownStateGroup(ctx, path, groupedRecords); errSave != nil {
 			return errSave
 		}
-		desired[filepath.Clean(path)] = struct{}{}
 	}
-	return s.removeStaleStateFiles(ctx, desired)
+	return nil
+}
+
+// SaveAuth persists cooldown records for a single auth without rewriting every
+// registered auth's state. An empty record set removes the auth's cooldown file.
+// The on-disk format matches Save.
+func (s *FileCooldownStateStore) SaveAuth(ctx context.Context, auth *Auth, records []CooldownStateRecord) error {
+	if s == nil || s.dir == "" {
+		return nil
+	}
+	if auth == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if errCtx := ctx.Err(); errCtx != nil {
+		return errCtx
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	authFile := cooldownAuthFile(auth)
+	normalized := make([]CooldownStateRecord, 0, len(records))
+	for _, record := range records {
+		record.AuthID = auth.ID
+		record.AuthFile = authFile
+		normalized = append(normalized, record)
+	}
+
+	path, errPath := s.statePath(CooldownStateRecord{AuthID: auth.ID, AuthFile: authFile})
+	if errPath != nil {
+		return errPath
+	}
+
+	if len(normalized) == 0 {
+		if errRemove := os.Remove(path); errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
+			return fmt.Errorf("remove cooldown state %s: %w", path, errRemove)
+		}
+		return nil
+	}
+	return writeCooldownStateGroup(ctx, path, normalized)
 }
 
 func writeCooldownStateGroup(ctx context.Context, path string, records []CooldownStateRecord) error {

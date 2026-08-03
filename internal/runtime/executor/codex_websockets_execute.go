@@ -65,10 +65,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex websockets executor", body)
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2Request(ctx, opts.Headers, body, e.cfg)
-	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
-	if errReplay != nil {
-		return resp, errReplay
-	}
+	body, replayScope := applyCodexReasoningReplayCache(ctx, from, req, opts, body)
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)
@@ -176,8 +173,12 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 
 	var readCh chan codexWebsocketRead
+	var readToken uint64
 	if sess != nil {
 		readCh = sess.activate(conn)
+		// Snapshot the read counter before writing so the reader pump drops any
+		// trailing event from the previous turn on this reused connection.
+		readToken = sess.currentReadToken(conn)
 		defer func() {
 			sess.clearActive(conn, readCh)
 		}()
@@ -215,6 +216,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 					return resp, errBind
 				}
 				readCh = sess.activate(conn)
+				readToken = sess.currentReadToken(conn)
 				wsReqBodyRetry := buildCodexWebsocketRequestBody(upstreamBody)
 				helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 					URL:       wsURL,
@@ -254,7 +256,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if ctx != nil && ctx.Err() != nil {
 			return resp, ctx.Err()
 		}
-		msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+		msgType, payload, errRead := e.readMessage(ctx, sess, conn, readCh, readToken)
 		if errRead != nil {
 			mappedErr := mapCodexWebsocketReadError(errRead)
 			helps.RecordAPIWebsocketError(ctx, e.cfg, "read", mappedErr)
@@ -293,8 +295,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		if streamErr, terminalBody, ok := codexTerminalFailureErr(payload); ok {
 			if sess != nil {
-				unlockSession()
+				// Invalidate before releasing reqMu: unlocking first opens a window
+				// where a queued request acquires the session and reuses the
+				// connection that is about to be closed. invalidateUpstreamConn only
+				// takes connMu, so holding reqMu here cannot deadlock (same ordering
+				// as the upstream_error branch above).
 				e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)
+				unlockSession()
 			}
 			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
 				return resp, errClearReplay
@@ -307,9 +314,16 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		switch eventType {
 		case "response.output_item.done":
 			collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
-		case "response.completed":
+		case "response.completed", "response.incomplete":
+			// response.incomplete is a terminal success event upstream sends when the
+			// turn is cut short (for example max_output_tokens). Treat it like
+			// response.completed so the caller receives the partial result instead of
+			// waiting for the websocket liveness deadline. Replay caching stays limited
+			// to fully completed turns, matching the HTTP executor.
 			payload = patchCodexCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
-			cacheCodexReasoningReplayFromCompleted(replayScope, payload)
+			if eventType == "response.completed" {
+				cacheCodexReasoningReplayFromCompleted(replayScope, payload)
+			}
 			if detail, ok := helps.ParseCodexUsage(payload); ok {
 				reporter.Publish(ctx, detail)
 			}

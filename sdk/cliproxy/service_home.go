@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
@@ -356,8 +357,21 @@ func (s *Service) startHomeUsageForwarder(ctx context.Context, client *home.Clie
 
 			for i := range items {
 				if errPush := client.LPushUsage(ctx, items[i]); errPush != nil {
-					for j := i; j < len(items); j++ {
-						redisqueue.Enqueue(items[j])
+					// LPushUsage is a Redis LPUSH: a transport error after the write
+					// reached Home is indistinguishable from a failed write, so the
+					// failing record may already have been delivered. Re-enqueueing it
+					// would double-count. Only re-enqueue the tail that was definitively
+					// not delivered; on ambiguous errors leave the popped records alone
+					// and rely on Home-side dedup by request_id.
+					if !isAmbiguousHomeUsagePushError(errPush) {
+						for j := i; j < len(items); j++ {
+							redisqueue.Enqueue(items[j])
+						}
+					} else {
+						// Ambiguous transport error: the records in items[i:] are
+						// left out of both Home and the re-queue to avoid
+						// double-counting, so drop a trace for auditability.
+						log.WithError(errPush).Warnf("home usage push ambiguous, dropping %d records relying on Home-side dedup", len(items)-i)
 					}
 					if !sleep(time.Second) {
 						return
@@ -367,6 +381,27 @@ func (s *Service) startHomeUsageForwarder(ctx context.Context, client *home.Clie
 			}
 		}
 	}()
+}
+
+// isAmbiguousHomeUsagePushError reports whether a failed LPushUsage may already have
+// been written to Home. A Redis command error means the server processed the LPUSH
+// and rejected it (definitively not delivered), and a failure to obtain the command
+// client happens before any command is sent; only transport-level errors that surface
+// after the write are ambiguous.
+func isAmbiguousHomeUsagePushError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, home.ErrNotConnected) ||
+		errors.Is(err, home.ErrDispatchFenced) ||
+		errors.Is(err, home.ErrDisabled) {
+		return false
+	}
+	var redisErr redis.Error
+	if errors.As(err, &redisErr) {
+		return false
+	}
+	return true
 }
 
 func applyHomeObservationBarrier(registry *executionregistry.Registry, revision int64) {
@@ -540,7 +575,15 @@ func (s *Service) runHomeSubscriber(homeCtx context.Context, parentCtx context.C
 			s.runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx, generation, client, registry, queue, ready, &published, &cancelBound, supervisor)
 		}()
 
-		errRun := client.RunConfigSubscriberLifetime(lifetimeCtx, func(raw []byte) error {
+		errRun := client.RunConfigSubscriberLifetime(lifetimeCtx, func(raw []byte) (err error) {
+			// The subscriber retry loop below is designed around returned errors;
+			// a panic here would otherwise crash the embedding process.
+			defer func() {
+				if r := recover(); r != nil {
+					log.WithField("panic", r).Error("recovered panic while applying home config payload")
+					err = fmt.Errorf("panic while applying home config payload: %v", r)
+				}
+			}()
 			parsed, errParse := config.ParseConfigBytes(raw)
 			if errParse != nil {
 				log.Warnf("failed to parse home config payload: %v", errParse)
@@ -643,6 +686,24 @@ func (s *Service) runHomeConfigWorker(lifetimeCtx, homeCtx context.Context, gene
 	s.runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx, generation, client, registry, queue, ready, published, cancelBound, nil)
 }
 
+// stageHomeConfigPayload parses and stages one Home config payload, converting
+// any panic into a retried error so a malformed payload cannot crash the whole
+// embedding process: the worker loop below is explicitly designed around retry
+// with backoff, and a panic would otherwise bypass it entirely.
+func (s *Service) stageHomeConfigPayload(lifetimeCtx context.Context, raw []byte, client *home.Client, work **homePluginFinalization) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.WithField("panic", r).Error("recovered panic while staging home config payload")
+			err = fmt.Errorf("panic while staging home config payload: %v", r)
+		}
+	}()
+	parsed, errParse := config.ParseConfigBytes(raw)
+	if errParse == nil {
+		*work, errParse = s.stageHomeOverlayWithClient(lifetimeCtx, parsed, client)
+	}
+	return errParse
+}
+
 func (s *Service) runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx context.Context, generation uint64, client *home.Client, registry *executionregistry.Registry, queue *homeConfigWorkQueue, ready <-chan struct{}, published *atomic.Bool, cancelBound *atomic.Int64, supervisor *homeSubscriberSupervisor) {
 	select {
 	case <-lifetimeCtx.Done():
@@ -667,17 +728,14 @@ func (s *Service) runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx context
 			if lifetimeCtx.Err() != nil {
 				return
 			}
-			parsed, errParse := config.ParseConfigBytes(raw)
-			if errParse == nil {
-				work, errParse = s.stageHomeOverlayWithClient(lifetimeCtx, parsed, client)
-			}
-			if errParse == nil {
+			errStage := s.stageHomeConfigPayload(lifetimeCtx, raw, client, &work)
+			if errStage == nil {
 				break
 			}
 			if lifetimeCtx.Err() != nil {
 				return
 			}
-			log.WithError(errParse).Warn("failed to stage home config; retrying")
+			log.WithError(errStage).Warn("failed to stage home config; retrying")
 			if !waitForHomeSubscriberRetry(lifetimeCtx, homeSubscriberPreAckRetryBackoff) {
 				return
 			}

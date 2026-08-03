@@ -5,24 +5,90 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 )
 
-const defaultAPICallTimeout = 60 * time.Second
-
 const (
-	antigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-	antigravityOAuthClientSecret = "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"
+	defaultAPICallTimeout = 60 * time.Second
+	// apiCallMaxResponseBytes caps how much of an upstream response is buffered
+	// into memory. APICall answers with the body as a JSON string, so an
+	// unbounded read lets any reachable endpoint drive the proxy out of memory.
+	apiCallMaxResponseBytes = 10 << 20 // 10 MiB
+	// apiCallMaxRedirects bounds redirect chains; Go's default is 10.
+	apiCallMaxRedirects = 5
 )
+
+// apiCallSchemeAllowed restricts APICall to real HTTP traffic. Without it the
+// handler forwards whatever scheme the transport understands (file://, ftp://,
+// ...), turning a management convenience into a local resource reader.
+func apiCallSchemeAllowed(scheme string) bool {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "http", "https":
+		return true
+	default:
+		return false
+	}
+}
+
+// apiCallInternalIP reports whether ip belongs to non-routable space: loopback,
+// private ranges, link-local (which covers the 169.254.169.254 cloud metadata
+// endpoint) and the unspecified address.
+func apiCallInternalIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast()
+}
+
+// apiCallInternalHost reports whether host points at internal space. Names that
+// cannot be resolved are treated as internal: an unverifiable redirect target
+// must not be followed silently.
+func apiCallInternalHost(host string) bool {
+	hostname := strings.TrimSpace(host)
+	if h, _, errSplit := net.SplitHostPort(hostname); errSplit == nil {
+		hostname = h
+	}
+	hostname = strings.Trim(hostname, "[]")
+	if hostname == "" {
+		return true
+	}
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		return apiCallInternalIP(ip)
+	}
+	ips, errLookup := net.LookupIP(hostname)
+	if errLookup != nil || len(ips) == 0 {
+		return true
+	}
+	for _, ip := range ips {
+		if apiCallInternalIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// Antigravity OAuth client credentials now live in internal/auth/antigravity
+// (single source of truth, env-overridable secret) and are referenced here as
+// antigravity.ClientID / antigravity.ClientSecret.
 
 var antigravityOAuthTokenURL = "https://oauth2.googleapis.com/token"
 
@@ -115,6 +181,10 @@ func (h *Handler) APICall(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid url"})
 		return
 	}
+	if !apiCallSchemeAllowed(parsedURL.Scheme) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported url scheme"})
+		return
+	}
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
@@ -172,8 +242,28 @@ func (h *Handler) APICall(c *gin.Context) {
 		req.Host = hostOverride
 	}
 
+	// The operator may deliberately target an internal endpoint (the proxy's own
+	// management port, a LAN gateway). That stays allowed, but a public endpoint
+	// must not be able to bounce the call into internal space via a redirect -
+	// that is the classic SSRF amplifier towards cloud metadata services.
+	initialHostInternal := apiCallInternalHost(parsedURL.Host)
 	httpClient := &http.Client{
 		Timeout: defaultAPICallTimeout,
+		CheckRedirect: func(redirectReq *http.Request, via []*http.Request) error {
+			if len(via) >= apiCallMaxRedirects {
+				return fmt.Errorf("stopped after %d redirects", apiCallMaxRedirects)
+			}
+			if redirectReq == nil || redirectReq.URL == nil {
+				return fmt.Errorf("invalid redirect target")
+			}
+			if !apiCallSchemeAllowed(redirectReq.URL.Scheme) {
+				return fmt.Errorf("refusing redirect to unsupported scheme %q", redirectReq.URL.Scheme)
+			}
+			if !initialHostInternal && apiCallInternalHost(redirectReq.URL.Host) {
+				return fmt.Errorf("refusing redirect from public host to internal address %q", redirectReq.URL.Host)
+			}
+			return nil
+		},
 	}
 	httpClient.Transport = h.apiCallTransport(auth)
 
@@ -189,9 +279,15 @@ func (h *Handler) APICall(c *gin.Context) {
 		}
 	}()
 
-	respBody, errReadAll := io.ReadAll(resp.Body)
+	// Read one byte past the cap so an oversized response is reported instead of
+	// silently truncated.
+	respBody, errReadAll := io.ReadAll(io.LimitReader(resp.Body, apiCallMaxResponseBytes+1))
 	if errReadAll != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
+		return
+	}
+	if len(respBody) > apiCallMaxResponseBytes {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "response too large"})
 		return
 	}
 
@@ -270,8 +366,8 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 		tokenURL = "https://oauth2.googleapis.com/token"
 	}
 	form := url.Values{}
-	form.Set("client_id", antigravityOAuthClientID)
-	form.Set("client_secret", antigravityOAuthClientSecret)
+	form.Set("client_id", antigravity.ClientID)
+	form.Set("client_secret", antigravity.ClientSecret)
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 

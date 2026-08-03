@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -38,12 +39,9 @@ type claudeUsageTokens struct {
 	HasUsage                 bool
 }
 
-// ToolCallAccumulator holds the state for accumulating tool call data
-type ToolCallAccumulator struct {
-	ID        string
-	Name      string
-	Arguments strings.Builder
-}
+// ToolCallAccumulator aliases the shared common.ToolCallAccumulator, unifying
+// the three previously duplicated definitions.
+type ToolCallAccumulator = translatorcommon.ToolCallAccumulator
 
 func (u *claudeUsageTokens) Merge(usage gjson.Result) {
 	if !usage.Exists() {
@@ -424,11 +422,14 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 	messageContent := strings.Join(contentParts, "")
 	out, _ = sjson.SetBytes(out, "choices.0.message.content", messageContent)
 
-	// Add reasoning content if available (following OpenAI reasoning format)
+	// Add reasoning content if available (following OpenAI reasoning format).
+	// The field name must stay reasoning_content: the streaming path and every
+	// other translator emit that key, and consumers such as DeepSeek only read
+	// reasoning_content, so any other name drops the chain of thought entirely.
 	if len(reasoningParts) > 0 {
 		reasoningContent := strings.Join(reasoningParts, "")
 		// Add reasoning as a separate field in the message
-		out, _ = sjson.SetBytes(out, "choices.0.message.reasoning", reasoningContent)
+		out, _ = sjson.SetBytes(out, "choices.0.message.reasoning_content", reasoningContent)
 	}
 
 	// Set tool calls if any were accumulated during processing

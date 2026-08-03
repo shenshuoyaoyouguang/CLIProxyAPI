@@ -73,7 +73,10 @@ func GinLogrusLogger() gin.HandlerFunc {
 		statusCode := c.Writer.Status()
 		clientIP := c.ClientIP()
 		method := c.Request.Method
-		errorMessage := c.Errors.ByType(gin.ErrorTypePrivate).String()
+		// URL.Path is percent-decoded, so a path containing %0A would otherwise
+		// inject a fake log line; escape control characters at the source too.
+		errorMessage := sanitizeLogText(c.Errors.ByType(gin.ErrorTypePrivate).String())
+		path = sanitizeLogText(path)
 
 		if requestID == "" {
 			requestID = "--------"

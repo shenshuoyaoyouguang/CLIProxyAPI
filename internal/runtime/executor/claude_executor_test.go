@@ -25,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -653,7 +654,9 @@ func TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForCla
 	})
 	applyClaudeHeaders(req, auth, "key-legacy-ua-override", false, nil, nil, cfg, nil, true)
 
-	assertClaudeFingerprint(t, req.Header, "config-ua/1.0", "0.70.0", "v22.0.0", helps.MapStainlessOS(), helps.MapStainlessArch())
+	// Confirmed clients keep the baseline platform tuple (MacOS/arm64) even when
+	// the configured UA override replaces the User-Agent header.
+	assertClaudeFingerprint(t, req.Header, "config-ua/1.0", "0.70.0", "v22.0.0", "MacOS", "arm64")
 }
 
 func TestApplyClaudeHeaders_LegacyThirdPartyUsesStableConfiguredOSArch(t *testing.T) {
@@ -709,7 +712,10 @@ func TestApplyClaudeHeaders_UnsetStabilizationUsesStableConfiguredOSArch(t *test
 	})
 	applyClaudeHeaders(req, auth, "key-unset-runtime-os-arch", false, nil, nil, cfg, nil, false)
 
-	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", "Linux", "x64")
+	// Unset stabilization falls back to the legacy path, where unconfirmed
+	// clients report the local machine's OS/arch rather than the configured
+	// software tuple.
+	assertClaudeFingerprint(t, req.Header, "claude-cli/2.1.60 (external, cli)", "0.70.0", "v22.0.0", helps.MapStainlessOS(), helps.MapStainlessArch())
 }
 
 func TestApplyClaudeHeaders_UsesOAuthAuthorizationAndBrowserFingerprint(t *testing.T) {
@@ -1955,6 +1961,141 @@ func TestClaudeExecutor_ExecuteStreamDecodesCompressedSSE(t *testing.T) {
 	}
 }
 
+func TestClaudeExecutor_ExecuteStreamAccumulatesUsageAcrossEvents(t *testing.T) {
+	// message_start carries the input-side usage nested at message.usage (never
+	// top-level); the first top-level usage is the message_delta output count.
+	upstreamStream := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":12,"cache_creation_input_tokens":3,"cache_read_input_tokens":7}}}`,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":34}}`,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(upstreamStream))
+	}))
+	defer server.Close()
+
+	const model = "claude-3-5-sonnet-20241022"
+	executor := NewClaudeExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "key-123",
+		"base_url": server.URL,
+	}}
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+
+	plugin := &captureClaudeUsagePlugin{records: make(chan usage.Record, 8)}
+	usage.RegisterPlugin(plugin)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+	}
+
+	record := waitForClaudeUsageRecord(t, plugin.records, model)
+	if record.Failed {
+		t.Fatalf("record failed unexpectedly: %+v", record.Fail)
+	}
+	if record.Detail.InputTokens != 12 {
+		t.Fatalf("input tokens = %d, want 12", record.Detail.InputTokens)
+	}
+	if record.Detail.OutputTokens != 34 {
+		t.Fatalf("output tokens = %d, want 34", record.Detail.OutputTokens)
+	}
+	if record.Detail.CacheReadTokens != 7 {
+		t.Fatalf("cache read tokens = %d, want 7", record.Detail.CacheReadTokens)
+	}
+	if record.Detail.CacheCreationTokens != 3 {
+		t.Fatalf("cache creation tokens = %d, want 3", record.Detail.CacheCreationTokens)
+	}
+	if record.Detail.TotalTokens != 56 {
+		t.Fatalf("total tokens = %d, want 56", record.Detail.TotalTokens)
+	}
+}
+
+type captureClaudeUsagePlugin struct {
+	records chan usage.Record
+}
+
+func (p *captureClaudeUsagePlugin) HandleUsage(_ context.Context, record usage.Record) {
+	if p == nil {
+		return
+	}
+	select {
+	case p.records <- record:
+	default:
+	}
+}
+
+func waitForClaudeUsageRecord(t *testing.T, records <-chan usage.Record, model string) usage.Record {
+	t.Helper()
+	timeout := time.After(3 * time.Second)
+	for {
+		select {
+		case record := <-records:
+			if record.Provider == "claude" && record.Model == model {
+				return record
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for Claude usage record")
+		}
+	}
+}
+
+func TestClaudeExecutor_ExecuteAccumulatesUsageFromBufferedStream(t *testing.T) {
+	// Non-streaming Execute still buffers an upstream Claude stream when the
+	// downstream response needs translation; usage must accumulate across
+	// message_start (input) and message_delta (output) events instead of
+	// first-wins on the top-level usage.
+	body := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_123","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":12,"cache_creation_input_tokens":3,"cache_read_input_tokens":7}}}`,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":34}}`,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+
+	const model = "claude-3-5-sonnet-20241022"
+	plugin := &captureClaudeUsagePlugin{records: make(chan usage.Record, 8)}
+	usage.RegisterPlugin(plugin)
+
+	if _, err := executeOpenAIChatCompletionThroughClaude(t, body); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	record := waitForClaudeUsageRecord(t, plugin.records, model)
+	if record.Failed {
+		t.Fatalf("record failed unexpectedly: %+v", record.Fail)
+	}
+	if record.Detail.InputTokens != 12 {
+		t.Fatalf("input tokens = %d, want 12", record.Detail.InputTokens)
+	}
+	if record.Detail.OutputTokens != 34 {
+		t.Fatalf("output tokens = %d, want 34", record.Detail.OutputTokens)
+	}
+	if record.Detail.CacheReadTokens != 7 {
+		t.Fatalf("cache read tokens = %d, want 7", record.Detail.CacheReadTokens)
+	}
+}
 func TestClaudeExecutor_CountTokensExcludesInvalidOpenAIThinking(t *testing.T) {
 	executor := NewClaudeExecutor(&config.Config{})
 	countTokens := func(payload []byte) int64 {
@@ -4437,22 +4578,22 @@ func TestNormalizeClaudeSamplingForUpstream_RemovesTopPAndTopKForThinking(t *tes
 	}
 }
 
-func TestNormalizeClaudeSamplingForUpstream_NoThinkingRemovesTemperatureAndTopP(t *testing.T) {
+func TestNormalizeClaudeSamplingForUpstream_NoThinkingKeepsTemperatureAndTopP(t *testing.T) {
 	payload := []byte(`{"temperature":0,"top_p":0.9,"top_k":40,"messages":[{"role":"user","content":"hi"}]}`)
 	out := normalizeClaudeSamplingForUpstream(payload)
 
-	if gjson.GetBytes(out, "temperature").Exists() {
-		t.Fatalf("temperature should be removed")
+	if got := gjson.GetBytes(out, "temperature").Float(); got != 0 {
+		t.Fatalf("temperature = %v, want 0 (kept without thinking)", got)
 	}
-	if gjson.GetBytes(out, "top_p").Exists() {
-		t.Fatalf("top_p should be removed")
+	if got := gjson.GetBytes(out, "top_p").Float(); got != 0.9 {
+		t.Fatalf("top_p = %v, want 0.9 (kept without thinking)", got)
 	}
 	if got := gjson.GetBytes(out, "top_k").Int(); got != 40 {
 		t.Fatalf("top_k = %v, want 40", got)
 	}
 }
 
-func TestNormalizeClaudeSamplingForUpstream_AfterForcedToolChoiceRemovesTemperature(t *testing.T) {
+func TestNormalizeClaudeSamplingForUpstream_AfterForcedToolChoiceKeepsTemperature(t *testing.T) {
 	payload := []byte(`{"temperature":0,"thinking":{"type":"adaptive"},"output_config":{"effort":"max"},"tool_choice":{"type":"any"}}`)
 	out := disableThinkingIfToolChoiceForced(payload)
 	out = normalizeClaudeSamplingForUpstream(out)
@@ -4460,8 +4601,8 @@ func TestNormalizeClaudeSamplingForUpstream_AfterForcedToolChoiceRemovesTemperat
 	if gjson.GetBytes(out, "thinking").Exists() {
 		t.Fatalf("thinking should be removed when tool_choice forces tool use")
 	}
-	if gjson.GetBytes(out, "temperature").Exists() {
-		t.Fatalf("temperature should be removed")
+	if got := gjson.GetBytes(out, "temperature").Float(); got != 0 {
+		t.Fatalf("temperature = %v, want 0 (kept: thinking was disabled by tool_choice)", got)
 	}
 }
 

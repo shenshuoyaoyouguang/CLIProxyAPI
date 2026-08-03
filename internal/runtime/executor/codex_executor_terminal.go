@@ -29,6 +29,30 @@ func (codexIncompleteStreamError) IsRequestScoped() bool {
 	return true
 }
 
+// codexStreamReadError reports that the upstream stream could not be read to the
+// end because of a transport/read failure, as opposed to a stream that was read
+// in full but never carried a terminal event. Collapsing both into the same 408
+// hides local read failures behind a timeout-shaped status. It stays
+// request-scoped: the credential is healthy, only this request died.
+type codexStreamReadError struct {
+	statusErr
+}
+
+func newCodexStreamReadError(cause error) codexStreamReadError {
+	msg := "stream error: failed to read upstream response"
+	if cause != nil {
+		msg += ": " + cause.Error()
+	}
+	return codexStreamReadError{statusErr: statusErr{
+		code: http.StatusBadGateway,
+		msg:  msg,
+	}}
+}
+
+func (codexStreamReadError) IsRequestScoped() bool {
+	return true
+}
+
 // Streamed Codex responses may emit response.output_item.done events while leaving
 // response.completed.response.output empty. Keep the stream path aligned with the
 // already-patched non-stream path by reconstructing response.output from those items.

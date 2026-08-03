@@ -77,9 +77,11 @@ func TestCollectClaudeInputTokenSegments(t *testing.T) {
 	}
 	want := []string{
 		"Follow repository rules.",
+		strings.Repeat("a", claudeImageEstimateTokens),
 		"user",
 		"Review the implementation.",
 		"Reference document text.",
+		strings.Repeat("a", claudeImageEstimateTokens),
 		"assistant",
 		"Inspect the relevant files.",
 		"toolu_1",
@@ -88,6 +90,7 @@ func TestCollectClaudeInputTokenSegments(t *testing.T) {
 		"user",
 		"toolu_1",
 		"package main",
+		strings.Repeat("a", claudeImageEstimateTokens),
 		"read_file",
 		"Reads a repository file.",
 		`{"type":"object","properties":{"path":{"type":"string"}}}`,
@@ -153,7 +156,7 @@ func TestCollectClaudeInputTokenSegmentsIncludesKnownToolResults(t *testing.T) {
 	}
 }
 
-func TestCountClaudeInputTokensExcludesMultimediaAndControlFields(t *testing.T) {
+func TestCountClaudeInputTokensCountsMultimediaWithFlatEstimates(t *testing.T) {
 	enc, err := tokenizer.Get(tokenizer.O200kBase)
 	if err != nil {
 		t.Fatalf("tokenizer.Get() error = %v", err)
@@ -164,7 +167,7 @@ func TestCountClaudeInputTokensExcludesMultimediaAndControlFields(t *testing.T) 
         "messages":[{"role":"user","content":[{"type":"text","text":"User text."}]}],
         "tools":[{"name":"lookup","description":"Looks up data.","input_schema":{"type":"object"}}]
     }`)
-	withExcludedFields := []byte(`{
+	withMediaFields := []byte(`{
         "model":"claude-test",
         "system":"System text.",
         "messages":[{"role":"user","content":[
@@ -187,12 +190,30 @@ func TestCountClaudeInputTokensExcludesMultimediaAndControlFields(t *testing.T) 
 	if errBase != nil {
 		t.Fatalf("countClaudeInputTokens(base) error = %v", errBase)
 	}
-	excludedCount, errExcluded := countClaudeInputTokens(enc, withExcludedFields)
-	if errExcluded != nil {
-		t.Fatalf("countClaudeInputTokens(withExcludedFields) error = %v", errExcluded)
+	mediaCount, errMedia := countClaudeInputTokens(enc, withMediaFields)
+	if errMedia != nil {
+		t.Fatalf("countClaudeInputTokens(withMediaFields) error = %v", errMedia)
 	}
-	if excludedCount != baseCount {
-		t.Fatalf("count with excluded fields = %d, want %d", excludedCount, baseCount)
+	// Media blocks are counted with flat per-block estimates instead of being
+	// tokenized as base64 text (image 258 + audio 512 + video 1024). The
+	// estimate is encoded as an "a"-run, so a payload with equivalent text
+	// blocks must count identically.
+	textEquivalents := []byte(`{
+        "system":"System text.",
+        "messages":[{"role":"user","content":[
+            {"type":"text","text":"User text."},
+            {"type":"text","text":"` + strings.Repeat("a", claudeImageEstimateTokens) + `"},
+            {"type":"text","text":"` + strings.Repeat("a", claudeAudioFlatEstimateTokens) + `"},
+            {"type":"text","text":"` + strings.Repeat("a", claudeVideoEstimateTokens) + `"}
+        ]}],
+        "tools":[{"name":"lookup","description":"Looks up data.","input_schema":{"type":"object"}}]
+    }`)
+	equivalentCount, errEquivalent := countClaudeInputTokens(enc, textEquivalents)
+	if errEquivalent != nil {
+		t.Fatalf("countClaudeInputTokens(textEquivalents) error = %v", errEquivalent)
+	}
+	if mediaCount != equivalentCount {
+		t.Fatalf("count with media fields = %d, want %d (equal to text-equivalent count; base %d)", mediaCount, equivalentCount, baseCount)
 	}
 }
 

@@ -110,12 +110,17 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 	// Usage is applied to the base template so it appears in the chunks.
 	if usageResult := gjson.GetBytes(rawJSON, "usageMetadata"); usageResult.Exists() {
 		cachedTokenCount := usageResult.Get("cachedContentTokenCount").Int()
-		baseTemplate, _ = sjson.SetBytes(baseTemplate, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int())
+		// Gemini's candidatesTokenCount excludes thinking tokens (total =
+		// prompt + candidates + thoughts); OpenAI's completion_tokens includes
+		// reasoning, so sum both — matching the Claude-direction mapping and
+		// OpenAI semantics. reasoning_tokens stays as a separate breakdown.
+		candidatesTokenCount := usageResult.Get("candidatesTokenCount").Int()
+		thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
+		baseTemplate, _ = sjson.SetBytes(baseTemplate, "usage.completion_tokens", candidatesTokenCount+thoughtsTokenCount)
 		if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Exists() {
 			baseTemplate, _ = sjson.SetBytes(baseTemplate, "usage.total_tokens", totalTokenCountResult.Int())
 		}
 		promptTokenCount := usageResult.Get("promptTokenCount").Int()
-		thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
 		baseTemplate, _ = sjson.SetBytes(baseTemplate, "usage.prompt_tokens", promptTokenCount)
 		if thoughtsTokenCount > 0 {
 			baseTemplate, _ = sjson.SetBytes(baseTemplate, "usage.completion_tokens_details.reasoning_tokens", thoughtsTokenCount)
@@ -243,8 +248,10 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 
 			upstreamFinishReason := p.UpstreamFinishReason[candidateIndex]
 			sawToolCall := p.SawToolCall[candidateIndex]
-			usageExists := gjson.GetBytes(rawJSON, "usageMetadata").Exists()
-			isFinalChunk := upstreamFinishReason != "" && usageExists
+			// finish_reason must be emitted whenever the upstream reported it,
+			// even when usage arrives in a separate chunk; gating it on usage
+			// left the client with a stream that never reached a terminal state.
+			isFinalChunk := upstreamFinishReason != ""
 
 			if isFinalChunk {
 				var finishReason string
@@ -310,12 +317,16 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, _ string, origina
 	}
 
 	if usageResult := gjson.GetBytes(rawJSON, "usageMetadata"); usageResult.Exists() {
-		template, _ = sjson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int())
+		// Gemini's candidatesTokenCount excludes thinking tokens (total =
+		// prompt + candidates + thoughts); OpenAI's completion_tokens includes
+		// reasoning, so sum both — matching the streaming converter.
+		candidatesTokenCount := usageResult.Get("candidatesTokenCount").Int()
+		thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
+		template, _ = sjson.SetBytes(template, "usage.completion_tokens", candidatesTokenCount+thoughtsTokenCount)
 		if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Exists() {
 			template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokenCountResult.Int())
 		}
 		promptTokenCount := usageResult.Get("promptTokenCount").Int()
-		thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
 		cachedTokenCount := usageResult.Get("cachedContentTokenCount").Int()
 		template, _ = sjson.SetBytes(template, "usage.prompt_tokens", promptTokenCount)
 		if thoughtsTokenCount > 0 {

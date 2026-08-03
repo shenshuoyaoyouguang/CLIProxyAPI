@@ -188,20 +188,26 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 	if len(resp) >= 2 && resp[0] == 0x1f && resp[1] == 0x8b {
 		gzReader, errGzip := gzip.NewReader(bytes.NewReader(resp))
 		if errGzip != nil {
+			// Never pass raw gzip bytes through as JSON: the client would receive
+			// binary garbage for a 200 response.
 			log.Warnf("failed to decompress gzipped Claude response: %v", errGzip)
-		} else {
-			defer func() {
-				if errClose := gzReader.Close(); errClose != nil {
-					log.Warnf("failed to close Claude gzip reader: %v", errClose)
-				}
-			}()
-			decompressed, errRead := io.ReadAll(gzReader)
-			if errRead != nil {
-				log.Warnf("failed to read decompressed Claude response: %v", errRead)
-			} else {
-				resp = decompressed
-			}
+			h.WriteErrorResponse(c, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("upstream returned an invalid gzip payload")})
+			cliCancel(fmt.Errorf("upstream returned an invalid gzip payload"))
+			return
 		}
+		defer func() {
+			if errClose := gzReader.Close(); errClose != nil {
+				log.Warnf("failed to close Claude gzip reader: %v", errClose)
+			}
+		}()
+		decompressed, errRead := io.ReadAll(gzReader)
+		if errRead != nil {
+			log.Warnf("failed to read decompressed Claude response: %v", errRead)
+			h.WriteErrorResponse(c, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("upstream returned a truncated gzip payload: %w", errRead)})
+			cliCancel(fmt.Errorf("upstream returned a truncated gzip payload: %w", errRead))
+			return
+		}
+		resp = decompressed
 	}
 
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)

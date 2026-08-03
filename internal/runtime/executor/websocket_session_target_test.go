@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1113,4 +1114,103 @@ func TestWebsocketRegistryDrainClosesAndEndsRetainedSession(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWebsocketReadTokenFilter verifies that readMessage drops events stamped
+// with a token < minToken (stale events from a previous turn on a reused
+// connection) and delivers events with a token >= minToken. The token ==
+// minToken case matters: the pump advances the counter before every read, so
+// the first event of the current turn can carry exactly minToken and must be
+// delivered (an inclusive bound would drop it).
+func TestWebsocketReadTokenFilter(t *testing.T) {
+	conn := &websocket.Conn{}
+	sess := &codexWebsocketSession{}
+	readCh := make(chan codexWebsocketRead, 4)
+
+	// Stale events from the previous turn, read before the consumer captured
+	// the counter, have token < minToken and must be dropped.
+	readCh <- codexWebsocketRead{conn: conn, token: 1, payload: []byte(`{"type":"response.done"}`)}
+	readCh <- codexWebsocketRead{conn: conn, token: 2, payload: []byte(`{"type":"response.completed"}`)}
+	// Fresh event for the current turn, read at or after the capture, has
+	// token >= minToken and must be delivered.
+	readCh <- codexWebsocketRead{conn: conn, token: 3, payload: []byte(`{"type":"response.created"}`)}
+
+	runtime := &websocketSessionRuntime{executorName: "test"}
+	// minToken = 3: events with token < 3 are stale.
+	msgType, payload, err := runtime.readMessage(context.Background(), sess, conn, readCh, 3)
+	if err != nil {
+		t.Fatalf("readMessage error = %v, want nil", err)
+	}
+	if !bytes.Contains(payload, []byte("response.created")) {
+		t.Fatalf("readMessage delivered stale event: %s, want response.created", payload)
+	}
+	_ = msgType
+
+	// Verify that error events are not filtered by the token check.
+	readCh2 := make(chan codexWebsocketRead, 1)
+	readCh2 <- codexWebsocketRead{conn: conn, token: 1, err: fmt.Errorf("connection closed")}
+	_, _, err2 := runtime.readMessage(context.Background(), sess, conn, readCh2, 3)
+	if err2 == nil {
+		t.Fatal("readMessage error = nil, want connection closed error")
+	}
+}
+
+// TestWebsocketReadTokenPumpStamping verifies that the reader pump stamps
+// increasing per-connection tokens on each upstream message.
+func TestWebsocketReadTokenPumpStamping(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("upgrade websocket: %v", errUpgrade)
+			return
+		}
+		// Read the client's request so the connection is fully established.
+		_, _, _ = conn.ReadMessage()
+		// Send two text frames.
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created"}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed"}`))
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if errDial != nil {
+		t.Fatalf("dial websocket: %v", errDial)
+	}
+	defer conn.Close()
+
+	// Write a dummy message so the server reads it and sends its frames.
+	_ = conn.WriteMessage(websocket.TextMessage, []byte("{}"))
+
+	sess := &codexWebsocketSession{}
+	readCh := sess.activate(conn)
+	runtime := &websocketSessionRuntime{executorName: "test"}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runtime.readUpstreamLoop(sess, conn)
+	}()
+
+	// Read the first event from the raw channel and check its token.
+	ev1 := <-readCh
+	if ev1.token != 1 {
+		t.Fatalf("first event token = %d, want 1", ev1.token)
+	}
+	if !bytes.Contains(ev1.payload, []byte("response.created")) {
+		t.Fatalf("first payload = %s, want response.created", ev1.payload)
+	}
+
+	// Read the second event from the raw channel and check its token.
+	ev2 := <-readCh
+	if ev2.token != 2 {
+		t.Fatalf("second event token = %d, want 2", ev2.token)
+	}
+	if !bytes.Contains(ev2.payload, []byte("response.completed")) {
+		t.Fatalf("second payload = %s, want response.completed", ev2.payload)
+	}
+
+	sess.setActive(nil, nil)
+	<-done
 }

@@ -363,6 +363,26 @@ func TestCacheSignature_TextHashCollisionResistance(t *testing.T) {
 	}
 }
 
+func TestHashTextUsesFullSHA256Digest(t *testing.T) {
+	t.Parallel()
+
+	got := hashText("thinking sample")
+	if len(got) != SignatureTextHashLen {
+		t.Fatalf("hashText len = %d, want %d (full sha256 hex)", len(got), SignatureTextHashLen)
+	}
+	if SignatureTextHashLen != 64 {
+		t.Fatalf("SignatureTextHashLen = %d, want 64", SignatureTextHashLen)
+	}
+	// Distinct inputs must not share a key even if truncated prefixes might collide
+	// under a 64-bit scheme; full digest is deterministic and unique for these.
+	if hashText("alpha") == hashText("beta") {
+		t.Fatal("distinct texts must produce distinct full digests")
+	}
+	if hashText("same") != hashText("same") {
+		t.Fatal("hashText must be deterministic")
+	}
+}
+
 func TestCacheSignature_UnicodeText(t *testing.T) {
 	ClearSignatureCache("")
 
@@ -411,6 +431,85 @@ func TestCacheSignature_ExpirationLogic(t *testing.T) {
 	// We can't easily test actual expiration without time mocking
 	// but the logic is verified by the implementation
 	_ = time.Now() // Acknowledge we're not testing time passage
+}
+
+// TestSignatureCacheLegacyHashFallback covers issue #10: when an in-memory
+// entry still lives under the legacy 16-hex hash key, the new 64-hex path
+// must read it via fallback, promote it to the full-hash key, and clean up
+// the short key on delete.
+func TestSignatureCacheLegacyHashFallback(t *testing.T) {
+	ClearSignatureCache("")
+
+	text := "legacy-hash-thinking-text"
+	sig := "legacySig12345678901234567890123456789012345678901234567"
+
+	// Seed a legacy 16-hex entry as if written by pre-upgrade code.
+	groupKey := GetModelGroup(testModelName)
+	sc := getOrCreateGroupCache(groupKey)
+	legacyKey := hashTextLegacy(text)
+	if len(legacyKey) != legacySignatureTextHashLen {
+		t.Fatalf("hashTextLegacy len = %d, want %d", len(legacyKey), legacySignatureTextHashLen)
+	}
+	sc.mu.Lock()
+	sc.entries[legacyKey] = SignatureEntry{Signature: sig, Timestamp: time.Now()}
+	sc.mu.Unlock()
+
+	// New code must read the legacy entry via fallback.
+	if got := GetCachedSignature(testModelName, text); got != sig {
+		t.Fatalf("legacy entry read failed: got %q, want %q", got, sig)
+	}
+
+	// On hit, migrate to the full key and drop the legacy key.
+	sc.mu.Lock()
+	_, newExists := sc.entries[hashText(text)]
+	_, legacyExists := sc.entries[legacyKey]
+	sc.mu.Unlock()
+	if !newExists {
+		t.Fatalf("legacy entry was not migrated to new 64-char key")
+	}
+	if legacyExists {
+		t.Fatalf("legacy key was not cleaned up after migration")
+	}
+
+	// Subsequent reads hit the full key without needing fallback.
+	if got := GetCachedSignature(testModelName, text); got != sig {
+		t.Fatalf("post-migration read failed: got %q, want %q", got, sig)
+	}
+}
+
+// TestSignatureCacheLegacyHashDeleteCoversBothShapes covers issue #10:
+// Delete must remove both full and legacy key shapes to avoid stale data.
+func TestSignatureCacheLegacyHashDeleteCoversBothShapes(t *testing.T) {
+	ClearSignatureCache("")
+
+	text := "legacy-delete-thinking-text"
+	sig := "deleteSig1234567890123456789012345678901234567890123456"
+
+	groupKey := GetModelGroup(testModelName)
+	sc := getOrCreateGroupCache(groupKey)
+	newKey := hashText(text)
+	legacyKey := hashTextLegacy(text)
+
+	// Write both shapes (upgrade-window dual-write edge case).
+	sc.mu.Lock()
+	sc.entries[newKey] = SignatureEntry{Signature: sig, Timestamp: time.Now()}
+	sc.entries[legacyKey] = SignatureEntry{Signature: sig, Timestamp: time.Now()}
+	sc.mu.Unlock()
+
+	if err := DeleteCachedSignatureRequired(context.Background(), testModelName, text); err != nil {
+		t.Fatalf("DeleteCachedSignatureRequired error: %v", err)
+	}
+
+	sc.mu.Lock()
+	_, newExists := sc.entries[newKey]
+	_, legacyExists := sc.entries[legacyKey]
+	sc.mu.Unlock()
+	if newExists {
+		t.Fatalf("new key was not deleted")
+	}
+	if legacyExists {
+		t.Fatalf("legacy key was not deleted")
+	}
 }
 
 func TestSignatureModeSetters_LogAtInfoLevel(t *testing.T) {

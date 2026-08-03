@@ -25,7 +25,7 @@ type ConvertCodexResponseToGeminiParams struct {
 	Model              string
 	CreatedAt          int64
 	ResponseID         string
-	LastStorageOutput  []byte
+	LastStorageOutputs [][]byte
 	HasOutputTextDelta bool
 	LastImageHashByID  map[string][32]byte
 }
@@ -49,7 +49,7 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 			Model:              modelName,
 			CreatedAt:          0,
 			ResponseID:         "",
-			LastStorageOutput:  nil,
+			LastStorageOutputs: nil,
 			HasOutputTextDelta: false,
 			LastImageHashByID:  make(map[string][32]byte),
 		}
@@ -161,7 +161,7 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 			template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", functionCall)
 			template, _ = sjson.SetBytes(template, "candidates.0.finishReason", "STOP")
 
-			params.LastStorageOutput = append([]byte(nil), template...)
+			params.LastStorageOutputs = append(params.LastStorageOutputs, append([]byte(nil), template...))
 
 			// Use this return to storage message
 			return [][]byte{}
@@ -222,10 +222,15 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 		return [][]byte{}
 	}
 
-	if len(params.LastStorageOutput) > 0 {
-		stored := append([]byte(nil), params.LastStorageOutput...)
-		params.LastStorageOutput = nil
-		return [][]byte{stored, template}
+	if len(params.LastStorageOutputs) > 0 {
+		// Flush every pending function-call chunk in order; a single storage
+		// slot would silently drop all but the last of consecutive calls.
+		chunks := make([][]byte, 0, len(params.LastStorageOutputs)+1)
+		for _, stored := range params.LastStorageOutputs {
+			chunks = append(chunks, stored)
+		}
+		params.LastStorageOutputs = nil
+		return append(chunks, template)
 	}
 	return [][]byte{template}
 }

@@ -101,9 +101,12 @@ func (m *Manager) localFallbackAuth(authID string) *Auth {
 	if !m.localExecutionAllowed() {
 		return nil
 	}
+	// Clone while still holding the read lock: MarkResult mutates the auth
+	// in place under m.mu, so cloning after RUnlock can race the deep copy
+	// with concurrent map writes ("concurrent map iteration and map write").
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	auth := m.auths[strings.TrimSpace(authID)]
-	m.mu.RUnlock()
 	if auth == nil {
 		return nil
 	}

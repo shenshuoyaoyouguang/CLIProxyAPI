@@ -642,11 +642,68 @@ func TestRoundRobinSelectorPick_CursorKeyCap(t *testing.T) {
 	if selector.cursors == nil {
 		t.Fatalf("selector.cursors = nil")
 	}
-	if len(selector.cursors) != 1 {
-		t.Fatalf("len(selector.cursors) = %d, want %d", len(selector.cursors), 1)
+	// The map must stay bounded at the limit: m1 is the least-recently-used
+	// key, so it is evicted while m2 and m3 keep their cursors.
+	if len(selector.cursors) != 2 {
+		t.Fatalf("len(selector.cursors) = %d, want %d", len(selector.cursors), 2)
 	}
 	if _, ok := selector.cursors["gemini:m3"]; !ok {
 		t.Fatalf("selector.cursors missing key %q", "gemini:m3")
+	}
+	if _, ok := selector.cursors["gemini:m2"]; !ok {
+		t.Fatalf("selector.cursors missing key %q", "gemini:m2")
+	}
+	if _, ok := selector.cursors["gemini:m1"]; ok {
+		t.Fatalf("selector.cursors retained least-recently-used key %q", "gemini:m1")
+	}
+}
+
+func TestRoundRobinSelectorPick_CursorKeyLRUEviction(t *testing.T) {
+	t.Parallel()
+
+	selector := &RoundRobinSelector{maxKeys: 3}
+	auths := []*Auth{{ID: "a"}}
+
+	pick := func(model string) {
+		t.Helper()
+		if _, err := selector.Pick(context.Background(), "gemini", model, cliproxyexecutor.Options{}, auths); err != nil {
+			t.Fatalf("Pick(%q) error = %v", model, err)
+		}
+	}
+
+	// Fill the map to its limit, then touch m1 so it is the most recently used.
+	pick("m1")
+	pick("m2")
+	pick("m3")
+	pick("m1")
+
+	// Adding a new key past the limit must evict only the least-recently-used
+	// key (m2) instead of clearing every cursor.
+	pick("m4")
+
+	selector.mu.Lock()
+	defer selector.mu.Unlock()
+
+	if len(selector.cursors) != 3 {
+		t.Fatalf("len(selector.cursors) = %d, want bounded at %d", len(selector.cursors), 3)
+	}
+	if _, ok := selector.cursors["gemini:m2"]; ok {
+		t.Fatalf("least-recently-used key %q was not evicted", "gemini:m2")
+	}
+	if got := selector.cursors["gemini:m1"]; got != 2 {
+		t.Fatalf("cursor %q = %d, want 2 (value must be preserved)", "gemini:m1", got)
+	}
+	if got := selector.cursors["gemini:m3"]; got != 1 {
+		t.Fatalf("cursor %q = %d, want 1 (value must be preserved)", "gemini:m3", got)
+	}
+	if got := selector.cursors["gemini:m4"]; got != 1 {
+		t.Fatalf("cursor %q = %d, want 1", "gemini:m4", got)
+	}
+	if len(selector.lastUsed) != len(selector.cursors) {
+		t.Fatalf("len(selector.lastUsed) = %d, want %d (recency map must stay in sync)", len(selector.lastUsed), len(selector.cursors))
+	}
+	if _, ok := selector.lastUsed["gemini:m2"]; ok {
+		t.Fatalf("recency entry for evicted key %q was not removed", "gemini:m2")
 	}
 }
 

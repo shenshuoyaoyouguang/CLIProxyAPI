@@ -12,6 +12,8 @@
 package gemini
 
 import (
+	"bytes"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/tidwall/gjson"
@@ -118,26 +120,37 @@ func (a *Applier) applyLevelFormat(body []byte, config thinking.ThinkingConfig) 
 	//   - ModeNone + Budget>0: clamp to the model's lowest supported amount.
 	// Summary visibility remains independent and is restored only when explicitly set.
 
-	// Remove conflicting fields to avoid both thinkingLevel and thinkingBudget in output
-	result, _ := sjson.DeleteBytes(body, "generationConfig.thinkingConfig.thinkingBudget")
-	result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig.thinking_budget")
-	result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig.thinking_level")
+	// ModeNone + fully disabled removes the whole thinkingConfig, which works for
+	// any existing value shape (including arrays), so handle it before the
+	// subtree writability check.
+	if config.Mode == thinking.ModeNone && config.Budget == 0 && config.Level == "" {
+		// With the amount fully disabled, visibility is irrelevant. Restoring
+		// includeThoughts alone would recreate thinkingConfig and let a
+		// default-on model think again.
+		result, _ := sjson.DeleteBytes(body, "generationConfig.thinkingConfig")
+		return result, nil
+	}
+
+	tcRaw, writable := thinkingConfigRaw(body)
+	if !writable {
+		return body, nil
+	}
+	original := append([]byte(nil), tcRaw...)
+
+	// Remove conflicting fields to avoid both thinkingLevel and thinkingBudget in output.
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "thinkingBudget")
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "thinking_budget")
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "thinking_level")
 	// Normalize includeThoughts field name and retain only documented booleans.
-	result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig.includeThoughts")
-	result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig.include_thoughts")
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "includeThoughts")
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "include_thoughts")
 
 	if config.Mode == thinking.ModeNone {
-		if config.Budget == 0 && config.Level == "" {
-			// With the amount fully disabled, visibility is irrelevant. Restoring
-			// includeThoughts alone would recreate thinkingConfig and let a
-			// default-on model think again.
-			result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig")
-			return result, nil
-		}
 		if config.Level != "" {
-			result, _ = sjson.SetBytes(result, "generationConfig.thinkingConfig.thinkingLevel", string(config.Level))
+			tcRaw, _ = sjson.SetBytes(tcRaw, "thinkingLevel", string(config.Level))
 		}
-		return applyGeminiIncludeThoughts(result, body), nil
+		tcRaw = applyGeminiIncludeThoughts(tcRaw, body)
+		return setGeminiThinkingConfigIfChanged(body, original, tcRaw), nil
 	}
 
 	// Only handle ModeLevel - budget conversion should be done by upper layer
@@ -145,38 +158,74 @@ func (a *Applier) applyLevelFormat(body []byte, config thinking.ThinkingConfig) 
 		return body, nil
 	}
 
-	level := string(config.Level)
-	result, _ = sjson.SetBytes(result, "generationConfig.thinkingConfig.thinkingLevel", level)
-	return applyGeminiIncludeThoughts(result, body), nil
+	tcRaw, _ = sjson.SetBytes(tcRaw, "thinkingLevel", string(config.Level))
+	tcRaw = applyGeminiIncludeThoughts(tcRaw, body)
+	return setGeminiThinkingConfigIfChanged(body, original, tcRaw), nil
 }
 
 func (a *Applier) applyBudgetFormat(body []byte, config thinking.ThinkingConfig) ([]byte, error) {
-	// Remove conflicting fields to avoid both thinkingLevel and thinkingBudget in output
-	result, _ := sjson.DeleteBytes(body, "generationConfig.thinkingConfig.thinkingLevel")
-	result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig.thinking_level")
-	result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig.thinking_budget")
-	// Normalize includeThoughts field name and retain only documented booleans.
-	result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig.includeThoughts")
-	result, _ = sjson.DeleteBytes(result, "generationConfig.thinkingConfig.include_thoughts")
+	tcRaw, writable := thinkingConfigRaw(body)
+	if !writable {
+		return body, nil
+	}
+	original := append([]byte(nil), tcRaw...)
 
-	budget := config.Budget
-	result, _ = sjson.SetBytes(result, "generationConfig.thinkingConfig.thinkingBudget", budget)
-	return applyGeminiIncludeThoughts(result, body), nil
+	// Remove conflicting fields to avoid both thinkingLevel and thinkingBudget in output.
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "thinkingLevel")
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "thinking_level")
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "thinking_budget")
+	// Normalize includeThoughts field name and retain only documented booleans.
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "includeThoughts")
+	tcRaw, _ = sjson.DeleteBytes(tcRaw, "include_thoughts")
+
+	tcRaw, _ = sjson.SetBytes(tcRaw, "thinkingBudget", config.Budget)
+	tcRaw = applyGeminiIncludeThoughts(tcRaw, body)
+	return setGeminiThinkingConfigIfChanged(body, original, tcRaw), nil
 }
 
-func applyGeminiIncludeThoughts(result, original []byte) []byte {
+// thinkingConfigRaw returns the raw JSON of generationConfig.thinkingConfig, or
+// an empty object when absent, null, or scalar (sjson promotes those to an
+// object when a child key is set). writable is false only for array-valued
+// thinkingConfig, which sjson rejects; the caller must then leave the body
+// untouched to match sjson's error-on-array behavior.
+func thinkingConfigRaw(body []byte) (raw []byte, writable bool) {
+	return thinking.ObjectSubtreeRaw(body, "generationConfig.thinkingConfig")
+}
+
+// setGeminiThinkingConfig replaces (or creates) generationConfig.thinkingConfig
+// in a single full-body pass.
+func setGeminiThinkingConfig(body, tcRaw []byte) []byte {
+	return thinking.SetObjectSubtreeRaw(body, "generationConfig.thinkingConfig", tcRaw)
+}
+
+// setGeminiThinkingConfigIfChanged replaces generationConfig.thinkingConfig only
+// when the subtree actually changed. When nothing was written (e.g. ModeNone
+// with no level and no includeThoughts), the original body is returned untouched
+// so an absent thinkingConfig is not created and null/scalar values are not
+// promoted, matching the legacy per-path sjson behaviour.
+func setGeminiThinkingConfigIfChanged(body, original, tcRaw []byte) []byte {
+	if bytes.Equal(original, tcRaw) {
+		return body
+	}
+	return setGeminiThinkingConfig(body, tcRaw)
+}
+
+// applyGeminiIncludeThoughts restores an explicit includeThoughts boolean from
+// the original body onto the thinkingConfig subtree doc. The field name is
+// normalized to camelCase and only documented boolean values are retained.
+func applyGeminiIncludeThoughts(tcRaw, original []byte) []byte {
 	for _, path := range []string{
 		"generationConfig.thinkingConfig.includeThoughts",
 		"generationConfig.thinkingConfig.include_thoughts",
 	} {
 		switch value := gjson.GetBytes(original, path); value.Type {
 		case gjson.True:
-			result, _ = sjson.SetBytes(result, "generationConfig.thinkingConfig.includeThoughts", true)
-			return result
+			tcRaw, _ = sjson.SetBytes(tcRaw, "includeThoughts", true)
+			return tcRaw
 		case gjson.False:
-			result, _ = sjson.SetBytes(result, "generationConfig.thinkingConfig.includeThoughts", false)
-			return result
+			tcRaw, _ = sjson.SetBytes(tcRaw, "includeThoughts", false)
+			return tcRaw
 		}
 	}
-	return result
+	return tcRaw
 }

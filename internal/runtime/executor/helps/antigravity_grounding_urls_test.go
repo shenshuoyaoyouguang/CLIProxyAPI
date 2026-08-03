@@ -53,7 +53,7 @@ func TestResolveAntigravityGroundingURLsResolvesVertexRedirects(t *testing.T) {
 		}
 	}`)
 
-	output := ResolveAntigravityGroundingURLs(ctx, nil, nil, input)
+	output := ResolveAntigravityGroundingURLs(ctx, nil, nil, input, NewAntigravityGroundingURLCache())
 	if !sawRedirectRequest {
 		t.Fatal("expected resolver to request the vertex redirect")
 	}

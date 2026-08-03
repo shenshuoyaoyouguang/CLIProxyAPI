@@ -475,16 +475,17 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		auth.Status = StatusActive
 	}
 	auth.UpdatedAt = now
-	if errPersist := m.persist(ctx, auth); errPersist != nil {
-		m.mu.Unlock()
-		return nil, nil, errPersist
-	}
 	snapshot = auth.Clone()
 	if trackCooldownState {
 		cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
 		cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
 	}
 	m.mu.Unlock()
+
+	// Persist outside the global lock: store.Save can be Postgres network I/O.
+	if errPersist := m.persist(ctx, snapshot); errPersist != nil {
+		return nil, nil, errPersist
+	}
 
 	for _, modelKey := range models {
 		registry.GetGlobalRegistry().ClearModelQuotaExceeded(authID, modelKey)
@@ -549,6 +550,48 @@ func (m *Manager) persistCooldownStatesToLocked(ctx context.Context, store Coold
 		return false
 	}
 	return ctx.Err() == nil
+}
+
+// persistAuthCooldownState persists cooldown state for a single auth instead of
+// the full snapshot, keeping request-completion persistence bounded to one auth.
+// It acquires configCooldownMu so writes serialize with store transitions, and
+// falls back to the full snapshot for stores without per-auth support.
+func (m *Manager) persistAuthCooldownState(ctx context.Context, authID string) {
+	if authID == "" {
+		return
+	}
+	m.configCooldownMu.Lock()
+	defer m.configCooldownMu.Unlock()
+
+	m.mu.RLock()
+	store := m.cooldownStore
+	var authSnapshot *Auth
+	var records []CooldownStateRecord
+	if store != nil {
+		if auth := m.auths[authID]; auth != nil {
+			authSnapshot = auth.Clone()
+			records = m.cooldownStateRecordsForAuthLocked(authSnapshot, time.Now())
+		}
+	}
+	m.mu.RUnlock()
+	if store == nil {
+		return
+	}
+	if authSnapshot == nil {
+		// The auth is no longer registered. A per-auth write cannot address its
+		// cooldown file anymore (the auth's FileName/path attributes are gone),
+		// so fall back to the full snapshot save, which sweeps the stale file.
+		m.persistCooldownStatesLocked(ctx)
+		return
+	}
+
+	if perAuth, ok := store.(CooldownStateStorePerAuth); ok && perAuth != nil {
+		if errSave := perAuth.SaveAuth(ctx, authSnapshot, records); errSave != nil {
+			logEntryWithRequestID(ctx).Warnf("failed to persist cooldown state: %v", errSave)
+		}
+		return
+	}
+	m.persistCooldownStatesLocked(ctx)
 }
 
 func (m *Manager) cooldownStateRecordsSnapshot() []CooldownStateRecord {
@@ -752,10 +795,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 					statusCode := statusCodeFromResult(result.Error)
 					if isModelSupportResultError(result.Error) {
-						next := now.Add(12 * time.Hour)
-						state.NextRetryAfter = next
-						suspendReason = "model_not_supported"
-						shouldSuspendModel = true
+						if disableCooling {
+							state.NextRetryAfter = time.Time{}
+						} else {
+							next := now.Add(12 * time.Hour)
+							state.NextRetryAfter = next
+							suspendReason = "model_not_supported"
+							shouldSuspendModel = true
+						}
 					} else if isCloudflareChallengeResultError(result.Error) {
 						next, backoffLevel := nextCloudflareCooldown(state.Quota.BackoffLevel, disableCooling, now)
 						state.NextRetryAfter = next
@@ -851,7 +898,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
@@ -859,11 +905,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 	m.mu.Unlock()
+	if authSnapshot != nil {
+		// Persist outside the global lock: store.Save can be Postgres network I/O.
+		_ = m.persist(ctx, authSnapshot)
+	}
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
 	}
 	if authSnapshot != nil && cooldownStateChanged {
-		m.persistCooldownStates(context.Background())
+		m.persistAuthCooldownState(context.Background(), result.AuthID)
 	}
 
 	if clearModelQuota && result.Model != "" {
@@ -918,10 +968,13 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 		} else {
 			auth.Failed++
 		}
-		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
 	}
 	m.mu.Unlock()
+	if authSnapshot != nil {
+		// Persist outside the global lock: store.Save can be Postgres network I/O.
+		_ = m.persist(ctx, authSnapshot)
+	}
 
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)

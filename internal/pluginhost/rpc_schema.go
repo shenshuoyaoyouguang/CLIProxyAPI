@@ -40,6 +40,7 @@ type rpcCapabilities struct {
 	ResponseInterceptor           bool                         `json:"response_interceptor"`
 	StreamChunkInterceptor        bool                         `json:"response_stream_interceptor"`
 	ThinkingApplier               bool                         `json:"thinking_applier"`
+	ThinkingExtractor             bool                         `json:"thinking_extractor"`
 	UsagePlugin                   bool                         `json:"usage_plugin"`
 	CommandLinePlugin             bool                         `json:"command_line_plugin"`
 	ManagementAPI                 bool                         `json:"management_api"`
@@ -115,6 +116,11 @@ type rpcThinkingApplyRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
+type rpcThinkingExtractRequest struct {
+	pluginapi.ThinkingExtractRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 type rpcManagementRequest struct {
 	pluginapi.ManagementRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
@@ -151,6 +157,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		ResponseInterceptor:           caps.ResponseInterceptor != nil,
 		StreamChunkInterceptor:        caps.StreamChunkInterceptor != nil,
 		ThinkingApplier:               caps.ThinkingApplier != nil,
+		ThinkingExtractor:             caps.ThinkingExtractor != nil,
 		UsagePlugin:                   caps.UsagePlugin != nil,
 		CommandLinePlugin:             caps.CommandLinePlugin != nil,
 		ManagementAPI:                 caps.ManagementAPI != nil,

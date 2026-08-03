@@ -499,6 +499,61 @@ type FunctionCallGroup struct {
 	CallNames       []string // ordered function call names for backfilling empty response names
 }
 
+// matchGroupResponsesByName matches functionResponses from collected in
+// CallNames order. Exact functionResponse.name matches are preferred; responses
+// with an empty name act as wildcards matched in occurrence order as a
+// fallback. Returns a matched slice aligned with CallNames order; if any
+// CallName fails to match a response, nil and the original collected are
+// returned. This avoids the mis-association and dropping of the previous
+// FIFO-by-count implementation when response order/count disagrees with calls.
+func matchGroupResponsesByName(collected []gjson.Result, callNames []string) (matched []gjson.Result, remaining []gjson.Result) {
+	if len(callNames) == 0 {
+		return nil, collected
+	}
+	used := make([]bool, len(collected))
+	matched = make([]gjson.Result, 0, len(callNames))
+	for _, callName := range callNames {
+		found := false
+		// First pass: exact name match
+		for i, resp := range collected {
+			if used[i] {
+				continue
+			}
+			if resp.Get("functionResponse.name").String() == callName {
+				matched = append(matched, resp)
+				used[i] = true
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		// Second pass: empty-name wildcard (fallback in occurrence order)
+		for i, resp := range collected {
+			if used[i] {
+				continue
+			}
+			if strings.TrimSpace(resp.Get("functionResponse.name").String()) == "" {
+				matched = append(matched, resp)
+				used[i] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, collected
+		}
+	}
+	remaining = make([]gjson.Result, 0, len(collected)-len(matched))
+	for i, resp := range collected {
+		if !used[i] {
+			remaining = append(remaining, resp)
+		}
+	}
+	return matched, remaining
+}
+
 // parseFunctionResponseRaw attempts to normalize a function response part into a JSON object string.
 // Falls back to a minimal "functionResponse" object when parsing fails.
 // fallbackName is used when the response's own name is empty.
@@ -558,8 +613,10 @@ func fixCLIToolResponse(input string) (string, error) {
 	// Extract the contents array which contains the conversation messages
 	contents := parsed.Get("request.contents")
 	if !contents.Exists() {
-		// log.Debugf(input)
-		return input, fmt.Errorf("contents not found in input")
+		// No contents to fix up (e.g. a request carrying only
+		// system_instruction); pass through unchanged. The previous error made
+		// the caller return an empty request body, failing the request.
+		return input, nil
 	}
 
 	needsGrouping := false
@@ -620,16 +677,17 @@ func fixCLIToolResponse(input string) (string, error) {
 		if len(responsePartsInThisContent) > 0 {
 			collectedResponses = append(collectedResponses, responsePartsInThisContent...)
 
-			// Check if pending groups can be satisfied (FIFO: oldest group first)
-			for len(pendingGroups) > 0 && len(collectedResponses) >= pendingGroups[0].ResponsesNeeded {
-				group := pendingGroups[0]
+			// Match pending groups by functionResponse.name (empty name acts as
+			// a wildcard) instead of slicing by count, which could associate a
+			// response with the wrong call.
+			for len(pendingGroups) > 0 {
+				matched, remaining := matchGroupResponsesByName(collectedResponses, pendingGroups[0].CallNames)
+				if matched == nil {
+					break // wait for more responses
+				}
+				appendFunctionResponses(matched, pendingGroups[0].CallNames)
+				collectedResponses = remaining
 				pendingGroups = pendingGroups[1:]
-
-				// Take the needed responses for this group
-				groupResponses := collectedResponses[:group.ResponsesNeeded]
-				collectedResponses = collectedResponses[group.ResponsesNeeded:]
-
-				appendFunctionResponses(groupResponses, group.CallNames)
 			}
 
 			return true // Skip adding this content, responses are merged
@@ -680,13 +738,14 @@ func fixCLIToolResponse(input string) (string, error) {
 	})
 
 	// Handle any remaining pending groups with remaining responses
-	for _, group := range pendingGroups {
-		if len(collectedResponses) >= group.ResponsesNeeded {
-			groupResponses := collectedResponses[:group.ResponsesNeeded]
-			collectedResponses = collectedResponses[group.ResponsesNeeded:]
-
-			appendFunctionResponses(groupResponses, group.CallNames)
+	for len(pendingGroups) > 0 {
+		matched, remaining := matchGroupResponsesByName(collectedResponses, pendingGroups[0].CallNames)
+		if matched == nil {
+			break
 		}
+		appendFunctionResponses(matched, pendingGroups[0].CallNames)
+		collectedResponses = remaining
+		pendingGroups = pendingGroups[1:]
 	}
 
 	// Update the original JSON with the new contents

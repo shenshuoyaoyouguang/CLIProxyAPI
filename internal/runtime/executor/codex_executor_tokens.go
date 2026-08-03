@@ -15,6 +15,16 @@ import (
 	"github.com/tiktoken-go/tokenizer"
 )
 
+const (
+	// Flat token estimates for media parts in countCodexInputTokens. "a"-runs
+	// approximate token count because single letters are individual tokens in
+	// cl100k/o200k, matching the xai executor's audio estimate convention.
+	codexImageEstimateTokens     = 258
+	codexAudioTokensPerSecond    = 32
+	codexAudioFlatEstimateTokens = 512 // fallback when no audio_duration is present
+	codexVideoEstimateTokens     = 1024
+)
+
 func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
@@ -99,8 +109,27 @@ func countCodexInputTokens(enc tokenizer.Codec, body []byte) (int64, error) {
 					parts := content.Array()
 					for j := range parts {
 						part := parts[j]
-						if text := strings.TrimSpace(part.Get("text").String()); text != "" {
-							segments = append(segments, text)
+						switch part.Get("type").String() {
+						case "input_image":
+							// Media payloads are counted with flat estimates; the
+							// base64 text must not be tokenized as-is.
+							segments = append(segments, strings.Repeat("a", codexImageEstimateTokens))
+						case "input_audio":
+							if duration := part.Get("audio_duration").Float(); duration > 0 {
+								segments = append(segments, strings.Repeat("a", int(duration*codexAudioTokensPerSecond)))
+							} else {
+								segments = append(segments, strings.Repeat("a", codexAudioFlatEstimateTokens))
+							}
+						case "input_video":
+							segments = append(segments, strings.Repeat("a", codexVideoEstimateTokens))
+						case "refusal", "reasoning":
+							if text := strings.TrimSpace(part.Get("text").String()); text != "" {
+								segments = append(segments, text)
+							}
+						default:
+							if text := strings.TrimSpace(part.Get("text").String()); text != "" {
+								segments = append(segments, text)
+							}
 						}
 					}
 				}

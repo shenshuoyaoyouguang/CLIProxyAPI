@@ -49,7 +49,7 @@ func cloneHeaders(headers map[string][]string) map[string][]string {
 }
 
 func (l *FileRequestLogger) forwardRequestLogToHome(ctx context.Context, headers map[string][]string, requestID string, logText string) error {
-	if l == nil || !l.homeEnabled {
+	if l == nil || !l.homeEnabled.Load() {
 		return nil
 	}
 	client := currentHomeRequestLogClient()
@@ -77,7 +77,7 @@ func (l *FileRequestLogger) SetHomeEnabled(enabled bool) {
 	if l == nil {
 		return
 	}
-	l.homeEnabled = enabled
+	l.homeEnabled.Store(enabled)
 }
 
 type homeStreamingLogWriter struct {
@@ -91,16 +91,17 @@ type homeStreamingLogWriter struct {
 	chunkChan chan []byte
 	doneChan  chan struct{}
 
-	responseStatus   int
-	statusWritten    bool
-	responseHeaders  map[string][]string
-	responseBody     bytes.Buffer
-	apiRequest       []byte
-	apiResponse      []byte
-	apiWebsocketTime []byte
-	requestID        string
-	apiResponseTS    time.Time
-	firstChunkTS     time.Time
+	responseStatus    int
+	statusWritten     bool
+	responseHeaders   map[string][]string
+	responseBody      bytes.Buffer
+	responseTruncated bool
+	apiRequest        []byte
+	apiResponse       []byte
+	apiWebsocketTime  []byte
+	requestID         string
+	apiResponseTS     time.Time
+	firstChunkTS      time.Time
 }
 
 func newHomeStreamingLogWriter(url, method string, headers map[string][]string, body []byte, requestID string) *homeStreamingLogWriter {
@@ -126,10 +127,30 @@ func newHomeStreamingLogWriter(url, method string, headers map[string][]string, 
 	return writer
 }
 
+// maxHomeStreamingLogBodyBytes caps the buffered streaming body forwarded to
+// Home; without it, large/concurrent SSE streams are fully accumulated in
+// memory on top of the bytes already sent to the client.
+const maxHomeStreamingLogBodyBytes = 16 << 20 // 16 MiB
+
 func (w *homeStreamingLogWriter) asyncWriter() {
 	defer close(w.doneChan)
 	for chunk := range w.chunkChan {
 		if len(chunk) == 0 {
+			continue
+		}
+		if w.responseTruncated {
+			continue
+		}
+		remaining := maxHomeStreamingLogBodyBytes - w.responseBody.Len()
+		if remaining <= 0 {
+			w.responseBody.WriteString("[RESPONSE BODY TRUNCATED]")
+			w.responseTruncated = true
+			continue
+		}
+		if len(chunk) > remaining {
+			w.responseBody.Write(chunk[:remaining])
+			w.responseBody.WriteString("[RESPONSE BODY TRUNCATED]")
+			w.responseTruncated = true
 			continue
 		}
 		_, _ = w.responseBody.Write(chunk)

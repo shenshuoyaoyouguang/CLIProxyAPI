@@ -1,6 +1,7 @@
 # Binaries
 cli-proxy-api
 *.exe
+*.exe.sha256
 
 # Configuration
 config.yaml
@@ -51,6 +52,7 @@ GEMINI.md
 .bmad/*
 _bmad/*
 _bmad-output/*
+.omc/*
 
 # macOS
 .DS_Store

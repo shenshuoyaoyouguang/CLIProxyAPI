@@ -839,8 +839,38 @@ func TestGetPluginSyncCancellationInterruptsRead(t *testing.T) {
 	if !errors.Is(errSync, context.Canceled) {
 		t.Fatalf("GetPluginSync() error = %v, want context.Canceled", errSync)
 	}
+	// Latency assertion is load-bearing: a cancel that only surfaces after
+	// homePluginSyncOperationTimeout (2m) still returns context.Canceled.
 	if elapsed := time.Since(startedAt); elapsed > time.Second {
 		t.Fatalf("GetPluginSync() cancellation took %s", elapsed)
+	}
+	if count := commands.CountKey(redisKeyPluginSync); count != 1 {
+		t.Fatalf("plugin sync command count = %d, want 1", count)
+	}
+}
+
+func TestGetPluginSyncTimeoutInterruptsRead(t *testing.T) {
+	release := make(chan struct{})
+	client, commands := newRedisCommandTestClient(t, func(args []string) string {
+		if len(args) >= 2 && args[1] == redisKeyPluginSync {
+			<-release
+		}
+		return "-ERR timeout\r\n"
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	_, errSync := client.GetPluginSync(ctx, pluginstore.PluginSyncRequest{
+		SchemaVersion: pluginstore.PluginSyncSchemaVersion, GOOS: "linux", GOARCH: "amd64",
+	})
+	close(release)
+	if !errors.Is(errSync, context.DeadlineExceeded) {
+		t.Fatalf("GetPluginSync() error = %v, want context.DeadlineExceeded", errSync)
+	}
+	// Latency assertion is load-bearing: a deadline that only surfaces after
+	// homePluginSyncOperationTimeout (2m) still returns context.DeadlineExceeded.
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("GetPluginSync() timeout took %s", elapsed)
 	}
 	if count := commands.CountKey(redisKeyPluginSync); count != 1 {
 		t.Fatalf("plugin sync command count = %d, want 1", count)

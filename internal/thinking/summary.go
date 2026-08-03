@@ -185,25 +185,29 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 		if enabled {
 			value = "summarized"
 		}
+		if display := gjson.GetBytes(body, "thinking.display"); display.Type == gjson.String && display.String() == value {
+			return body
+		}
 		body, _ = sjson.SetBytes(body, "thinking.display", value)
 	case "gemini":
+		// Skip when the normalized state is already present: the applier writes
+		// includeThoughts as part of Apply, and re-writing it here would re-parse
+		// the whole body for nothing (review A3).
+		if includeThoughts := gjson.GetBytes(body, "generationConfig.thinkingConfig.includeThoughts"); (includeThoughts.Type == gjson.True && enabled) || (includeThoughts.Type == gjson.False && !enabled) {
+			if !legacyGeminiIncludeThoughtsPresent(body, false) {
+				return body
+			}
+		}
 		body, _ = sjson.SetBytes(body, "generationConfig.thinkingConfig.includeThoughts", enabled)
-		for _, path := range []string{
-			"generationConfig.thinkingConfig.include_thoughts",
-			"generation_config.thinking_config.include_thoughts",
-			"generation_config.thinking_config.includeThoughts",
-		} {
-			body, _ = sjson.DeleteBytes(body, path)
-		}
+		body = deleteLegacyGeminiIncludeThoughts(body, false)
 	case "antigravity":
-		body, _ = sjson.SetBytes(body, "request.generationConfig.thinkingConfig.includeThoughts", enabled)
-		for _, path := range []string{
-			"request.generationConfig.thinkingConfig.include_thoughts",
-			"request.generationConfig.thinking_config.include_thoughts",
-			"request.generationConfig.thinking_config.includeThoughts",
-		} {
-			body, _ = sjson.DeleteBytes(body, path)
+		if includeThoughts := gjson.GetBytes(body, "request.generationConfig.thinkingConfig.includeThoughts"); (includeThoughts.Type == gjson.True && enabled) || (includeThoughts.Type == gjson.False && !enabled) {
+			if !legacyGeminiIncludeThoughtsPresent(body, true) {
+				return body
+			}
 		}
+		body, _ = sjson.SetBytes(body, "request.generationConfig.thinkingConfig.includeThoughts", enabled)
+		body = deleteLegacyGeminiIncludeThoughts(body, true)
 	case "interactions":
 		// Google Interactions only accepts auto or none. OpenAI's concise and
 		// detailed selectors therefore collapse to the supported enabled value.
@@ -211,21 +215,71 @@ func applySummaryConfigForProvider(body []byte, format, model, provider string, 
 		if enabled {
 			value = "auto"
 		}
+		if current := gjson.GetBytes(body, "generation_config.thinking_summaries"); current.Type == gjson.String && current.String() == value && !gjson.GetBytes(body, "generation_config.thinkingSummaries").Exists() {
+			return body
+		}
 		body, _ = sjson.SetBytes(body, "generation_config.thinking_summaries", value)
 		body, _ = sjson.DeleteBytes(body, "generation_config.thinkingSummaries")
 	case "openai-response", "codex":
 		if enabled {
-			body, _ = sjson.SetBytes(body, "reasoning.summary", normalizedSummaryDetail(config.Detail))
+			target := normalizedSummaryDetail(config.Detail)
+			if gjson.GetBytes(body, "reasoning.summary").String() == target && !gjson.GetBytes(body, "reasoning.generate_summary").Exists() {
+				return body
+			}
+			body, _ = sjson.SetBytes(body, "reasoning.summary", target)
 			body, _ = sjson.DeleteBytes(body, "reasoning.generate_summary")
 			break
 		}
 		// Omitting the field is the documented way to disable summaries; an
 		// explicit null is not accepted by every Responses-compatible backend.
+		if !gjson.GetBytes(body, "reasoning.summary").Exists() && !gjson.GetBytes(body, "reasoning.generate_summary").Exists() {
+			if reasoning := gjson.GetBytes(body, "reasoning"); !reasoning.IsObject() || len(reasoning.Map()) != 0 {
+				return body
+			}
+		}
 		body, _ = sjson.DeleteBytes(body, "reasoning.summary")
 		body, _ = sjson.DeleteBytes(body, "reasoning.generate_summary")
 		if reasoning := gjson.GetBytes(body, "reasoning"); reasoning.IsObject() && len(reasoning.Map()) == 0 {
 			body, _ = sjson.DeleteBytes(body, "reasoning")
 		}
+	}
+	return body
+}
+
+// geminiLegacyIncludeThoughtsPaths returns the exact legacy includeThoughts
+// spellings this package normalizes away, matching the original per-path sjson
+// deletes so the skip checks and the normalization never diverge.
+func geminiLegacyIncludeThoughtsPaths(antigravity bool) []string {
+	if antigravity {
+		return []string{
+			"request.generationConfig.thinkingConfig.include_thoughts",
+			"request.generationConfig.thinking_config.include_thoughts",
+			"request.generationConfig.thinking_config.includeThoughts",
+		}
+	}
+	return []string{
+		"generationConfig.thinkingConfig.include_thoughts",
+		"generation_config.thinking_config.include_thoughts",
+		"generation_config.thinking_config.includeThoughts",
+	}
+}
+
+// legacyGeminiIncludeThoughtsPresent reports whether any legacy includeThoughts
+// spelling still exists in the body.
+func legacyGeminiIncludeThoughtsPresent(body []byte, antigravity bool) bool {
+	for _, path := range geminiLegacyIncludeThoughtsPaths(antigravity) {
+		if gjson.GetBytes(body, path).Exists() {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteLegacyGeminiIncludeThoughts removes every legacy includeThoughts
+// spelling from the body.
+func deleteLegacyGeminiIncludeThoughts(body []byte, antigravity bool) []byte {
+	for _, path := range geminiLegacyIncludeThoughtsPaths(antigravity) {
+		body, _ = sjson.DeleteBytes(body, path)
 	}
 	return body
 }

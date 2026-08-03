@@ -63,6 +63,26 @@ func formatLogFieldValue(key string, value any) string {
 	return fmt.Sprint(value)
 }
 
+// sanitizeLogText escapes control characters (except tab) so a request-derived
+// value — e.g. a percent-decoded URL path containing %0A — cannot inject fake
+// log lines. Applied at the formatter so every output (console, file, Home)
+// is covered.
+func sanitizeLogText(text string) string {
+	if !strings.ContainsFunc(text, func(r rune) bool { return r < 0x20 && r != '\t' }) {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		if r < 0x20 && r != '\t' {
+			b.WriteString(fmt.Sprintf("\\x%02x", r))
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // Format renders a single log entry with custom formatting.
 func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	var buffer *bytes.Buffer
@@ -73,7 +93,7 @@ func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	}
 
 	timestamp := entry.Time.Format("2006-01-02 15:04:05")
-	message := strings.TrimRight(entry.Message, "\r\n")
+	message := sanitizeLogText(strings.TrimRight(entry.Message, "\r\n"))
 
 	reqID := "--------"
 	if id, ok := entry.Data["request_id"].(string); ok && id != "" {

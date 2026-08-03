@@ -193,13 +193,18 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							}
 						case "image_url":
 							imageURL := item.Get("image_url.url").String()
-							if len(imageURL) > 5 {
+							// Only data: URLs can be inlined; the previous code
+							// unconditionally stripped a "data:" prefix, silently
+							// dropping https:// image URLs.
+							if strings.HasPrefix(imageURL, "data:") && len(imageURL) > 5 {
 								pieces := strings.SplitN(imageURL[5:], ";", 2)
 								if len(pieces) == 2 && len(pieces[1]) > 7 {
-									part := antigravityOpenAIInlineDataPart(pieces[0], pieces[1][7:], false)
-									part, _ = sjson.SetBytes(part, "thoughtSignature", antigravityFunctionThoughtSignature)
-									partItems = append(partItems, part)
+									// Image parts must not carry the function-call
+									// thought-signature sentinel.
+									partItems = append(partItems, antigravityOpenAIInlineDataPart(pieces[0], pieces[1][7:], false))
 								}
+							} else if imageURL != "" {
+								log.Warn("skipping non-data image_url: Antigravity requires inline base64 images")
 							}
 						case "file":
 							filename := item.Get("file.filename").String()
@@ -238,13 +243,18 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							}
 						case "image_url":
 							imageURL := item.Get("image_url.url").String()
-							if len(imageURL) > 5 {
+							// Only data: URLs can be inlined; the previous code
+							// unconditionally stripped a "data:" prefix, silently
+							// dropping https:// image URLs.
+							if strings.HasPrefix(imageURL, "data:") && len(imageURL) > 5 {
 								pieces := strings.SplitN(imageURL[5:], ";", 2)
 								if len(pieces) == 2 && len(pieces[1]) > 7 {
-									part := antigravityOpenAIInlineDataPart(pieces[0], pieces[1][7:], false)
-									part, _ = sjson.SetBytes(part, "thoughtSignature", antigravityFunctionThoughtSignature)
-									partItems = append(partItems, part)
+									// Image parts must not carry the function-call
+									// thought-signature sentinel.
+									partItems = append(partItems, antigravityOpenAIInlineDataPart(pieces[0], pieces[1][7:], false))
 								}
+							} else if imageURL != "" {
+								log.Warn("skipping non-data image_url: Antigravity requires inline base64 images")
 							}
 						}
 					}
@@ -296,7 +306,10 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 								if parsed.Type == gjson.JSON {
 									part, _ = sjson.SetRawBytes(part, "functionResponse.response.result", []byte(parsed.Raw))
 								} else {
-									part, _ = sjson.SetBytes(part, "functionResponse.response.result", response)
+									// String-typed tool results are stored raw with
+									// surrounding JSON quotes; re-encoding them would
+									// leave literal quote characters in the result.
+									part, _ = sjson.SetBytes(part, "functionResponse.response.result", parsed.String())
 								}
 							}
 							responseParts = append(responseParts, part)

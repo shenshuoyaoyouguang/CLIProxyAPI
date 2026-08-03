@@ -542,6 +542,33 @@ func (l *FileRequestLogger) formatLogContent(url, method string, headers map[str
 	return content.String()
 }
 
+// maxDecompressedResponseBytesForLog caps how many bytes a single decompressed
+// response may expand to for log capture. Mirrors the request-log cap (1 MiB).
+const maxDecompressedResponseBytesForLog int64 = 1 << 20
+
+// decompressBounded reads at most limit+1 bytes so an oversized result can be
+// detected without allocating unbounded memory for a compression bomb.
+func decompressBounded(reader io.Reader, limit int64) ([]byte, bool, error) {
+	decoded, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(decoded)) > limit {
+		return decoded[:limit], true, nil
+	}
+	return decoded, false, nil
+}
+
+// appendDecompressionTruncatedMarker marks a response body that was capped by
+// the decompression limit so readers know the logged body is incomplete.
+func appendDecompressionTruncatedMarker(decoded []byte) []byte {
+	const marker = "\n[DECOMPRESSED RESPONSE BODY TRUNCATED: capped at 1 MiB]"
+	if len(decoded) > 0 && decoded[len(decoded)-1] != '\n' {
+		return append(decoded, marker...)
+	}
+	return append(decoded, marker[1:]...)
+}
+
 // decompressResponse decompresses response data based on Content-Encoding header.
 //
 // Parameters:
@@ -550,10 +577,11 @@ func (l *FileRequestLogger) formatLogContent(url, method string, headers map[str
 //
 // Returns:
 //   - []byte: The decompressed response data
+//   - bool: Whether the decompressed data was truncated at the cap
 //   - error: An error if decompression fails, nil otherwise
-func (l *FileRequestLogger) decompressResponse(responseHeaders map[string][]string, response []byte) ([]byte, error) {
+func (l *FileRequestLogger) decompressResponse(responseHeaders map[string][]string, response []byte) ([]byte, bool, error) {
 	if responseHeaders == nil || len(response) == 0 {
-		return response, nil
+		return response, false, nil
 	}
 
 	// Check Content-Encoding header
@@ -576,7 +604,7 @@ func (l *FileRequestLogger) decompressResponse(responseHeaders map[string][]stri
 		return l.decompressZstd(response)
 	default:
 		// No compression or unsupported compression
-		return response, nil
+		return response, false, nil
 	}
 }
 
@@ -588,10 +616,10 @@ func (l *FileRequestLogger) decompressResponse(responseHeaders map[string][]stri
 // Returns:
 //   - []byte: The decompressed data
 //   - error: An error if decompression fails, nil otherwise
-func (l *FileRequestLogger) decompressGzip(data []byte) ([]byte, error) {
+func (l *FileRequestLogger) decompressGzip(data []byte) ([]byte, bool, error) {
 	reader, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+		return nil, false, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
 	defer func() {
 		if errClose := reader.Close(); errClose != nil {
@@ -599,12 +627,12 @@ func (l *FileRequestLogger) decompressGzip(data []byte) ([]byte, error) {
 		}
 	}()
 
-	decompressed, err := io.ReadAll(reader)
+	decompressed, truncated, err := decompressBounded(reader, maxDecompressedResponseBytesForLog)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decompress gzip data: %w", err)
+		return nil, false, fmt.Errorf("failed to decompress gzip data: %w", err)
 	}
 
-	return decompressed, nil
+	return decompressed, truncated, nil
 }
 
 // decompressDeflate decompresses deflate-encoded data.
@@ -615,7 +643,7 @@ func (l *FileRequestLogger) decompressGzip(data []byte) ([]byte, error) {
 // Returns:
 //   - []byte: The decompressed data
 //   - error: An error if decompression fails, nil otherwise
-func (l *FileRequestLogger) decompressDeflate(data []byte) ([]byte, error) {
+func (l *FileRequestLogger) decompressDeflate(data []byte) ([]byte, bool, error) {
 	reader := flate.NewReader(bytes.NewReader(data))
 	defer func() {
 		if errClose := reader.Close(); errClose != nil {
@@ -623,12 +651,12 @@ func (l *FileRequestLogger) decompressDeflate(data []byte) ([]byte, error) {
 		}
 	}()
 
-	decompressed, err := io.ReadAll(reader)
+	decompressed, truncated, err := decompressBounded(reader, maxDecompressedResponseBytesForLog)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decompress deflate data: %w", err)
+		return nil, false, fmt.Errorf("failed to decompress deflate data: %w", err)
 	}
 
-	return decompressed, nil
+	return decompressed, truncated, nil
 }
 
 // decompressBrotli decompresses brotli-encoded data.
@@ -639,15 +667,15 @@ func (l *FileRequestLogger) decompressDeflate(data []byte) ([]byte, error) {
 // Returns:
 //   - []byte: The decompressed data
 //   - error: An error if decompression fails, nil otherwise
-func (l *FileRequestLogger) decompressBrotli(data []byte) ([]byte, error) {
+func (l *FileRequestLogger) decompressBrotli(data []byte) ([]byte, bool, error) {
 	reader := brotli.NewReader(bytes.NewReader(data))
 
-	decompressed, err := io.ReadAll(reader)
+	decompressed, truncated, err := decompressBounded(reader, maxDecompressedResponseBytesForLog)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decompress brotli data: %w", err)
+		return nil, false, fmt.Errorf("failed to decompress brotli data: %w", err)
 	}
 
-	return decompressed, nil
+	return decompressed, truncated, nil
 }
 
 // decompressZstd decompresses zstd-encoded data.
@@ -658,19 +686,19 @@ func (l *FileRequestLogger) decompressBrotli(data []byte) ([]byte, error) {
 // Returns:
 //   - []byte: The decompressed data
 //   - error: An error if decompression fails, nil otherwise
-func (l *FileRequestLogger) decompressZstd(data []byte) ([]byte, error) {
+func (l *FileRequestLogger) decompressZstd(data []byte) ([]byte, bool, error) {
 	decoder, err := zstd.NewReader(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+		return nil, false, fmt.Errorf("failed to create zstd reader: %w", err)
 	}
 	defer decoder.Close()
 
-	decompressed, err := io.ReadAll(decoder)
+	decompressed, truncated, err := decompressBounded(decoder, maxDecompressedResponseBytesForLog)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decompress zstd data: %w", err)
+		return nil, false, fmt.Errorf("failed to decompress zstd data: %w", err)
 	}
 
-	return decompressed, nil
+	return decompressed, truncated, nil
 }
 
 // formatRequestInfo creates the request information section of the log.

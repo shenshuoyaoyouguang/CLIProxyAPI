@@ -247,7 +247,11 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 	}
 
 	usageResult := gjson.GetBytes(rawJSON, "usageMetadata")
-	if usageResult.Exists() && bytes.Contains(rawJSON, []byte(`"finishReason"`)) && !(*param).(*Params).HasFinalEvents {
+	// Trigger on the finishReason field itself, not a byte-substring match of
+	// `"finishReason"` in the same chunk: upstreams may split usage and
+	// finishReason across chunks, and the substring check then never fires and
+	// the stream ends without a terminal message_delta.
+	if gjson.GetBytes(rawJSON, "candidates.0.finishReason").Exists() && !(*param).(*Params).HasFinalEvents {
 		// Only send final events if we have actually output content
 		if (*param).(*Params).HasContent {
 			if (*param).(*Params).ResponseType != 0 {

@@ -205,7 +205,7 @@ func applyCodexTurnMetadataIdentityConfuse(rawTurnMetadata string, state *codexI
 	if state.promptCacheKey != "" && gjson.Get(rawTurnMetadata, "prompt_cache_key").Exists() {
 		updatedTurnMetadata, _ = sjson.Set(updatedTurnMetadata, "prompt_cache_key", state.promptCacheKey)
 	} else if state.promptCacheKey != "" && state.originalPromptCacheKey != "" {
-		updatedTurnMetadata = strings.ReplaceAll(updatedTurnMetadata, state.originalPromptCacheKey, state.promptCacheKey)
+		updatedTurnMetadata = replaceCodexTurnMetadataIdentity(updatedTurnMetadata, state.originalPromptCacheKey, state.promptCacheKey)
 	}
 	if turnID := strings.TrimSpace(gjson.Get(rawTurnMetadata, "turn_id").String()); turnID != "" {
 		updatedTurnMetadata, _ = sjson.Set(updatedTurnMetadata, "turn_id", state.confuseTurnID(turnID))
@@ -214,6 +214,48 @@ func applyCodexTurnMetadataIdentityConfuse(rawTurnMetadata string, state *codexI
 		updatedTurnMetadata, _ = sjson.Set(updatedTurnMetadata, "window_id", state.promptCacheKey+":0")
 	}
 	return updatedTurnMetadata
+}
+
+// codexTurnMetadataIdentityPaths lists the turn metadata fields that may embed the
+// prompt cache key. Rewriting them by path keeps the substitution scoped: a blind
+// whole-document replacement can also hit unrelated substrings (free-form text,
+// model names, hashes) that merely contain the original key.
+var codexTurnMetadataIdentityPaths = []string{
+	"prompt_cache_key",
+	"session_id",
+	"conversation_id",
+	"thread_id",
+	"window_id",
+}
+
+// replaceCodexTurnMetadataIdentity swaps the original prompt cache key for the
+// confused one inside the known identity fields only. Payloads that are not valid
+// JSON keep the previous whole-string behaviour because there is no field
+// structure to target.
+func replaceCodexTurnMetadataIdentity(rawTurnMetadata, original, replacement string) string {
+	if original == "" || replacement == "" || original == replacement {
+		return rawTurnMetadata
+	}
+	if !gjson.Valid(rawTurnMetadata) {
+		return strings.ReplaceAll(rawTurnMetadata, original, replacement)
+	}
+	updated := rawTurnMetadata
+	for _, path := range codexTurnMetadataIdentityPaths {
+		value := gjson.Get(updated, path)
+		if !value.Exists() || value.Type != gjson.String {
+			continue
+		}
+		current := value.String()
+		if !strings.Contains(current, original) {
+			continue
+		}
+		next, errSet := sjson.Set(updated, path, strings.ReplaceAll(current, original, replacement))
+		if errSet != nil {
+			continue
+		}
+		updated = next
+	}
+	return updated
 }
 
 func applyCodexIdentityConfuseResponsePayload(payload []byte, state codexIdentityConfuseState) []byte {

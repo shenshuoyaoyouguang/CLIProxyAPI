@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -176,9 +177,6 @@ func TestCodexReasoningReplayRequiredHomeFailures(t *testing.T) {
 		client *fakeCodexReasoningReplayKVClient
 	}{
 		{name: "get", client: &fakeCodexReasoningReplayKVClient{values: make(map[string][]byte), getErr: errors.New("get failed")}},
-		{name: "expire", client: &fakeCodexReasoningReplayKVClient{values: map[string][]byte{
-			codexReasoningReplayKVKey("gpt-5.4", "session-home"): mustCodexReasoningReplayJSON(t, [][]byte{validCodexReasoningReplayItemForTest(4)}),
-		}, expireErr: errors.New("expire failed")}},
 		{name: "delete", client: &fakeCodexReasoningReplayKVClient{values: make(map[string][]byte), delErr: errors.New("delete failed")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,6 +192,32 @@ func TestCodexReasoningReplayRequiredHomeFailures(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCodexReasoningReplayRequiredHomeExpireFailureReturnsItems pins the
+// degraded read contract: the sliding TTL refresh runs after the items were
+// already fetched, so an expire failure must be logged and ignored instead of
+// failing a request whose replay state is fully available.
+func TestCodexReasoningReplayRequiredHomeExpireFailureReturnsItems(t *testing.T) {
+	ClearCodexReasoningReplayCache()
+	t.Cleanup(ClearCodexReasoningReplayCache)
+	client := newFakeCodexReasoningReplayKVClient()
+	client.expireErr = errors.New("expire failed")
+	key := codexReasoningReplayKVKey("gpt-5.4", "session-home")
+	item := validCodexReasoningReplayItemForTest(4)
+	client.values[key] = mustCodexReasoningReplayJSON(t, [][]byte{item})
+	useFakeCodexReasoningReplayKVClient(t, client, true, nil)
+
+	items, found, errGet := GetCodexReasoningReplayItemsRequired(context.Background(), "gpt-5.4", "session-home")
+	if errGet != nil {
+		t.Fatalf("GetCodexReasoningReplayItemsRequired() error = %v", errGet)
+	}
+	if !found || len(items) != 1 || string(items[0]) != string(item) {
+		t.Fatalf("GetCodexReasoningReplayItemsRequired() = %q, %v, want item, true", items, found)
+	}
+	if client.expireCount != 1 || client.lastExpireTTL != CodexReasoningReplayCacheTTL {
+		t.Fatalf("KVExpire count/ttl = %d/%v, want 1/%v", client.expireCount, client.lastExpireTTL, CodexReasoningReplayCacheTTL)
 	}
 }
 
@@ -302,6 +326,43 @@ func TestCodexReasoningReplayAppendBoundsTurnsPerEntry(t *testing.T) {
 	}
 }
 
+func TestCodexReasoningReplayTrimByteBudget(t *testing.T) {
+	// 257 turns x 2 items x 15 KiB far exceeds the byte budget, so trimming
+	// must strip many turns (about 189). The byte budget is reduced to keep
+	// the test fast while still exercising the many-pass byte path. Regression:
+	// the trim loop bound must not shrink with items, or the loop exits early
+	// (pass count ~171) while still over budget and drops the whole entry (nil)
+	// instead of keeping the newest turns.
+	const byteBudget = 1 << 20
+	bigPayload := strings.Repeat("x", 15*1024)
+	items := make([][]byte, 0, (CodexReasoningReplayCacheMaxTurnsPerEntry+1)*2)
+	for turn := 0; turn <= CodexReasoningReplayCacheMaxTurnsPerEntry; turn++ {
+		items = append(items,
+			[]byte(fmt.Sprintf(`{"type":"%s","id":"turn-%d"}`, CodexReasoningReplayTurnType, turn)),
+			[]byte(`{"type":"reasoning","encrypted_content":"`+bigPayload+`"}`),
+		)
+	}
+
+	trimmed := trimReasoningReplayItems(items, CodexReasoningReplayTurnType, CodexReasoningReplayCacheMaxTurnsPerEntry, byteBudget)
+	if trimmed == nil {
+		t.Fatalf("trimmed = nil, want the newest turns kept within the byte budget")
+	}
+	totalBytes := 0
+	turnCount := 0
+	for index, item := range trimmed {
+		totalBytes += len(item)
+		if index > 0 && gjson.GetBytes(item, "type").String() == CodexReasoningReplayTurnType {
+			turnCount++
+		}
+	}
+	if totalBytes > byteBudget {
+		t.Fatalf("trimmed bytes = %d, want <= %d", totalBytes, byteBudget)
+	}
+	if turnCount > CodexReasoningReplayCacheMaxTurnsPerEntry {
+		t.Fatalf("trimmed turns = %d, want <= %d", turnCount, CodexReasoningReplayCacheMaxTurnsPerEntry)
+	}
+}
+
 func TestCodexReasoningReplayHomeRejectsEmptyScopeWithoutKV(t *testing.T) {
 	client := newFakeCodexReasoningReplayKVClient()
 	useFakeCodexReasoningReplayKVClient(t, client, true, nil)
@@ -357,9 +418,9 @@ func TestCodexReasoningReplayCacheBatchEvictsWhenFull(t *testing.T) {
 		}
 	}
 
-	codexReasoningReplayMu.Lock()
-	gotLen := len(codexReasoningReplayEntries)
-	codexReasoningReplayMu.Unlock()
+	codexStore.mu.Lock()
+	gotLen := len(codexStore.entries)
+	codexStore.mu.Unlock()
 	if gotLen >= CodexReasoningReplayCacheMaxEntries {
 		t.Fatalf("cache entries = %d, want batch eviction below max %d", gotLen, CodexReasoningReplayCacheMaxEntries)
 	}

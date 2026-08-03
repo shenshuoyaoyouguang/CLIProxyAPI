@@ -99,35 +99,40 @@ func ConvertInteractionsResponseToClaudeNonStream(_ context.Context, modelName s
 }
 
 func convertInteractionsEventToClaude(modelName string, rawJSON []byte, st *interactionsToClaudeStreamState) [][]byte {
-	payload := interactionsSSEPayload(rawJSON)
-	if len(payload) == 0 {
-		return nil
+	// A single chunk may carry several data: lines; process each event so none
+	// is silently dropped.
+	var out [][]byte
+	for _, payload := range interactionsSSEPayloads(rawJSON) {
+		if len(payload) == 0 {
+			continue
+		}
+		if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
+			out = append(out, appendClaudeMessageStop(nil, st)...)
+			continue
+		}
+		root := gjson.ParseBytes(payload)
+		if !root.Exists() {
+			continue
+		}
+		switch root.Get("event_type").String() {
+		case "interaction.created":
+			interaction := root.Get("interaction")
+			st.ID = firstNonEmpty(interaction.Get("id").String(), st.ID)
+			st.Model = firstNonEmpty(interaction.Get("model").String(), st.Model, modelName)
+			out = append(out, appendClaudeMessageStart(nil, st)...)
+		case "step.start":
+			out = append(out, interactionsStepStartToClaude(modelName, root, st)...)
+		case "step.delta":
+			out = append(out, interactionsStepDeltaToClaude(modelName, root, st)...)
+		case "step.stop":
+			out = append(out, appendClaudeContentBlockStop(nil, st)...)
+		case "interaction.completed", "finish":
+			out = append(out, appendClaudeMessageDelta(nil, root, st)...)
+		case "done":
+			out = append(out, appendClaudeMessageStop(nil, st)...)
+		}
 	}
-	if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
-		return appendClaudeMessageStop(nil, st)
-	}
-	root := gjson.ParseBytes(payload)
-	if !root.Exists() {
-		return nil
-	}
-	switch root.Get("event_type").String() {
-	case "interaction.created":
-		interaction := root.Get("interaction")
-		st.ID = firstNonEmpty(interaction.Get("id").String(), st.ID)
-		st.Model = firstNonEmpty(interaction.Get("model").String(), st.Model, modelName)
-		return appendClaudeMessageStart(nil, st)
-	case "step.start":
-		return interactionsStepStartToClaude(modelName, root, st)
-	case "step.delta":
-		return interactionsStepDeltaToClaude(modelName, root, st)
-	case "step.stop":
-		return appendClaudeContentBlockStop(nil, st)
-	case "interaction.completed", "finish":
-		return appendClaudeMessageDelta(nil, root, st)
-	case "done":
-		return appendClaudeMessageStop(nil, st)
-	}
-	return nil
+	return out
 }
 
 func interactionsStepStartToClaude(modelName string, root gjson.Result, st *interactionsToClaudeStreamState) [][]byte {
@@ -305,25 +310,28 @@ func setClaudeUsageFromInteractions(out []byte, path string, usage gjson.Result)
 	return out
 }
 
-func interactionsSSEPayload(rawJSON []byte) []byte {
+// interactionsSSEPayloads splits rawJSON into its individual data payloads. A
+// single chunk may carry several data: lines; joining them with newlines (as
+// the previous implementation did) produces invalid JSON that drops all but the
+// first event.
+func interactionsSSEPayloads(rawJSON []byte) [][]byte {
 	trimmed := bytes.TrimSpace(rawJSON)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) {
-		return trimmed
+		return [][]byte{trimmed}
 	}
-	if bytes.HasPrefix(trimmed, []byte("data:")) {
-		return bytes.TrimSpace(trimmed[len("data:"):])
+	if payload, ok := translatorcommon.SSEDataPayload(trimmed); ok {
+		return [][]byte{payload}
 	}
 	var dataLines [][]byte
 	for _, line := range bytes.Split(trimmed, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if bytes.HasPrefix(line, []byte("data:")) {
-			dataLines = append(dataLines, bytes.TrimSpace(line[len("data:"):]))
+		if payload, ok := translatorcommon.SSEDataPayload(line); ok {
+			dataLines = append(dataLines, payload)
 		}
 	}
 	if len(dataLines) > 0 {
-		return bytes.Join(dataLines, []byte("\n"))
+		return dataLines
 	}
-	return trimmed
+	return [][]byte{trimmed}
 }
 
 func interactionsContentTexts(content gjson.Result) []string {

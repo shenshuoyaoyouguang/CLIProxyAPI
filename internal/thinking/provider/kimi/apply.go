@@ -113,12 +113,10 @@ func applyCompatibleKimi(body []byte, config thinking.ThinkingConfig) ([]byte, e
 		}
 		effort = string(config.Level)
 	case thinking.ModeNone:
-		if config.Level == "" || config.Level == thinking.LevelNone {
-			return applyDisabledThinking(body)
-		}
-		if config.Level != "" {
-			effort = string(config.Level)
-		}
+		// User-defined models skip validation, so a clamped fallback level can
+		// never legitimately reach here: ModeNone must always mean disabled.
+		// Silently enabling thinking for a disable request would be a surprise.
+		return applyDisabledThinking(body)
 	case thinking.ModeAuto:
 		effort = string(thinking.LevelAuto)
 	case thinking.ModeBudget:
@@ -136,19 +134,43 @@ func applyCompatibleKimi(body []byte, config thinking.ThinkingConfig) ([]byte, e
 }
 
 func applyEnabledThinking(body []byte, effort string) ([]byte, error) {
-	result, errDeleteLegacyEffort := sjson.DeleteBytes(body, "reasoning_effort")
-	if errDeleteLegacyEffort != nil {
-		return body, fmt.Errorf("kimi thinking: failed to clear reasoning_effort: %w", errDeleteLegacyEffort)
+	result, err := sjson.DeleteBytes(body, "reasoning_effort")
+	if err != nil {
+		return body, fmt.Errorf("kimi thinking: failed to clear reasoning_effort: %w", err)
 	}
-	result, errSetType := sjson.SetBytes(result, "thinking.type", "enabled")
-	if errSetType != nil {
-		return body, fmt.Errorf("kimi thinking: failed to set thinking.type: %w", errSetType)
+
+	thRaw, writable := thinkingRaw(result)
+	if !writable {
+		// Array-valued thinking cannot be written via sjson; keep the
+		// reasoning_effort deletion made above so the returned body reflects
+		// the mutation that did succeed.
+		return result, fmt.Errorf("kimi thinking: failed to set thinking.type: thinking is an array and cannot be written")
 	}
-	result, errSetEffort := sjson.SetBytes(result, "thinking.effort", effort)
-	if errSetEffort != nil {
-		return body, fmt.Errorf("kimi thinking: failed to set thinking.effort: %w", errSetEffort)
+
+	// Batch thinking.type + thinking.effort into a single full-body re-insert
+	// instead of two independent re-serializations of the whole payload.
+	thRaw, err = sjson.SetBytes(thRaw, "type", "enabled")
+	if err != nil {
+		return body, fmt.Errorf("kimi thinking: failed to set thinking.type: %w", err)
 	}
-	return result, nil
+	thRaw, err = sjson.SetBytes(thRaw, "effort", effort)
+	if err != nil {
+		return body, fmt.Errorf("kimi thinking: failed to set thinking.effort: %w", err)
+	}
+	return setThinkingRaw(result, thRaw), nil
+}
+
+// thinkingRaw returns the raw JSON of the thinking object, or an empty object
+// when thinking is absent, null, or a scalar (sjson promotes those to an object
+// when a child key is set). writable is false only for array-valued thinking,
+// which sjson rejects; the caller must then leave thinking untouched.
+func thinkingRaw(body []byte) (raw []byte, writable bool) {
+	return thinking.ObjectSubtreeRaw(body, "thinking")
+}
+
+// setThinkingRaw replaces (or creates) the thinking object in a single pass.
+func setThinkingRaw(body, thRaw []byte) []byte {
+	return thinking.SetObjectSubtreeRaw(body, "thinking", thRaw)
 }
 
 func applyDisabledThinking(body []byte) ([]byte, error) {

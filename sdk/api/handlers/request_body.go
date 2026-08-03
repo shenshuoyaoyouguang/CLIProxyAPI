@@ -11,12 +11,21 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+// maxReadableRequestBodyBytes bounds both the raw request body and the
+// decompressed output of Content-Encoding processing. Without the bound, a
+// small zstd body can expand to gigabytes and OOM the process (compression
+// bomb); the raw side also has no default limit in gin.
+const maxReadableRequestBodyBytes = 128 << 20 // 128 MiB
+
 // ReadRequestBody reads the incoming request body and decodes supported
 // Content-Encoding values before handlers inspect JSON fields.
 func ReadRequestBody(c *gin.Context) ([]byte, error) {
-	raw, err := c.GetRawData()
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, maxReadableRequestBodyBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(raw)) > maxReadableRequestBodyBytes {
+		return nil, fmt.Errorf("request body exceeds %d bytes", maxReadableRequestBodyBytes)
 	}
 
 	encoding := ""
@@ -65,9 +74,12 @@ func decodeZstdRequestBody(raw []byte) ([]byte, error) {
 	}
 	defer decoder.Close()
 
-	decoded, err := io.ReadAll(decoder)
+	decoded, err := io.ReadAll(io.LimitReader(decoder, maxReadableRequestBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode zstd request body: %w", err)
+	}
+	if int64(len(decoded)) > maxReadableRequestBodyBytes {
+		return nil, fmt.Errorf("decompressed request body exceeds %d bytes", maxReadableRequestBodyBytes)
 	}
 	return decoded, nil
 }

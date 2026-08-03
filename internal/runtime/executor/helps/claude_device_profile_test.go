@@ -83,6 +83,17 @@ func (c *fakeClaudeDeviceProfileKVClient) KVExpire(_ context.Context, _ string, 
 	return true, nil
 }
 
+func (c *fakeClaudeDeviceProfileKVClient) KVDel(_ context.Context, keys ...string) (int64, error) {
+	var deleted int64
+	for _, key := range keys {
+		if _, ok := c.values[key]; ok {
+			delete(c.values, key)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
 func useFakeClaudeDeviceProfileKVClient(t *testing.T, client *fakeClaudeDeviceProfileKVClient, homeMode bool, errClient error) {
 	t.Helper()
 	previous := currentClaudeDeviceProfileKVClient
@@ -292,6 +303,37 @@ func TestResolveClaudeDeviceProfileRequiredHomeNormalizesUnmeasuredCachedProfile
 	}
 	if client.expireCount != 1 {
 		t.Fatalf("KVExpire count = %d, want cached refresh", client.expireCount)
+	}
+}
+
+// TestResolveClaudeDeviceProfileRequiredDoesNotDeleteForeignLock verifies that
+// a cache-hit resolution never releases a lock it did not acquire: deleting an
+// unowned lock would lift another process's mutual exclusion and allow
+// concurrent profile writers.
+func TestResolveClaudeDeviceProfileRequiredDoesNotDeleteForeignLock(t *testing.T) {
+	client := newFakeClaudeDeviceProfileKVClient()
+	auth := &cliproxyauth.Auth{ID: "auth-1"}
+	baseline := defaultClaudeDeviceProfile(nil)
+	valueKey := claudeDeviceProfileKVKey(auth, "api-key", baseline)
+	lockKey := claudeDeviceProfileLockKVKey(auth, "api-key", baseline)
+	// The cached profile must exactly match the measured baseline: stabilized
+	// profiles are pinned to the baseline platform and normalized back to it
+	// when the software tuple differs.
+	client.values[valueKey] = mustClaudeDeviceProfileJSON(t, claudeDeviceProfileKVValueFromProfile(baseline))
+	// Another process holds the lock: KVSetNX must fail and the foreign lock
+	// must survive the cache-hit resolution.
+	client.values[lockKey] = []byte("1")
+	useFakeClaudeDeviceProfileKVClient(t, client, true, nil)
+
+	profile, errProfile := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", claudeDeviceHeaders("claude-cli/2.1.220 (external, cli)"), nil)
+	if errProfile != nil {
+		t.Fatalf("ResolveClaudeDeviceProfileRequired() error = %v", errProfile)
+	}
+	if profile.UserAgent != baseline.UserAgent {
+		t.Fatalf("UserAgent = %q, want cached baseline %q", profile.UserAgent, baseline.UserAgent)
+	}
+	if _, stillHeld := client.values[lockKey]; !stillHeld {
+		t.Fatal("foreign lock was deleted by a cache-hit resolution; mutual exclusion broken")
 	}
 }
 

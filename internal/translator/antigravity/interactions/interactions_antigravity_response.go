@@ -104,10 +104,10 @@ func ConvertAntigravityResponseToInteractionsNonStream(ctx context.Context, mode
 }
 
 func antigravityStreamPayloads(rawJSON []byte) [][]byte {
-	trimmed := bytes.TrimSpace(rawJSON)
-	if bytes.HasPrefix(trimmed, []byte("data:")) {
-		return [][]byte{bytes.TrimSpace(trimmed[5:])}
+	if payload, ok := translatorcommon.SSEDataPayload(rawJSON); ok {
+		return [][]byte{payload}
 	}
+	trimmed := bytes.TrimSpace(rawJSON)
 	root := gjson.ParseBytes(trimmed)
 	if root.IsArray() {
 		payloads := make([][]byte, 0)
