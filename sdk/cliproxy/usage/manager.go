@@ -241,6 +241,11 @@ type Manager struct {
 // blocking plugin cannot create an unbounded backlog.
 const defaultQueueCapacity = 512
 
+// usageStopBudget bounds how long Stop waits for the dispatcher to drain the
+// queue before abandoning remaining records. A blocked plugin cannot hang
+// service shutdown beyond this budget.
+const usageStopBudget = 5 * time.Second
+
 // NewManager constructs a manager with a bounded queue. A buffer greater than
 // zero sets the queue capacity; a non-positive buffer falls back to
 // defaultQueueCapacity. When the queue is full, Publish drops the record and
@@ -275,23 +280,36 @@ func (m *Manager) Start(ctx context.Context) {
 }
 
 // Stop stops the dispatcher, drains the queue, and blocks until the dispatcher
-// goroutine has exited, so no records are processed after Stop returns.
+// goroutine has exited or the usageStopBudget elapses. If a blocked plugin
+// prevents the dispatcher from draining within the budget, Stop logs a warning
+// and returns so service shutdown is not hung indefinitely.
 func (m *Manager) Stop() {
 	if m == nil {
 		return
 	}
 	m.stopOnce.Do(func() {
-		if m.cancel != nil {
-			m.cancel()
-		}
 		m.mu.Lock()
 		m.closed = true
 		close(m.queue)
 		started := m.started
 		m.mu.Unlock()
-		if started {
-			<-m.done
+		if !started {
+			if m.cancel != nil {
+				m.cancel()
+			}
+			return
 		}
+		// Wait for the dispatcher to drain the queue, bounded by a budget so a
+		// blocked plugin cannot hang service shutdown.
+		select {
+		case <-m.done:
+			return
+		case <-time.After(usageStopBudget):
+		}
+		if m.cancel != nil {
+			m.cancel()
+		}
+		log.Warn("usage: dispatcher did not drain within budget; a plugin may be blocked")
 	})
 }
 
@@ -358,10 +376,18 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 
 func (m *Manager) run(ctx context.Context) {
 	defer close(m.done)
-	// Range delivers buffered items even after the queue channel is closed by
-	// Stop, so the queue is drained before the dispatcher exits.
-	for item := range m.queue {
-		m.dispatch(item)
+	// Select on ctx.Done() between dispatches so a cancelled worker exits
+	// promptly instead of draining the full queue after Stop gives up.
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item, ok := <-m.queue:
+			if !ok {
+				return
+			}
+			m.dispatch(item)
+		}
 	}
 }
 

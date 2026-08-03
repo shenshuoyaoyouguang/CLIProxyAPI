@@ -699,9 +699,13 @@ func (e *OpenAICompatExecutor) Refresh(ctx context.Context, auth *cliproxyauth.A
 //
 // Order of operations:
 //  1. max_tokens / max_completion_tokens: inject MaxCompletionTokens when both absent
-//  2. reasoning_effort: inject lowest level when Thinking is enabled but effort absent
-//  3. extra_body: deep merge model ExtraBody paths that are absent from the payload
+//  2. extra_body: deep merge model ExtraBody paths that are absent from the payload
 //     (leaf-level merge: existing nested keys are preserved, missing leaf keys are added)
+//
+// reasoning_effort is intentionally NOT injected here. ApplyRequestThinking runs
+// before enhanceModelParams and sets reasoning_effort when the user enables
+// thinking; injecting based solely on model capability would re-enable thinking
+// for users who explicitly left it disabled.
 func (e *OpenAICompatExecutor) enhanceModelParams(body []byte, modelID string) []byte {
 	if len(body) == 0 {
 		return body
@@ -724,17 +728,10 @@ func (e *OpenAICompatExecutor) enhanceModelParams(body []byte, modelID string) [
 		}
 	}
 
-	// 2. reasoning_effort default when thinking is enabled
-	if info.Thinking != nil && len(info.Thinking.Levels) > 0 {
-		if !gjson.GetBytes(body, "reasoning_effort").Exists() {
-			body, _ = sjson.SetBytes(body, "reasoning_effort", info.Thinking.Levels[0])
-			log.WithFields(log.Fields{
-				"model": modelID,
-				"field": "reasoning_effort",
-				"value": info.Thinking.Levels[0],
-			}).Debug("enhanceModelParams: injected default")
-		}
-	}
+	// 2. reasoning_effort is NOT injected here. ApplyRequestThinking runs before
+	// enhanceModelParams and sets reasoning_effort when the user enables thinking;
+	// injecting based solely on model capability (info.Thinking.Levels) would
+	// re-enable thinking for users who explicitly left it disabled.
 
 	// 3. extra_body deep merge (leaf-level, never overwrite)
 	if info.ExtraBody != nil {

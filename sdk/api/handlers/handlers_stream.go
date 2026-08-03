@@ -518,6 +518,15 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		completionOutcome := pluginapi.RequestCompletionSucceeded
 		completionStatus := http.StatusOK
 		var completionErr error
+		// Cancel the per-attempt stream context when the goroutine exits so the
+		// upstream executor goroutine and any outstanding upstream body read are
+		// released immediately instead of lingering until the parent context is
+		// cancelled (H24j).
+		defer func() {
+			if cancelStream != nil {
+				cancelStream()
+			}
+		}()
 		defer func() {
 			lifecycle.complete(completionOutcome, completionStatus, completionErr)
 		}()

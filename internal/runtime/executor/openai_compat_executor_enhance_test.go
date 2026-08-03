@@ -110,11 +110,14 @@ func TestEnhanceModelParams(t *testing.T) {
 		assert.Equal(t, float64(500), gjson.GetBytes(result, "max_tokens").Float())
 	})
 
-	t.Run("reasoning_effort injected when thinking enabled and absent", func(t *testing.T) {
+	t.Run("reasoning_effort NOT injected when thinking capability exists but user did not enable", func(t *testing.T) {
 		body := []byte(`{"model": "test-model-enhance", "messages": [{"role": "user", "content": "hi"}]}`)
 		result := executor.enhanceModelParams(body, modelID)
-		assert.True(t, gjson.GetBytes(result, "reasoning_effort").Exists())
-		assert.Equal(t, "low", gjson.GetBytes(result, "reasoning_effort").String())
+		// enhanceModelParams must not inject reasoning_effort based on model
+		// capability alone; ApplyRequestThinking is responsible for setting it
+		// when the user explicitly enables thinking.
+		assert.False(t, gjson.GetBytes(result, "reasoning_effort").Exists(),
+			"reasoning_effort must not be injected when the user has not enabled thinking")
 	})
 
 	t.Run("reasoning_effort not injected when already present", func(t *testing.T) {
@@ -151,14 +154,6 @@ func TestEnhanceModelParams(t *testing.T) {
 		})
 		assert.True(t, strings.Contains(logs, "injected default"), "expected debug log about injection, got: %s", logs)
 		assert.True(t, strings.Contains(logs, "max_tokens"), "expected max_tokens in log, got: %s", logs)
-	})
-
-	t.Run("debug log emitted on reasoning_effort injection", func(t *testing.T) {
-		body := []byte(`{"model": "test-model-enhance", "messages": [{"role": "user", "content": "hi"}]}`)
-		logs := captureLogs(func() {
-			_ = executor.enhanceModelParams(body, modelID)
-		})
-		assert.True(t, strings.Contains(logs, "reasoning_effort"), "expected reasoning_effort in log, got: %s", logs)
 	})
 
 	t.Run("debug log emitted on extra_body merge", func(t *testing.T) {
