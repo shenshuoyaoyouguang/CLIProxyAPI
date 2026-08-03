@@ -429,7 +429,12 @@ func resolveClaudeDeviceProfileHome(ctx context.Context, client claudeDeviceProf
 		if _, errExpire := client.KVExpire(ctx, valueKey, claudeDeviceProfileTTL); errExpire != nil {
 			return ClaudeDeviceProfile{}, errExpire
 		}
-		releaseClaudeDeviceProfileLock(ctx, client, lockKey)
+		// Only release the lock when this process actually acquired it
+		// (KVSetNX succeeded). Deleting an unowned lock would lift another
+		// process's mutual exclusion and allow concurrent profile writers.
+		if gotLock {
+			releaseClaudeDeviceProfileLock(ctx, client, lockKey)
+		}
 		return cached, nil
 	}
 	if !gotLock {

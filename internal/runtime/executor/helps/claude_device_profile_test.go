@@ -203,6 +203,39 @@ func TestResolveClaudeDeviceProfileRequiredHomeCandidateDoesNotDowngradeCachedPr
 	}
 }
 
+// TestResolveClaudeDeviceProfileRequiredDoesNotDeleteForeignLock verifies that
+// a cache-hit resolution never releases a lock it did not acquire: deleting an
+// unowned lock would lift another process's mutual exclusion and allow
+// concurrent profile writers.
+func TestResolveClaudeDeviceProfileRequiredDoesNotDeleteForeignLock(t *testing.T) {
+	client := newFakeClaudeDeviceProfileKVClient()
+	auth := &cliproxyauth.Auth{ID: "auth-1"}
+	valueKey := claudeDeviceProfileKVKey(auth, "api-key")
+	lockKey := claudeDeviceProfileLockKVKey(auth, "api-key")
+	client.values[valueKey] = mustClaudeDeviceProfileJSON(t, claudeDeviceProfileKVValue{
+		UserAgent:      "claude-cli/2.4.0 (external, cli)",
+		PackageVersion: "0.90.0",
+		RuntimeVersion: "v24.5.0",
+		OS:             "Windows",
+		Arch:           "x64",
+	})
+	// Another process holds the lock: KVSetNX must fail and the foreign lock
+	// must survive the cache-hit resolution.
+	client.values[lockKey] = []byte("1")
+	useFakeClaudeDeviceProfileKVClient(t, client, true, nil)
+
+	profile, errProfile := ResolveClaudeDeviceProfileRequired(context.Background(), auth, "api-key", claudeDeviceHeaders("claude-cli/2.3.0 (external, cli)"), nil)
+	if errProfile != nil {
+		t.Fatalf("ResolveClaudeDeviceProfileRequired() error = %v", errProfile)
+	}
+	if profile.UserAgent != "claude-cli/2.4.0 (external, cli)" {
+		t.Fatalf("UserAgent = %q, want higher cached profile", profile.UserAgent)
+	}
+	if _, stillHeld := client.values[lockKey]; !stillHeld {
+		t.Fatal("foreign lock was deleted by a cache-hit resolution; mutual exclusion broken")
+	}
+}
+
 func TestResolveClaudeDeviceProfileRequiredHomeFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
