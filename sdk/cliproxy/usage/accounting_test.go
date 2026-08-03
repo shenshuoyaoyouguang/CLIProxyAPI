@@ -160,3 +160,16 @@ func TestEnsureTokenBreakdownDoesNotOverrideCanonicalZeroCacheRead(t *testing.T)
 		t.Fatalf("detail = %+v", detail)
 	}
 }
+
+func TestEnsureTokenBreakdownPreservesLegacyBreakdownTotal(t *testing.T) {
+	// A pre-v2 breakdown with no flat raw fields must not silently collapse to
+	// TotalTokens 0 when the rebuild runs.
+	legacy := TokenBreakdown{TotalTokens: 500}
+	detail := EnsureTokenBreakdownForProvider(Detail{TokenBreakdown: legacy}, "openai", "")
+	if detail.TotalTokens != 500 || detail.TokenBreakdown.TotalTokens != 500 {
+		t.Fatalf("detail = %+v, want total preserved at 500", detail)
+	}
+	if detail.TokenBreakdown.Quality != TokenAccountingQualityInconsistent {
+		t.Fatalf("detail = %+v, want inconsistent quality for unresolvable legacy breakdown", detail)
+	}
+}

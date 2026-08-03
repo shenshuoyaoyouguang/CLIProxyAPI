@@ -521,8 +521,10 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 				}
 				return availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now)
 			}
-			// Auth-level availability can aggregate failures from other models.
-			return false, blockReasonNone, time.Time{}
+			// Auth-level availability aggregates failures from other models:
+			// a credential whose other models are all cooling down, or whose
+			// provider quota is exhausted, must not route an untried model.
+			return availabilityBlock(auth.Unavailable, auth.Quota.Exceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now)
 		}
 		return availabilityBlock(auth.Unavailable, auth.Quota.Exceeded, auth.NextRetryAfter, auth.Quota.NextRecoverAt, now)
 	}

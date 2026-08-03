@@ -360,9 +360,19 @@ func (s *Scope) startBoundResourceClose() <-chan struct{} {
 	return closeDone
 }
 
+// boundResourceCloseTimeout caps how long Registry.Close waits for a bound
+// resource's close function. Close has no context, so without a bound a stuck
+// closeFn (e.g. an unresponsive websocket) would hang process shutdown past
+// the service's stop budget.
+const boundResourceCloseTimeout = 30 * time.Second
+
 func (s *Scope) waitForBoundResourceClose() {
 	if closeDone := s.startBoundResourceClose(); closeDone != nil {
-		<-closeDone
+		select {
+		case <-closeDone:
+		case <-time.After(boundResourceCloseTimeout):
+			log.Warn("Home execution resource close exceeded bound; proceeding with shutdown")
+		}
 	}
 }
 

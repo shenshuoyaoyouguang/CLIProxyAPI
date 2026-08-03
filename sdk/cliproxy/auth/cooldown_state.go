@@ -87,6 +87,11 @@ func (s *FileCooldownStateStore) Load(ctx context.Context) ([]CooldownStateRecor
 		return nil, errCtx
 	}
 
+	// Serialize with Save/SaveAuth so a load never observes the mid-save window
+	// between stale-file removal and new-file rename.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	records := make([]CooldownStateRecord, 0)
 	errWalk := filepath.WalkDir(s.dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -174,13 +179,21 @@ func (s *FileCooldownStateStore) Save(ctx context.Context, records []CooldownSta
 	}
 
 	desired := make(map[string]struct{}, len(groups))
+	for path := range groups {
+		desired[filepath.Clean(path)] = struct{}{}
+	}
+	// Remove stale files before writing new ones: if the process crashes mid-save,
+	// the residue is a missing cooldown file (benign — one retry re-records it)
+	// rather than a stale file that would resurrect a cleared cooldown on load.
+	if errRemove := s.removeStaleStateFiles(ctx, desired); errRemove != nil {
+		return errRemove
+	}
 	for path, groupedRecords := range groups {
 		if errSave := writeCooldownStateGroup(ctx, path, groupedRecords); errSave != nil {
 			return errSave
 		}
-		desired[filepath.Clean(path)] = struct{}{}
 	}
-	return s.removeStaleStateFiles(ctx, desired)
+	return nil
 }
 
 // SaveAuth persists cooldown records for a single auth without rewriting every

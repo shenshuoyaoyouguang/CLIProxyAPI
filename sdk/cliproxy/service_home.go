@@ -575,7 +575,15 @@ func (s *Service) runHomeSubscriber(homeCtx context.Context, parentCtx context.C
 			s.runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx, generation, client, registry, queue, ready, &published, &cancelBound, supervisor)
 		}()
 
-		errRun := client.RunConfigSubscriberLifetime(lifetimeCtx, func(raw []byte) error {
+		errRun := client.RunConfigSubscriberLifetime(lifetimeCtx, func(raw []byte) (err error) {
+			// The subscriber retry loop below is designed around returned errors;
+			// a panic here would otherwise crash the embedding process.
+			defer func() {
+				if r := recover(); r != nil {
+					log.WithField("panic", r).Error("recovered panic while applying home config payload")
+					err = fmt.Errorf("panic while applying home config payload: %v", r)
+				}
+			}()
 			parsed, errParse := config.ParseConfigBytes(raw)
 			if errParse != nil {
 				log.Warnf("failed to parse home config payload: %v", errParse)
@@ -678,6 +686,24 @@ func (s *Service) runHomeConfigWorker(lifetimeCtx, homeCtx context.Context, gene
 	s.runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx, generation, client, registry, queue, ready, published, cancelBound, nil)
 }
 
+// stageHomeConfigPayload parses and stages one Home config payload, converting
+// any panic into a retried error so a malformed payload cannot crash the whole
+// embedding process: the worker loop below is explicitly designed around retry
+// with backoff, and a panic would otherwise bypass it entirely.
+func (s *Service) stageHomeConfigPayload(lifetimeCtx context.Context, raw []byte, client *home.Client, work **homePluginFinalization) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.WithField("panic", r).Error("recovered panic while staging home config payload")
+			err = fmt.Errorf("panic while staging home config payload: %v", r)
+		}
+	}()
+	parsed, errParse := config.ParseConfigBytes(raw)
+	if errParse == nil {
+		*work, errParse = s.stageHomeOverlayWithClient(lifetimeCtx, parsed, client)
+	}
+	return errParse
+}
+
 func (s *Service) runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx context.Context, generation uint64, client *home.Client, registry *executionregistry.Registry, queue *homeConfigWorkQueue, ready <-chan struct{}, published *atomic.Bool, cancelBound *atomic.Int64, supervisor *homeSubscriberSupervisor) {
 	select {
 	case <-lifetimeCtx.Done():
@@ -702,17 +728,14 @@ func (s *Service) runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx context
 			if lifetimeCtx.Err() != nil {
 				return
 			}
-			parsed, errParse := config.ParseConfigBytes(raw)
-			if errParse == nil {
-				work, errParse = s.stageHomeOverlayWithClient(lifetimeCtx, parsed, client)
-			}
-			if errParse == nil {
+			errStage := s.stageHomeConfigPayload(lifetimeCtx, raw, client, &work)
+			if errStage == nil {
 				break
 			}
 			if lifetimeCtx.Err() != nil {
 				return
 			}
-			log.WithError(errParse).Warn("failed to stage home config; retrying")
+			log.WithError(errStage).Warn("failed to stage home config; retrying")
 			if !waitForHomeSubscriberRetry(lifetimeCtx, homeSubscriberPreAckRetryBackoff) {
 				return
 			}

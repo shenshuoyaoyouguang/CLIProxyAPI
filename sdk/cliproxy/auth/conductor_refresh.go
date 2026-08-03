@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -25,6 +26,11 @@ const (
 	refreshMaxConcurrency = 16
 	refreshPendingBackoff = time.Minute
 	refreshFailureBackoff = 5 * time.Minute
+	// unauthorizedRefreshRetryBackoff bounds retries after a 401 refresh failure.
+	// A revoked refresh token would otherwise exclude the auth from the refresh
+	// loop forever; a backoff keeps the loop self-healing for transient 401s at
+	// negligible cost (at most 2 attempts/hour for a permanently dead credential).
+	unauthorizedRefreshRetryBackoff = 30 * time.Minute
 	// refreshIneffectiveBackoff throttles refresh attempts when an executor returns
 	// success but the auth still evaluates as needing refresh (e.g. token expiry
 	// wasn't updated). Without this guard, the auto-refresh loop can tight-loop and
@@ -115,7 +121,9 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 	if a == nil {
 		return false
 	}
-	if hasUnauthorizedAuthFailure(a) {
+	// Exclude a 401-bricked credential only while no retry is scheduled: the
+	// backoff set on unauthorized refresh failure lets the loop self-heal.
+	if hasUnauthorizedAuthFailure(a) && a.NextRefreshAfter.IsZero() {
 		return false
 	}
 	if !a.NextRefreshAfter.IsZero() && now.Before(a.NextRefreshAfter) {
@@ -340,6 +348,10 @@ func (m *Manager) markRefreshPending(id string, now time.Time) bool {
 
 type authRefreshLock struct {
 	mu sync.Mutex
+	// active counts holders that loaded this lock (running or waiting for mu);
+	// the map entry is deleted only when it returns to zero so a waiting
+	// caller can never be handed a fresh lock for the same auth id.
+	active int32
 }
 
 func authAccessToken(auth *Auth) string {
@@ -420,8 +432,16 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		lock = &authRefreshLock{}
 		m.refreshLocks.Store(id, lock)
 	}
+	atomic.AddInt32(&lock.active, 1)
 	lock.mu.Lock()
-	defer lock.mu.Unlock()
+	defer func() {
+		lock.mu.Unlock()
+		// Drop the per-id lock once no caller holds or waits on it; keeping it
+		// would leak one entry per historically refreshed auth id.
+		if atomic.AddInt32(&lock.active, -1) == 0 {
+			m.refreshLocks.CompareAndDelete(id, lock)
+		}
+	}()
 
 	m.mu.RLock()
 	auth := m.auths[id]
@@ -456,7 +476,10 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		if current := m.auths[id]; current != nil {
 			current.LastError = refreshErrorFromError(err)
 			if unauthorized {
-				current.NextRefreshAfter = time.Time{}
+				// Back off instead of staying permanently excluded: a transient
+				// 401 (provider glitch) must not brick auto-refresh for this
+				// credential forever.
+				current.NextRefreshAfter = now.Add(unauthorizedRefreshRetryBackoff)
 				current.Unavailable = true
 				current.Status = StatusError
 				current.StatusMessage = "unauthorized"
@@ -483,28 +506,54 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if updated.Runtime == nil {
 		updated.Runtime = auth.Runtime
 	}
-	updated.LastRefreshedAt = now
-	updated.NextRefreshAfter = time.Time{}
-	updated.LastError = nil
-	updated.StatusMessage = ""
-	updated.Unavailable = false
-	if updated.Status == StatusError {
-		updated.Status = StatusActive
+	// Merge the refreshed credential into the live object instead of replacing
+	// it wholesale: a refresh runs concurrently with MarkResult, and swapping in
+	// a pre-refresh snapshot would erase cooldown/quota/availability recorded
+	// while the refresh was in flight.
+	var merged *Auth
+	var modelsToResume []string
+	m.mu.Lock()
+	if current := m.auths[id]; current != nil {
+		if updated.Metadata != nil {
+			current.Metadata = updated.Metadata
+		}
+		if updated.Runtime != nil {
+			current.Runtime = updated.Runtime
+		}
+		current.LastRefreshedAt = now
+		current.UpdatedAt = now
+		modelsToResume = clearUnauthorizedModelStates(current, now)
+		current.NextRefreshAfter = time.Time{}
+		if m.shouldRefresh(current, now) {
+			current.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
+		}
+		// Clear stale credential error state only when no concurrent failure or
+		// cooldown was recorded: Unavailable/Quota set by MarkResult during the
+		// refresh must survive the merge.
+		if current.NextRetryAfter.IsZero() && current.Quota.NextRecoverAt.IsZero() && !hasModelError(current, now) {
+			current.LastError = nil
+			current.StatusMessage = ""
+			current.Unavailable = false
+			if current.Status == StatusError {
+				current.Status = StatusActive
+			}
+		}
+		merged = current
 	}
-	updated.UpdatedAt = now
-	modelsToResume := clearUnauthorizedModelStates(updated, now)
-	if m.shouldRefresh(updated, now) {
-		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
+	m.mu.Unlock()
+
+	if merged == nil {
+		return nil, errors.New("auth removed during refresh")
 	}
-	saved, errUpdate := m.Update(ctx, updated)
 	for _, model := range modelsToResume {
 		registry.GetGlobalRegistry().ResumeClientModel(id, model)
 	}
+	saved, errUpdate := m.Update(ctx, merged)
 	if errUpdate != nil {
 		log.Debugf("persist refreshed auth %s (%s) failed: %v", auth.Provider, auth.ID, errUpdate)
 	}
 	if saved != nil {
 		return saved, nil
 	}
-	return updated.Clone(), nil
+	return merged.Clone(), nil
 }

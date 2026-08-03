@@ -344,7 +344,9 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 	if auth == nil {
 		return time.Time{}, false
 	}
-	if hasUnauthorizedAuthFailure(auth) {
+	// Exclude a 401-bricked credential only while no retry is scheduled: the
+	// backoff set on unauthorized refresh failure lets the loop self-heal.
+	if hasUnauthorizedAuthFailure(auth) && auth.NextRefreshAfter.IsZero() {
 		return time.Time{}, false
 	}
 

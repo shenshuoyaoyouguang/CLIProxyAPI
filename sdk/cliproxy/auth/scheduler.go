@@ -587,6 +587,7 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 	if previousProvider := s.authProviders[authID]; previousProvider != "" && previousProvider != providerKey {
 		if previousState := s.providers[previousProvider]; previousState != nil {
 			previousState.removeAuthLocked(authID)
+			s.pruneEmptyProviderLocked(previousProvider, previousState)
 		}
 	}
 	meta := buildScheduledAuthMeta(auth)
@@ -602,9 +603,19 @@ func (s *authScheduler) removeAuthLocked(authID string) {
 	if providerKey := s.authProviders[authID]; providerKey != "" {
 		if providerState := s.providers[providerKey]; providerState != nil {
 			providerState.removeAuthLocked(authID)
+			s.pruneEmptyProviderLocked(providerKey, providerState)
 		}
 		delete(s.authProviders, authID)
 	}
+}
+
+// pruneEmptyProviderLocked drops a provider scheduler once it holds no auths so
+// provider keys removed from configuration do not leak scheduler state forever.
+func (s *authScheduler) pruneEmptyProviderLocked(providerKey string, providerState *providerScheduler) {
+	if providerState == nil || len(providerState.auths) > 0 {
+		return
+	}
+	delete(s.providers, providerKey)
 }
 
 // ensureProviderLocked returns the provider scheduler for providerKey, creating it when needed.
@@ -958,10 +969,16 @@ func (m *modelScheduler) availabilitySummaryLocked(predicate func(*scheduledAuth
 		if predicate != nil && !predicate(entry) {
 			continue
 		}
-		total++
 		if entry == nil || entry.auth == nil {
 			continue
 		}
+		// Disabled entries are dropped from the ready/blocked views by
+		// rebuildIndexesLocked and can never serve a request; counting them
+		// here would make cooldownCount != total and mask the cooldown error.
+		if entry.state == scheduledStateDisabled {
+			continue
+		}
+		total++
 		if entry.state != scheduledStateCooldown {
 			continue
 		}

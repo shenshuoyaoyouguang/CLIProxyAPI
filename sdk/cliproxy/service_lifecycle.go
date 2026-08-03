@@ -75,8 +75,11 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.registerPluginAuthParser()
 	if s.coreManager != nil && !homeEnabled {
+		// Fail startup on an unreadable auth store: continuing would silently
+		// drop every OAuth credential and surface as auth_not_found at request
+		// time, which is much harder to diagnose.
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
-			log.Warnf("failed to load auth store: %v", errLoad)
+			return fmt.Errorf("load auth store: %w", errLoad)
 		}
 		s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg)
 		if s.cfg.SaveCooldownStatus {

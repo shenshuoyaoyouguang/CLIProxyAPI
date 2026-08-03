@@ -45,7 +45,7 @@ func (e unauthorizedRefreshTestExecutor) Refresh(ctx context.Context, auth *Auth
 	return nil, errors.New("token refresh failed with status 401: invalid_grant")
 }
 
-func TestManager_RefreshAuthUnauthorizedFailureStopsAutoRefreshRetry(t *testing.T) {
+func TestManager_RefreshAuthUnauthorizedFailureThrottlesThenRetries(t *testing.T) {
 	ctx := context.Background()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	manager.RegisterExecutor(unauthorizedRefreshTestExecutor{
@@ -78,15 +78,30 @@ func TestManager_RefreshAuthUnauthorizedFailureStopsAutoRefreshRetry(t *testing.
 	if updated.LastError.Code != "unauthorized" {
 		t.Fatalf("LastError.Code = %q, want unauthorized", updated.LastError.Code)
 	}
-	if !updated.NextRefreshAfter.IsZero() {
-		t.Fatalf("NextRefreshAfter = %s, want zero for unauthorized refresh failure", updated.NextRefreshAfter)
+	if updated.NextRefreshAfter.IsZero() {
+		t.Fatalf("NextRefreshAfter = zero, want %s backoff after unauthorized refresh failure", unauthorizedRefreshRetryBackoff)
 	}
 	now := time.Now()
 	if manager.shouldRefresh(updated, now) {
-		t.Fatal("expected unauthorized auth to stop refresh attempts")
+		t.Fatal("expected unauthorized auth to stay throttled until the retry backoff elapses")
 	}
-	if _, shouldSchedule := nextRefreshCheckAt(now, updated, time.Second); shouldSchedule {
-		t.Fatal("expected unauthorized auth to be removed from the auto-refresh schedule")
+	next, shouldSchedule := nextRefreshCheckAt(now, updated, time.Second)
+	if !shouldSchedule {
+		t.Fatal("expected unauthorized auth to remain scheduled for retry after the backoff")
+	}
+	if next.Before(now.Add(unauthorizedRefreshRetryBackoff)) {
+		t.Fatalf("next refresh = %s, want at least %s away", next, unauthorizedRefreshRetryBackoff)
+	}
+	// Once the backoff elapses, the next refresh attempt must not be
+	// short-circuited by the unauthorized gate: it re-arms the backoff instead
+	// of bricking the credential.
+	manager.refreshAuth(ctx, auth.ID)
+	requeued, ok := manager.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("expected auth after second unauthorized refresh attempt")
+	}
+	if requeued.NextRefreshAfter.IsZero() || requeued.NextRefreshAfter.Before(now.Add(unauthorizedRefreshRetryBackoff)) {
+		t.Fatalf("second unauthorized failure did not re-arm the retry backoff: %s", requeued.NextRefreshAfter)
 	}
 }
 

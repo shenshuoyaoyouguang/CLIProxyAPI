@@ -221,14 +221,17 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 				auth.Status = StatusActive
 			}
 			auth.UpdatedAt = now
-			if errPersist := m.persist(ctx, auth); errPersist != nil {
-				logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
-			}
 			snapshot = auth.Clone()
 		}
 	}
 	m.mu.Unlock()
 
+	if snapshot != nil {
+		// Persist outside the global lock: store.Save can be Postgres network I/O.
+		if errPersist := m.persist(ctx, snapshot); errPersist != nil {
+			logEntryWithRequestID(ctx).WithField("auth_id", snapshot.ID).Warnf("failed to persist auth changes during model state reconciliation: %v", errPersist)
+		}
+	}
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
