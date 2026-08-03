@@ -44,6 +44,18 @@ type claudeToResponsesState struct {
 	ReasoningItems     []claudeResponsesReasoningItem
 	// usage aggregation
 	Usage claudeResponsesUsageTokens
+	// qualified function-name lookup, cached per request so tool-heavy streams
+	// do not re-scan every namespace tool on each function-call event
+	qualFuncMap     map[string]responsesQualifiedToolName
+	qualFuncMapJSON []byte
+}
+
+func (st *claudeToResponsesState) qualifiedFunctionCallMap(requestRawJSON []byte) map[string]responsesQualifiedToolName {
+	if !bytes.Equal(st.qualFuncMapJSON, requestRawJSON) {
+		st.qualFuncMap = responsesQualifiedFunctionCallMap(requestRawJSON)
+		st.qualFuncMapJSON = requestRawJSON
+	}
+	return st.qualFuncMap
 }
 
 type claudeResponsesMessageItem struct {
@@ -107,8 +119,13 @@ func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
 	return nil
 }
 
-func applyResponsesFunctionCallNamespaceFields(item []byte, requestRawJSON []byte, qualifiedName string, itemPath string) []byte {
-	name, namespace := splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON, qualifiedName)
+func applyResponsesFunctionCallNamespaceFields(item []byte, qualMap map[string]responsesQualifiedToolName, qualifiedName string, itemPath string) []byte {
+	name, namespace := "", ""
+	if nn, ok := qualMap[qualifiedName]; ok {
+		name, namespace = nn.name, nn.namespace
+	} else {
+		name = qualifiedName
+	}
 	namePath := "name"
 	namespacePath := "namespace"
 	if itemPath != "" {
@@ -323,7 +340,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			item, _ = sjson.SetBytes(item, "output_index", outputIndex)
 			item, _ = sjson.SetBytes(item, "item.id", fmt.Sprintf("fc_%s", st.CurrentFCID))
 			item, _ = sjson.SetBytes(item, "item.call_id", st.CurrentFCID)
-			item = applyResponsesFunctionCallNamespaceFields(item, pickRequestJSON(originalRequestRawJSON, requestRawJSON), name, "item")
+			item = applyResponsesFunctionCallNamespaceFields(item, st.qualifiedFunctionCallMap(pickRequestJSON(originalRequestRawJSON, requestRawJSON)), name, "item")
 			out = append(out, emitEvent("response.output_item.added", item))
 			if st.FuncArgsBuf[idx] == nil {
 				st.FuncArgsBuf[idx] = &strings.Builder{}
@@ -440,7 +457,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("fc_%s", st.CurrentFCID))
 			itemDone, _ = sjson.SetBytes(itemDone, "item.arguments", args)
 			itemDone, _ = sjson.SetBytes(itemDone, "item.call_id", st.CurrentFCID)
-			itemDone = applyResponsesFunctionCallNamespaceFields(itemDone, pickRequestJSON(originalRequestRawJSON, requestRawJSON), st.FuncNames[idx], "item")
+			itemDone = applyResponsesFunctionCallNamespaceFields(itemDone, st.qualifiedFunctionCallMap(pickRequestJSON(originalRequestRawJSON, requestRawJSON)), st.FuncNames[idx], "item")
 			out = append(out, emitEvent("response.output_item.done", itemDone))
 			st.InFuncBlock = false
 		} else if st.ReasoningActive {
@@ -492,7 +509,9 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		// Inject original request fields into response as per docs/response.completed.json
 
 		reqBytes := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+		var qualMap map[string]responsesQualifiedToolName
 		if len(reqBytes) > 0 {
+			qualMap = responsesQualifiedFunctionCallMap(reqBytes)
 			req := gjson.ParseBytes(reqBytes)
 			if v := req.Get("instructions"); v.Exists() {
 				completed, _ = sjson.SetBytes(completed, "response.instructions", v.String())
@@ -607,7 +626,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("fc_%s", callID))
 				item, _ = sjson.SetBytes(item, "arguments", args)
 				item, _ = sjson.SetBytes(item, "call_id", callID)
-				item = applyResponsesFunctionCallNamespaceFields(item, reqBytes, name, "")
+				item = applyResponsesFunctionCallNamespaceFields(item, qualMap, name, "")
 				outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, fmt.Sprintf("arr.%d", st.FuncOutputIndices[idx]), item)
 			}
 		}
@@ -781,7 +800,9 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 
 	// Inject request echo fields as top-level (similar to streaming variant)
 	reqBytes := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+	var qualMap map[string]responsesQualifiedToolName
 	if len(reqBytes) > 0 {
+		qualMap = responsesQualifiedFunctionCallMap(reqBytes)
 		req := gjson.ParseBytes(reqBytes)
 		if v := req.Get("instructions"); v.Exists() {
 			out, _ = sjson.SetBytes(out, "instructions", v.String())
@@ -890,7 +911,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("fc_%s", st.id))
 			item, _ = sjson.SetBytes(item, "arguments", args)
 			item, _ = sjson.SetBytes(item, "call_id", st.id)
-			item = applyResponsesFunctionCallNamespaceFields(item, reqBytes, st.name, "")
+			item = applyResponsesFunctionCallNamespaceFields(item, qualMap, st.name, "")
 			outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, "arr.-1", item)
 		}
 	}

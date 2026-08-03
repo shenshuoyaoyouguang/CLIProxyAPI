@@ -18,12 +18,6 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var (
-	user    = ""
-	account = ""
-	session = ""
-)
-
 // ConvertOpenAIResponsesRequestToClaude transforms an OpenAI Responses API request
 // into a Claude Messages API request using only gjson/sjson for JSON handling.
 // It supports:
@@ -37,18 +31,18 @@ var (
 func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 
-	if account == "" {
-		u, _ := uuid.NewRandom()
-		account = u.String()
-	}
-	if session == "" {
-		u, _ := uuid.NewRandom()
-		session = u.String()
-	}
-	if user == "" {
-		sum := sha256.Sum256([]byte(account + session))
-		user = hex.EncodeToString(sum[:])
-	}
+	// Generate a per-request user/account/session identity. These MUST NOT be
+	// package-level globals: ConvertOpenAIResponsesRequestToClaude is invoked
+	// concurrently for independent requests, and shared mutable package state
+	// is both a data race (unsynchronized lazy init) and a per-request
+	// isolation bug -- every request would be tagged with the same user_id,
+	// collapsing distinct clients into one identity for billing/cloaking.
+	accountUUID, _ := uuid.NewRandom()
+	account := accountUUID.String()
+	sessionUUID, _ := uuid.NewRandom()
+	session := sessionUUID.String()
+	sum := sha256.Sum256([]byte(account + session))
+	user := hex.EncodeToString(sum[:])
 	userID := fmt.Sprintf("user_%s_account_%s_session_%s", user, account, session)
 
 	// Base Claude message payload
@@ -146,32 +140,40 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 	if instructionsText == "" {
 		if input := root.Get("input"); input.Exists() && input.IsArray() {
+			// Merge ALL system messages (a legal Responses API shape) into one
+			// instruction block; the previous loop stopped at the first
+			// non-empty system message and silently dropped the rest.
+			var builder strings.Builder
 			input.ForEach(func(_, item gjson.Result) bool {
 				if strings.EqualFold(item.Get("role").String(), "system") {
-					var builder strings.Builder
+					var itemText strings.Builder
 					if parts := item.Get("content"); parts.Exists() && parts.IsArray() {
 						parts.ForEach(func(_, part gjson.Result) bool {
-							textResult := part.Get("text")
-							text := textResult.String()
-							if builder.Len() > 0 && text != "" {
-								builder.WriteByte('\n')
+							text := part.Get("text").String()
+							if itemText.Len() > 0 && text != "" {
+								itemText.WriteByte('\n')
 							}
-							builder.WriteString(text)
+							itemText.WriteString(text)
 							return true
 						})
 					} else if parts.Type == gjson.String {
-						builder.WriteString(parts.String())
+						itemText.WriteString(parts.String())
 					}
-					instructionsText = builder.String()
-					if instructionsText != "" {
-						sysMsg := []byte(`{"role":"user","content":""}`)
-						sysMsg, _ = sjson.SetBytes(sysMsg, "content", instructionsText)
-						messageBlocks = append(messageBlocks, sysMsg)
-						extractedFromSystem = true
+					if text := itemText.String(); text != "" {
+						if builder.Len() > 0 {
+							builder.WriteByte('\n')
+						}
+						builder.WriteString(text)
 					}
 				}
-				return instructionsText == ""
+				return true
 			})
+			if instructionsText = builder.String(); instructionsText != "" {
+				sysMsg := []byte(`{"role":"user","content":""}`)
+				sysMsg, _ = sjson.SetBytes(sysMsg, "content", instructionsText)
+				messageBlocks = append(messageBlocks, sysMsg)
+				extractedFromSystem = true
+			}
 		}
 	}
 
@@ -758,19 +760,22 @@ func qualifyResponsesNamespaceToolName(namespaceName, childName string) string {
 	return namespaceName + "__" + childName
 }
 
-func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, qualifiedName string) (name, namespace string) {
-	qualifiedName = strings.TrimSpace(qualifiedName)
-	if qualifiedName == "" {
-		return "", ""
-	}
+// responsesQualifiedToolName maps a qualified function name back to its
+// namespace tool child.
+type responsesQualifiedToolName struct {
+	name      string
+	namespace string
+}
 
+// responsesQualifiedFunctionCallMap builds the qualified-name lookup once per
+// request; the streaming converter caches it instead of re-scanning every
+// namespace tool on each function-call event.
+func responsesQualifiedFunctionCallMap(requestRawJSON []byte) map[string]responsesQualifiedToolName {
 	tools := gjson.GetBytes(requestRawJSON, "tools")
 	if !tools.Exists() || !tools.IsArray() {
-		return qualifiedName, ""
+		return nil
 	}
-
-	var bestNamespace string
-	var bestChild string
+	out := map[string]responsesQualifiedToolName{}
 	tools.ForEach(func(_, tool gjson.Result) bool {
 		if strings.TrimSpace(tool.Get("type").String()) != "namespace" {
 			return true
@@ -788,19 +793,26 @@ func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, quali
 			if childName == "" {
 				return true
 			}
-			if qualifyResponsesNamespaceToolName(namespaceName, childName) == qualifiedName {
-				bestNamespace = namespaceName
-				bestChild = childName
+			qualified := qualifyResponsesNamespaceToolName(namespaceName, childName)
+			if _, exists := out[qualified]; !exists {
+				out[qualified] = responsesQualifiedToolName{name: childName, namespace: namespaceName}
 			}
 			return true
 		})
 		return true
 	})
+	return out
+}
 
-	if bestNamespace == "" || bestChild == "" {
-		return qualifiedName, ""
+func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, qualifiedName string) (name, namespace string) {
+	qualifiedName = strings.TrimSpace(qualifiedName)
+	if qualifiedName == "" {
+		return "", ""
 	}
-	return bestChild, bestNamespace
+	if nn, ok := responsesQualifiedFunctionCallMap(requestRawJSON)[qualifiedName]; ok {
+		return nn.name, nn.namespace
+	}
+	return qualifiedName, ""
 }
 
 func isUnsupportedOpenAIBuiltinToolType(toolType string) bool {

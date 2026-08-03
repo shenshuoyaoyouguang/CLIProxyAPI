@@ -39,7 +39,8 @@ type claudeUsageTokens struct {
 	HasUsage                 bool
 }
 
-// ToolCallAccumulator 别名到 common.ToolCallAccumulator，统一三处重复定义。
+// ToolCallAccumulator aliases the shared common.ToolCallAccumulator, unifying
+// the three previously duplicated definitions.
 type ToolCallAccumulator = translatorcommon.ToolCallAccumulator
 
 func (u *claudeUsageTokens) Merge(usage gjson.Result) {

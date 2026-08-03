@@ -108,11 +108,13 @@ func AppendSSEEventBytes(out []byte, event string, payload []byte, trailingNewli
 	return out
 }
 
-// SSEDataPayload 从 SSE 行中提取 `data:` 后的 payload。
-// 要求行首（去除首尾空白后）为 `data:` 前缀，其后可选跟恰好一个空格；
-// 返回去掉前缀与首尾空白的 payload。非 `data:` 行返回 (nil, false)。
-// 该 helper 统一了原先各处 `bytes.HasPrefix(line, []byte("data:"))` + 裸切片的写法，
-// 避免误匹配 `data:payload`（无空格）之外的子串前缀。
+// SSEDataPayload extracts the payload after a `data:` prefix from an SSE line.
+// The line (after trimming leading/trailing whitespace) must start with
+// `data:` followed by at most one space; the payload is returned with the
+// prefix and surrounding whitespace removed. Non-`data:` lines return
+// (nil, false). This helper unifies the previous ad-hoc
+// `bytes.HasPrefix(line, []byte("data:"))` + raw-slice copies scattered across
+// translators, avoiding mismatches on prefixes other than `data:payload`.
 func SSEDataPayload(line []byte) ([]byte, bool) {
 	line = bytes.TrimSpace(line)
 	if !bytes.HasPrefix(line, []byte("data:")) {

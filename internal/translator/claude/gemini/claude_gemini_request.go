@@ -22,12 +22,6 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var (
-	user    = ""
-	account = ""
-	session = ""
-)
-
 // ConvertGeminiRequestToClaude parses and transforms a Gemini API request into Claude Code API format.
 // It extracts the model name, system instruction, message contents, and tool declarations
 // from the raw JSON request and returns them in the format expected by the Claude Code API.
@@ -49,18 +43,18 @@ var (
 func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 
-	if account == "" {
-		u, _ := uuid.NewRandom()
-		account = u.String()
-	}
-	if session == "" {
-		u, _ := uuid.NewRandom()
-		session = u.String()
-	}
-	if user == "" {
-		sum := sha256.Sum256([]byte(account + session))
-		user = hex.EncodeToString(sum[:])
-	}
+	// Generate a per-request user/account/session identity. These MUST NOT be
+	// package-level globals: ConvertGeminiRequestToClaude is invoked
+	// concurrently for independent requests, and shared mutable package state
+	// is both a data race (unsynchronized lazy init) and a per-request
+	// isolation bug -- every request would be tagged with the same user_id,
+	// collapsing distinct clients into one identity for billing/cloaking.
+	accountUUID, _ := uuid.NewRandom()
+	account := accountUUID.String()
+	sessionUUID, _ := uuid.NewRandom()
+	session := sessionUUID.String()
+	sum := sha256.Sum256([]byte(account + session))
+	user := hex.EncodeToString(sum[:])
 	userID := fmt.Sprintf("user_%s_account_%s_session_%s", user, account, session)
 
 	// Base Claude message payload

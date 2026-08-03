@@ -181,19 +181,28 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 							}
 						case "image_url":
 							imageURL := item.Get("image_url.url").String()
-							if len(imageURL) > 5 {
+							// Only data: URLs can be inlined; the previous code
+							// unconditionally stripped a "data:" prefix, silently
+							// dropping https:// image URLs.
+							if strings.HasPrefix(imageURL, "data:") && len(imageURL) > 5 {
 								pieces := strings.SplitN(imageURL[5:], ";", 2)
 								if len(pieces) == 2 && len(pieces[1]) > 7 {
-									partItems = append(partItems, geminiInlineDataPart(pieces[0], pieces[1][7:], geminiFunctionThoughtSignature))
+									// Image parts must not carry the function-call
+									// thought-signature sentinel.
+									partItems = append(partItems, geminiInlineDataPart(pieces[0], pieces[1][7:], ""))
 								}
+							} else if imageURL != "" {
+								log.Warn("skipping non-data image_url: Gemini requires inline base64 images")
 							}
 						case "video_url":
 							videoURL := item.Get("video_url.url").String()
-							if len(videoURL) > 5 {
+							if strings.HasPrefix(videoURL, "data:") && len(videoURL) > 5 {
 								pieces := strings.SplitN(videoURL[5:], ";", 2)
 								if len(pieces) == 2 && len(pieces[1]) > 7 {
 									partItems = append(partItems, geminiInlineDataPart(pieces[0], pieces[1][7:], ""))
 								}
+							} else if videoURL != "" {
+								log.Warn("skipping non-data video_url: Gemini requires inline base64 videos")
 							}
 						case "file":
 							filename := item.Get("file.filename").String()
@@ -279,7 +288,15 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 							if response == "" {
 								response = "{}"
 							}
-							part, _ = sjson.SetBytes(part, "functionResponse.response.result", []byte(response))
+							// A string-typed tool result is stored raw with surrounding
+							// JSON quotes; re-encoding it as a string would leave
+							// literal quote characters in the model's result.
+							// Object/array results are embedded as raw JSON instead.
+							if parsed := gjson.Parse(response); parsed.IsObject() || parsed.IsArray() {
+								part, _ = sjson.SetRawBytes(part, "functionResponse.response.result", []byte(response))
+							} else {
+								part, _ = sjson.SetBytes(part, "functionResponse.response.result", parsed.String())
+							}
 							responseParts = append(responseParts, part)
 						}
 					}

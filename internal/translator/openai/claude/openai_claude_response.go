@@ -67,7 +67,8 @@ type ConvertOpenAIResponseToAnthropicParams struct {
 	NextContentBlockIndex int
 }
 
-// ToolCallAccumulator 别名到 common.ToolCallAccumulator，统一三处重复定义。
+// ToolCallAccumulator aliases the shared common.ToolCallAccumulator, unifying
+// the three previously duplicated definitions.
 type ToolCallAccumulator = translatorcommon.ToolCallAccumulator
 
 // ConvertOpenAIResponseToClaude converts OpenAI streaming response format to Anthropic API format.
@@ -120,7 +121,7 @@ func ConvertOpenAIResponseToClaude(_ context.Context, _ string, originalRequestR
 
 	streamResult := gjson.GetBytes(originalRequestRawJSON, "stream")
 	if !streamResult.Exists() || (streamResult.Exists() && streamResult.Type == gjson.False) {
-		return convertOpenAINonStreamingToAnthropic(rawJSON)
+		return convertOpenAINonStreamingToAnthropic(rawJSON, (*param).(*ConvertOpenAIResponseToAnthropicParams).ToolNameMap)
 	} else {
 		return convertOpenAIStreamingChunkToAnthropic(rawJSON, (*param).(*ConvertOpenAIResponseToAnthropicParams))
 	}
@@ -398,6 +399,17 @@ func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams)
 		param.ContentBlocksStopped = true
 	}
 
+	// A usage-only or empty upstream (or an immediate [DONE]) must not emit
+	// message_delta/message_stop without message_start: clients reject the
+	// resulting malformed SSE. Backfill message_start first in that case.
+	if !param.MessageStarted {
+		messageStartJSON := []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
+		messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.id", param.MessageID)
+		messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.model", param.Model)
+		results = append(results, translatorcommon.AppendSSEEventBytes(nil, "message_start", messageStartJSON, 2))
+		param.MessageStarted = true
+	}
+
 	// Unconditionally emit the final message_delta if it has not been sent yet
 	// (e.g. the upstream ended with [DONE] without ever sending a finish_reason,
 	// or usage never arrived). This guarantees the Anthropic stream terminates
@@ -412,7 +424,7 @@ func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams)
 }
 
 // convertOpenAINonStreamingToAnthropic converts OpenAI non-streaming response to Anthropic format
-func convertOpenAINonStreamingToAnthropic(rawJSON []byte) [][]byte {
+func convertOpenAINonStreamingToAnthropic(rawJSON []byte, toolNameMap map[string]string) [][]byte {
 	root := gjson.ParseBytes(rawJSON)
 
 	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
@@ -445,7 +457,7 @@ func convertOpenAINonStreamingToAnthropic(rawJSON []byte) [][]byte {
 			toolCalls.ForEach(func(_, toolCall gjson.Result) bool {
 				toolUseBlock := []byte(`{"type":"tool_use","id":"","name":"","input":{}}`)
 				toolUseBlock, _ = sjson.SetBytes(toolUseBlock, "id", util.SanitizeClaudeToolID(toolCall.Get("id").String()))
-				toolUseBlock, _ = sjson.SetBytes(toolUseBlock, "name", toolCall.Get("function.name").String())
+				toolUseBlock, _ = sjson.SetBytes(toolUseBlock, "name", util.MapToolName(toolNameMap, toolCall.Get("function.name").String()))
 
 				argsStr := util.FixJSON(toolCall.Get("function.arguments").String())
 				if argsStr != "" && gjson.Valid(argsStr) {

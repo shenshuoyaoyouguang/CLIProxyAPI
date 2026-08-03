@@ -7,8 +7,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestConvertGeminiResponseToOpenAIIncludesZeroCompletionTokensWhenMissing(t *testing.T) {
+func TestConvertGeminiResponseToOpenAICompletionTokensIncludeReasoning(t *testing.T) {
 	var param any
+	// No candidatesTokenCount: completion_tokens falls back to the reasoning
+	// tokens, which OpenAI counts as completion output.
 	chunk := []byte(`{"usageMetadata":{"promptTokenCount":16,"thoughtsTokenCount":42,"totalTokenCount":58}}`)
 
 	result := ConvertGeminiResponseToOpenAI(context.Background(), "model", nil, nil, chunk, &param)
@@ -16,18 +18,18 @@ func TestConvertGeminiResponseToOpenAIIncludesZeroCompletionTokensWhenMissing(t 
 		t.Fatalf("expected 1 result, got %d", len(result))
 	}
 	completionTokens := gjson.GetBytes(result[0], "usage.completion_tokens")
-	if !completionTokens.Exists() || completionTokens.Int() != 0 {
-		t.Fatalf("completion_tokens = %s, want present with value 0. Output: %s", completionTokens.Raw, result[0])
+	if !completionTokens.Exists() || completionTokens.Int() != 42 {
+		t.Fatalf("completion_tokens = %s, want present with value 42 (candidates+thoughts). Output: %s", completionTokens.Raw, result[0])
 	}
 }
 
-func TestConvertGeminiResponseToOpenAINonStreamIncludesZeroCompletionTokensWhenMissing(t *testing.T) {
+func TestConvertGeminiResponseToOpenAINonStreamCompletionTokensIncludeReasoning(t *testing.T) {
 	response := []byte(`{"usageMetadata":{"promptTokenCount":16,"thoughtsTokenCount":42,"totalTokenCount":58}}`)
 
 	result := ConvertGeminiResponseToOpenAINonStream(context.Background(), "model", nil, nil, response, nil)
 	completionTokens := gjson.GetBytes(result, "usage.completion_tokens")
-	if !completionTokens.Exists() || completionTokens.Int() != 0 {
-		t.Fatalf("completion_tokens = %s, want present with value 0. Output: %s", completionTokens.Raw, result)
+	if !completionTokens.Exists() || completionTokens.Int() != 42 {
+		t.Fatalf("completion_tokens = %s, want present with value 42 (candidates+thoughts). Output: %s", completionTokens.Raw, result)
 	}
 }
 

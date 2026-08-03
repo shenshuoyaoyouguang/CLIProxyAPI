@@ -101,40 +101,45 @@ func ConvertInteractionsResponseToOpenAIResponsesNonStream(ctx context.Context, 
 }
 
 func convertInteractionsEventToResponses(modelName string, rawJSON []byte, st *interactionsToResponsesStreamState) [][]byte {
-	payload := interactionsSSEPayload(rawJSON)
-	if len(payload) == 0 {
-		return nil
-	}
-	if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
-		if st.Done {
-			return nil
+	// A single chunk may carry several data: lines; process each event so none
+	// is silently dropped.
+	var out [][]byte
+	for _, payload := range interactionsSSEPayloads(rawJSON) {
+		if len(payload) == 0 {
+			continue
 		}
-		st.Done = true
-		return [][]byte{[]byte("data: [DONE]")}
-	}
-	root := gjson.ParseBytes(payload)
-	if !root.Exists() {
-		return nil
-	}
-	switch root.Get("event_type").String() {
-	case "interaction.created":
-		return [][]byte{responsesCreatedEvent(modelName, root, st)}
-	case "step.start":
-		return interactionsStepStartToResponses(root, st)
-	case "step.delta":
-		return interactionsStepDeltaToResponses(root, st)
-	case "step.stop":
-		return interactionsStepStopToResponses(root, st)
-	case "interaction.completed", "finish":
-		return [][]byte{responsesCompletedEvent(modelName, root, st)}
-	case "done":
-		if st.Done {
-			return nil
+		if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
+			if st.Done {
+				continue
+			}
+			st.Done = true
+			out = append(out, []byte("data: [DONE]"))
+			continue
 		}
-		st.Done = true
-		return [][]byte{[]byte("data: [DONE]")}
+		root := gjson.ParseBytes(payload)
+		if !root.Exists() {
+			continue
+		}
+		switch root.Get("event_type").String() {
+		case "interaction.created":
+			out = append(out, responsesCreatedEvent(modelName, root, st))
+		case "step.start":
+			out = append(out, interactionsStepStartToResponses(root, st)...)
+		case "step.delta":
+			out = append(out, interactionsStepDeltaToResponses(root, st)...)
+		case "step.stop":
+			out = append(out, interactionsStepStopToResponses(root, st)...)
+		case "interaction.completed", "finish":
+			out = append(out, responsesCompletedEvent(modelName, root, st))
+		case "done":
+			if st.Done {
+				continue
+			}
+			st.Done = true
+			out = append(out, []byte("data: [DONE]"))
+		}
 	}
-	return nil
+	return out
 }
 
 func interactionsStepToResponsesOutput(step gjson.Result) ([]byte, bool) {
@@ -497,41 +502,46 @@ func ConvertOpenAIResponsesResponseToInteractionsNonStream(ctx context.Context, 
 }
 
 func convertOpenAIResponsesEventToInteractions(modelName string, rawJSON []byte, st *responsesToInteractionsStreamState) [][]byte {
-	payload := interactionsSSEPayload(rawJSON)
-	if len(payload) == 0 {
-		return nil
+	// A single chunk may carry several data: lines; process each event so none
+	// is silently dropped.
+	var out [][]byte
+	for _, payload := range interactionsSSEPayloads(rawJSON) {
+		if len(payload) == 0 {
+			continue
+		}
+		if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
+			out = append(out, appendInteractionsDoneDirect(nil, st)...)
+			continue
+		}
+		root := gjson.ParseBytes(payload)
+		if !root.Exists() {
+			continue
+		}
+		switch root.Get("type").String() {
+		case "response.created":
+			out = append(out, appendInteractionsCreatedDirect(nil, st, modelName, root.Get("response"))...)
+		case "response.output_text.delta":
+			stepOut := ensureInteractionsStepDirect(nil, st, modelName, "model_output", gjson.Result{})
+			stepOut = appendInteractionsTextDeltaDirect(stepOut, st, root.Get("delta").String(), false)
+			st.markTextSent(textKeysFromResponsesEvent(root))
+			out = append(out, stepOut...)
+		case "response.reasoning_summary_text.delta":
+			stepOut := ensureInteractionsStepDirect(nil, st, modelName, "thought", gjson.Result{})
+			out = append(out, appendInteractionsTextDeltaDirect(stepOut, st, root.Get("delta").String(), true)...)
+		case "response.output_item.added":
+			out = append(out, openAIResponsesOutputItemAddedToInteractions(modelName, root, st)...)
+		case "response.function_call_arguments.delta":
+			stepOut := ensureInteractionsFunctionCallStep(nil, st, modelName, root)
+			stepOut = appendInteractionsArgumentsDeltaDirect(stepOut, st, root.Get("delta").String())
+			st.markFunctionArgsSent(functionArgsKeysFromResponsesEvent(root))
+			out = append(out, stepOut...)
+		case "response.output_item.done":
+			out = append(out, openAIResponsesOutputItemDoneToInteractions(modelName, root, st)...)
+		case "response.completed":
+			out = append(out, openAIResponsesCompletedToInteractions(modelName, root.Get("response"), st)...)
+		}
 	}
-	if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
-		return appendInteractionsDoneDirect(nil, st)
-	}
-	root := gjson.ParseBytes(payload)
-	if !root.Exists() {
-		return nil
-	}
-	switch root.Get("type").String() {
-	case "response.created":
-		return appendInteractionsCreatedDirect(nil, st, modelName, root.Get("response"))
-	case "response.output_text.delta":
-		out := ensureInteractionsStepDirect(nil, st, modelName, "model_output", gjson.Result{})
-		out = appendInteractionsTextDeltaDirect(out, st, root.Get("delta").String(), false)
-		st.markTextSent(textKeysFromResponsesEvent(root))
-		return out
-	case "response.reasoning_summary_text.delta":
-		out := ensureInteractionsStepDirect(nil, st, modelName, "thought", gjson.Result{})
-		return appendInteractionsTextDeltaDirect(out, st, root.Get("delta").String(), true)
-	case "response.output_item.added":
-		return openAIResponsesOutputItemAddedToInteractions(modelName, root, st)
-	case "response.function_call_arguments.delta":
-		out := ensureInteractionsFunctionCallStep(nil, st, modelName, root)
-		out = appendInteractionsArgumentsDeltaDirect(out, st, root.Get("delta").String())
-		st.markFunctionArgsSent(functionArgsKeysFromResponsesEvent(root))
-		return out
-	case "response.output_item.done":
-		return openAIResponsesOutputItemDoneToInteractions(modelName, root, st)
-	case "response.completed":
-		return openAIResponsesCompletedToInteractions(modelName, root.Get("response"), st)
-	}
-	return nil
+	return out
 }
 
 func openAIResponsesOutputItemToInteractionsStep(item gjson.Result) ([]byte, bool) {
@@ -822,13 +832,17 @@ func setInteractionsUsageFromResponses(out []byte, path string, usage gjson.Resu
 	return out
 }
 
-func interactionsSSEPayload(rawJSON []byte) []byte {
+// interactionsSSEPayloads splits rawJSON into its individual data payloads. A
+// single chunk may carry several data: lines; joining them with newlines (as
+// the previous implementation did) produces invalid JSON that drops all but the
+// first event.
+func interactionsSSEPayloads(rawJSON []byte) [][]byte {
 	trimmed := bytes.TrimSpace(rawJSON)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) {
-		return trimmed
+		return [][]byte{trimmed}
 	}
 	if bytes.HasPrefix(trimmed, []byte("data:")) {
-		return bytes.TrimSpace(trimmed[len("data:"):])
+		return [][]byte{bytes.TrimSpace(trimmed[len("data:"):])}
 	}
 	var dataLines [][]byte
 	for _, line := range bytes.Split(trimmed, []byte("\n")) {
@@ -838,9 +852,9 @@ func interactionsSSEPayload(rawJSON []byte) []byte {
 		}
 	}
 	if len(dataLines) > 0 {
-		return bytes.Join(dataLines, []byte("\n"))
+		return dataLines
 	}
-	return trimmed
+	return [][]byte{trimmed}
 }
 
 func responseModel(modelName string, root gjson.Result) string {

@@ -233,7 +233,8 @@ func unwrapCustomToolInputRaw(arguments string) (string, bool) {
 		}
 		return v.Raw, true
 	}
-	// 无包装时：对象/数组参数按 raw JSON 处理，其余按纯文本处理。
+	// Unwrapped: object/array arguments are treated as raw JSON, everything
+	// else as plain text.
 	parsed := gjson.Parse(arguments)
 	if parsed.IsObject() || parsed.IsArray() {
 		return arguments, true
@@ -241,9 +242,10 @@ func unwrapCustomToolInputRaw(arguments string) (string, bool) {
 	return arguments, false
 }
 
-// setCustomToolInputBytes 写入 custom_tool_call 的 freeform input 到指定 sjson
-// 路径。结构化 input 以 raw JSON 嵌入（与 function-tool parameters 写法一致），
-// 纯字符串以 JSON string 嵌入，避免对结构化 input 的二次转义。
+// setCustomToolInputBytes writes a custom_tool_call freeform input to the
+// given sjson path. Structured input is embedded as raw JSON (matching the
+// function-tool parameters style); plain strings are embedded as JSON strings
+// to avoid double-escaping structured input.
 func setCustomToolInputBytes(item []byte, path, arguments string) []byte {
 	value, raw := unwrapCustomToolInputRaw(arguments)
 	if raw {

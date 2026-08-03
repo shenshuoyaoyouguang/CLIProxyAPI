@@ -234,7 +234,8 @@ func claudeToolResultToInteractions(part gjson.Result) []byte {
 					contentPart, _ = sjson.SetBytes(contentPart, "text", item.Get("text").String())
 					contentItems = append(contentItems, contentPart)
 				case "image", "document", "file":
-					// 非文本部分降级为 text 占位，保证 tool_result 不丢失。
+					// Non-text parts degrade to a text placeholder so the
+					// tool_result is not dropped.
 					text := item.Get("text").String()
 					if text == "" {
 						text = fmt.Sprintf("[%s payload omitted]", item.Get("type").String())

@@ -499,10 +499,13 @@ type FunctionCallGroup struct {
 	CallNames       []string // ordered function call names for backfilling empty response names
 }
 
-// matchGroupResponsesByName 按 CallNames 顺序从 collected 中匹配 functionResponse。
-// 优先按 functionResponse.name 精确匹配；name 为空的 response 视为通配符，按出现顺序回退匹配。
-// 返回与 CallNames 顺序对齐的 matched 切片；若任一 CallName 未匹配到 response，返回 nil 和原 collected。
-// 这避免了原 FIFO-by-count 实现在 response 顺序/数量与 call 不一致时的错误关联与丢弃。
+// matchGroupResponsesByName matches functionResponses from collected in
+// CallNames order. Exact functionResponse.name matches are preferred; responses
+// with an empty name act as wildcards matched in occurrence order as a
+// fallback. Returns a matched slice aligned with CallNames order; if any
+// CallName fails to match a response, nil and the original collected are
+// returned. This avoids the mis-association and dropping of the previous
+// FIFO-by-count implementation when response order/count disagrees with calls.
 func matchGroupResponsesByName(collected []gjson.Result, callNames []string) (matched []gjson.Result, remaining []gjson.Result) {
 	if len(callNames) == 0 {
 		return nil, collected
@@ -511,7 +514,7 @@ func matchGroupResponsesByName(collected []gjson.Result, callNames []string) (ma
 	matched = make([]gjson.Result, 0, len(callNames))
 	for _, callName := range callNames {
 		found := false
-		// 第一轮：精确 name 匹配
+		// First pass: exact name match
 		for i, resp := range collected {
 			if used[i] {
 				continue
@@ -526,7 +529,7 @@ func matchGroupResponsesByName(collected []gjson.Result, callNames []string) (ma
 		if found {
 			continue
 		}
-		// 第二轮：空 name 通配符（按出现顺序回退）
+		// Second pass: empty-name wildcard (fallback in occurrence order)
 		for i, resp := range collected {
 			if used[i] {
 				continue
@@ -610,8 +613,10 @@ func fixCLIToolResponse(input string) (string, error) {
 	// Extract the contents array which contains the conversation messages
 	contents := parsed.Get("request.contents")
 	if !contents.Exists() {
-		// log.Debugf(input)
-		return input, fmt.Errorf("contents not found in input")
+		// No contents to fix up (e.g. a request carrying only
+		// system_instruction); pass through unchanged. The previous error made
+		// the caller return an empty request body, failing the request.
+		return input, nil
 	}
 
 	needsGrouping := false
@@ -672,12 +677,13 @@ func fixCLIToolResponse(input string) (string, error) {
 		if len(responsePartsInThisContent) > 0 {
 			collectedResponses = append(collectedResponses, responsePartsInThisContent...)
 
-			// 按 functionResponse.name 匹配 pending group（空 name 视为通配符），
-			// 避免按 count 切片导致 response 关联到错误的 call。
+			// Match pending groups by functionResponse.name (empty name acts as
+			// a wildcard) instead of slicing by count, which could associate a
+			// response with the wrong call.
 			for len(pendingGroups) > 0 {
 				matched, remaining := matchGroupResponsesByName(collectedResponses, pendingGroups[0].CallNames)
 				if matched == nil {
-					break // 等待更多 response
+					break // wait for more responses
 				}
 				appendFunctionResponses(matched, pendingGroups[0].CallNames)
 				collectedResponses = remaining

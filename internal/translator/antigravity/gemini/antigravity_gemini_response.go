@@ -47,8 +47,12 @@ func ConvertAntigravityResponseToGemini(ctx context.Context, _ string, originalR
 				chunk = restoreGeminiFunctionNames(chunk, originalRequestRawJSON)
 			}
 		} else {
+			// Alt mode: the raw payload is an array of response objects; extract
+			// each response member. This branch previously parsed the nil `chunk`
+			// variable, which always yielded an empty array and dropped the
+			// response entirely whenever an alt value was configured.
 			chunkTemplate := []byte("[]")
-			responseResult := gjson.ParseBytes(chunk)
+			responseResult := gjson.ParseBytes(rawJSON)
 			if responseResult.IsArray() {
 				responseResultItems := responseResult.Array()
 				for i := 0; i < len(responseResultItems); i++ {

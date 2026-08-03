@@ -95,12 +95,16 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	// Extract and set usage metadata (token counts).
 	if usageResult := gjson.GetBytes(rawJSON, "response.usageMetadata"); usageResult.Exists() {
 		cachedTokenCount := usageResult.Get("cachedContentTokenCount").Int()
-		template, _ = sjson.SetBytes(template, "usage.completion_tokens", usageResult.Get("candidatesTokenCount").Int())
+		// Gemini-family candidatesTokenCount excludes thinking tokens; OpenAI's
+		// completion_tokens includes reasoning, so sum both (reasoning_tokens
+		// stays as a separate breakdown) — matching the Claude direction.
+		candidatesTokenCount := usageResult.Get("candidatesTokenCount").Int()
+		thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
+		template, _ = sjson.SetBytes(template, "usage.completion_tokens", candidatesTokenCount+thoughtsTokenCount)
 		if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Exists() {
 			template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokenCountResult.Int())
 		}
 		promptTokenCount := usageResult.Get("promptTokenCount").Int()
-		thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
 		template, _ = sjson.SetBytes(template, "usage.prompt_tokens", promptTokenCount)
 		if thoughtsTokenCount > 0 {
 			template, _ = sjson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", thoughtsTokenCount)
@@ -199,13 +203,14 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 		}
 	}
 
-	// Determine finish_reason only on the final chunk (has both finishReason and usage metadata)
+	// Determine finish_reason whenever the upstream reported it, even when
+	// usage arrives in a separate chunk; gating it on usage left the client
+	// with a stream that never reached a terminal state.
 	params := (*param).(*convertCliResponseToOpenAIChatParams)
 	upstreamFinishReason := params.UpstreamFinishReason
 	sawToolCall := params.SawToolCall
 
-	usageExists := gjson.GetBytes(rawJSON, "response.usageMetadata").Exists()
-	isFinalChunk := upstreamFinishReason != "" && usageExists
+	isFinalChunk := upstreamFinishReason != ""
 
 	if isFinalChunk {
 		var finishReason string

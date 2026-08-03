@@ -335,7 +335,10 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 			choice := toolChoice.String()
 			switch choice {
 			case "none":
-				// Don't set tool_choice, Claude Code will not use tools
+				// Explicit opt-out: drop the tools array so Claude cannot invoke
+				// tools (without tool_choice Claude defaults to auto and may call
+				// the tools that were already written above).
+				out, _ = sjson.DeleteBytes(out, "tools")
 			case "auto":
 				out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(`{"type":"auto"}`))
 			case "required":

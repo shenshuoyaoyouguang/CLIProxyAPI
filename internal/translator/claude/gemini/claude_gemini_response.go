@@ -123,6 +123,7 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 
 	case "content_block_delta":
 		// Handle content delta (text, thinking, or tool use arguments)
+		wrotePart := false
 		if delta := root.Get("delta"); delta.Exists() {
 			deltaType := delta.Get("type").String()
 
@@ -133,6 +134,7 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 					textPart := []byte(`{"text":""}`)
 					textPart, _ = sjson.SetBytes(textPart, "text", text.String())
 					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", textPart)
+					wrotePart = true
 				}
 			case "thinking_delta":
 				// Thinking/reasoning content delta for models with reasoning capabilities
@@ -140,6 +142,7 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 					thinkingPart := []byte(`{"thought":true,"text":""}`)
 					thinkingPart, _ = sjson.SetBytes(thinkingPart, "text", text.String())
 					template, _ = sjson.SetRawBytes(template, "candidates.0.content.parts.-1", thinkingPart)
+					wrotePart = true
 				}
 			case "input_json_delta":
 				// Tool use input delta - accumulate partial_json by index for later assembly at content_block_stop
@@ -158,6 +161,11 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 				}
 				return [][]byte{}
 			}
+		}
+		if !wrotePart {
+			// Unhandled delta types (e.g. signature_delta) or empty deltas must
+			// not emit a bare candidate chunk with empty parts.
+			return [][]byte{}
 		}
 		return [][]byte{template}
 
@@ -210,8 +218,10 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 
 	case "message_delta":
 		// Handle message-level changes (like stop reason and usage information)
+		stopReasonSet := false
 		if delta := root.Get("delta"); delta.Exists() {
 			if stopReason := delta.Get("stop_reason"); stopReason.Exists() {
+				stopReasonSet = true
 				switch stopReason.String() {
 				case "end_turn":
 					template, _ = sjson.SetBytes(template, "candidates.0.finishReason", "STOP")
@@ -256,7 +266,12 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 			// Set traffic type (required by Gemini API)
 			template, _ = sjson.SetBytes(template, "usageMetadata.trafficType", "PROVISIONED_THROUGHPUT")
 		}
-		template, _ = sjson.SetBytes(template, "candidates.0.finishReason", "STOP")
+		// Default to STOP only when the delta carried no stop_reason; otherwise
+		// the mapped reason (e.g. MAX_TOKENS for truncated output) would be
+		// clobbered and clients would treat truncation as a normal completion.
+		if !stopReasonSet {
+			template, _ = sjson.SetBytes(template, "candidates.0.finishReason", "STOP")
+		}
 
 		return [][]byte{template}
 	case "message_stop":
@@ -303,8 +318,9 @@ func ConvertClaudeResponseToGeminiNonStream(_ context.Context, modelName string,
 	streamingEvents := make([][]byte, 0)
 
 	scanner := bufio.NewScanner(bytes.NewReader(rawJSON))
-	buffer := make([]byte, 52_428_800) // 50MB
-	scanner.Buffer(buffer, 52_428_800)
+	// Grow from a small initial buffer to the 50 MiB max instead of allocating
+	// the whole maximum up front for every non-streaming conversion.
+	scanner.Buffer(make([]byte, 64<<10), 52_428_800)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		// log.Debug(string(line))
@@ -331,6 +347,7 @@ func ConvertClaudeResponseToGeminiNonStream(_ context.Context, modelName string,
 	// Process each streaming event and collect parts
 	var allParts [][]byte
 	var finalUsageJSON []byte
+	var finalFinishReason string
 	var responseID string
 	var createdAt int64
 
@@ -454,6 +471,22 @@ func ConvertClaudeResponseToGeminiNonStream(_ context.Context, modelName string,
 			}
 
 		case "message_delta":
+			// Map the final stop reason so truncated output (max_tokens) is not
+			// reported as a normal STOP completion.
+			if delta := root.Get("delta"); delta.Exists() {
+				if stopReason := delta.Get("stop_reason"); stopReason.Exists() {
+					switch stopReason.String() {
+					case "end_turn", "tool_use", "stop_sequence":
+						finalFinishReason = "STOP"
+					case "max_tokens":
+						finalFinishReason = "MAX_TOKENS"
+					case "content_filter":
+						finalFinishReason = "SAFETY"
+					default:
+						finalFinishReason = "STOP"
+					}
+				}
+			}
 			// Extract final usage information using sjson for token counts and metadata
 			if usage := root.Get("usage"); usage.Exists() {
 				usageJSON := []byte(`{}`)
@@ -514,6 +547,12 @@ func ConvertClaudeResponseToGeminiNonStream(_ context.Context, modelName string,
 	// Set usage metadata
 	if len(finalUsageJSON) > 0 {
 		template, _ = sjson.SetRawBytes(template, "usageMetadata", finalUsageJSON)
+	}
+
+	// Override the template's default STOP with the actual mapped stop reason
+	// when the upstream reported one (e.g. MAX_TOKENS for truncation).
+	if finalFinishReason != "" {
+		template, _ = sjson.SetBytes(template, "candidates.0.finishReason", finalFinishReason)
 	}
 
 	return template
