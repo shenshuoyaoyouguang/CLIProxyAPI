@@ -368,6 +368,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			return helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", b, originalTranslated, requestedModel, requestPath, opts.Headers)
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
 	translated = e.enhanceModelParams(translated, baseModel)
 	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
 		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)

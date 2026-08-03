@@ -667,14 +667,16 @@ func injectClaudeCodeCurrentDate(payload []byte, now time.Time) []byte {
 		rawBlocks = append(rawBlocks, block.Raw)
 	}
 
-	rawBlocks = append(rawBlocks, "")
-	copy(rawBlocks[1:], rawBlocks)
 	if leadsWithToolResult(content) {
 		// Anthropic requires the user message that immediately follows an
 		// assistant tool_use turn to lead with its tool_result blocks.
-		// Append the reminder so those blocks stay at the head.
-		rawBlocks[len(rawBlocks)-1] = dateBlock
+		// Append the reminder so those blocks stay at the head. Appending
+		// avoids the head-shift below, whose copy would duplicate the first
+		// block and whose tail overwrite would drop the last original block.
+		rawBlocks = append(rawBlocks, dateBlock)
 	} else {
+		rawBlocks = append(rawBlocks, "")
+		copy(rawBlocks[1:], rawBlocks)
 		rawBlocks[0] = dateBlock
 	}
 	payload, _ = sjson.SetRawBytes(payload, contentPath, []byte("["+strings.Join(rawBlocks, ",")+"]"))

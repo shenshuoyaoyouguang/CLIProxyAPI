@@ -3933,6 +3933,26 @@ func TestInjectClaudeCodeCurrentDatePrecedesExistingReminder(t *testing.T) {
 	assertEphemeralUserTextBlock(t, content[2], "continue")
 }
 
+func TestInjectClaudeCodeCurrentDateAppendsAfterLeadingToolResult(t *testing.T) {
+	fixed := time.Date(2026, time.August, 1, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	payload := []byte(`{"messages":[{"role":"user","content":[` +
+		`{"type":"tool_result","tool_use_id":"call_1","content":[{"type":"text","text":"saw 42"}]},` +
+		`{"type":"text","text":"continue"}]}]}`)
+
+	out := injectClaudeCodeCurrentDate(payload, fixed)
+	content := gjson.GetBytes(out, "messages.0.content").Array()
+	if len(content) != 3 {
+		t.Fatalf("content has %d blocks, want tool_result, user text, currentDate: %s", len(content), out)
+	}
+	if got := content[0].Get("type").String(); got != "tool_result" {
+		t.Fatalf("content[0].type = %q, want tool_result kept at head", got)
+	}
+	if got := content[1].Get("text").String(); got != "continue" {
+		t.Fatalf("content[1].text = %q, want preserved user text", got)
+	}
+	assertClaudeCodeCurrentDateBlockAt(t, content[2], fixed)
+}
+
 // Test case 1: String system prompt becomes an authoritative mid-conversation
 // system message after the first user turn.
 func TestCheckSystemInstructionsWithMode_StringSystemPreserved(t *testing.T) {

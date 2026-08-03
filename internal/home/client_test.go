@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -864,8 +865,12 @@ func TestGetPluginSyncTimeoutInterruptsRead(t *testing.T) {
 		SchemaVersion: pluginstore.PluginSyncSchemaVersion, GOOS: "linux", GOARCH: "amd64",
 	})
 	close(release)
-	if !errors.Is(errSync, context.DeadlineExceeded) {
-		t.Fatalf("GetPluginSync() error = %v, want context.DeadlineExceeded", errSync)
+	// The 100ms context deadline and the TCP read deadline race at the same
+	// instant; under load the socket-level "i/o timeout" (net.OpError) may
+	// surface before the context error. Both mean the read was interrupted
+	// promptly, which is what this test asserts.
+	if !errors.Is(errSync, context.DeadlineExceeded) && !errors.Is(errSync, os.ErrDeadlineExceeded) {
+		t.Fatalf("GetPluginSync() error = %v, want context.DeadlineExceeded (or i/o timeout)", errSync)
 	}
 	// Latency assertion is load-bearing: a deadline that only surfaces after
 	// homePluginSyncOperationTimeout (2m) still returns context.DeadlineExceeded.

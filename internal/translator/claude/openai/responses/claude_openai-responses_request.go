@@ -886,17 +886,6 @@ func responsesQualifiedFunctionCallMap(requestRawJSON []byte) map[string]respons
 	return out
 }
 
-func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, qualifiedName string) (name, namespace string) {
-	qualifiedName = strings.TrimSpace(qualifiedName)
-	if qualifiedName == "" {
-		return "", ""
-	}
-	if nn, ok := responsesQualifiedFunctionCallMap(requestRawJSON)[qualifiedName]; ok {
-		return nn.name, nn.namespace
-	}
-	return qualifiedName, ""
-}
-
 func isUnsupportedOpenAIBuiltinToolType(toolType string) bool {
 	switch toolType {
 	case "image_generation", "file_search", "code_interpreter", "computer_use_preview":
