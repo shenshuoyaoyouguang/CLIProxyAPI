@@ -239,18 +239,31 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 
 	// Resolve the entry under a read lock so concurrent readers of the same
 	// model-group bucket (all claude/gpt/gemini models share one bucket) do not
-	// serialize on a single exclusive lock.
+	// serialize on a single exclusive lock. A fresh entry with the current key
+	// shape and a TTL that has not yet decayed past half its window is returned
+	// directly, so steady-state cache hits never take the exclusive write lock.
 	sc.mu.RLock()
-	_, exists := sc.entries[textHash]
+	entry, ok := sc.entries[textHash]
+	hitLegacy := false
 	// issue #10: fall back to the legacy 16-char key shape so entries written
 	// by pre-upgrade code remain readable. On hit, migrate the entry to the
 	// new 64-char key so future lookups skip the fallback path.
-	if !exists {
-		_, exists = sc.entries[legacyTextHash]
+	if !ok {
+		entry, ok = sc.entries[legacyTextHash]
+		hitLegacy = true
 	}
+	if ok && !hitLegacy {
+		age := now.Sub(entry.Timestamp)
+		if age <= SignatureCacheTTL && age <= SignatureCacheTTL/2 {
+			sc.mu.RUnlock()
+			return entry.Signature, nil
+		}
+	}
+	// Legacy hits fall through to the write lock so the entry migrates to the
+	// current key shape.
 	sc.mu.RUnlock()
 
-	if !exists {
+	if !ok {
 		if groupKey == "gemini" {
 			return "skip_thought_signature_validator", nil
 		}
@@ -263,6 +276,7 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 	// or removed the entry in the meantime).
 	sc.mu.Lock()
 	var signature string
+	found := false
 	if entry, ok := sc.entries[textHash]; ok {
 		if now.Sub(entry.Timestamp) > SignatureCacheTTL {
 			// Expired: remove both key shapes for this text.
@@ -273,6 +287,7 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 			entry.Timestamp = now
 			sc.entries[textHash] = entry
 			signature = entry.Signature
+			found = true
 		}
 	} else if entry, ok := sc.entries[legacyTextHash]; ok {
 		if now.Sub(entry.Timestamp) > SignatureCacheTTL {
@@ -285,11 +300,16 @@ func GetCachedSignatureRequired(ctx context.Context, modelName, text string) (st
 			sc.entries[textHash] = entry
 			delete(sc.entries, legacyTextHash)
 			signature = entry.Signature
+			found = true
 		}
 	}
 	sc.mu.Unlock()
 
-	if signature == "" {
+	// The entry state is tracked explicitly: an entry is only ever stored with a
+	// non-empty signature (CacheSignatureBestEffort rejects empty values), so a
+	// missing entry and an empty signature must not be conflated with a
+	// "not found" decision that returns the gemini skip marker.
+	if !found {
 		if groupKey == "gemini" {
 			return "skip_thought_signature_validator", nil
 		}
