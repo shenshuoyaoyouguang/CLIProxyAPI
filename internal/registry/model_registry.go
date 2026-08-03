@@ -1128,8 +1128,12 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 
 		// Subtract clients that are unavailable for this model, attributed by provider,
 		// mirroring buildAvailableModelsLocked accounting: over-quota clients still inside
-		// the recovery window and all suspended clients. A provider with no usable clients
-		// left must not be reported as a supply source for the model.
+		// the recovery window and non-quota suspended clients. Quota-reasoned
+		// suspensions (cooldown) are deliberately NOT part of the unavailable set —
+		// buildAvailableModelsLocked keeps a model available when only cooldown or
+		// expired clients remain — so a provider in cooldown must still be reported
+		// as a supply source. A provider with no usable clients left must not be
+		// reported at all.
 		// NOTE: the quota and suspended sets can contain the same client (a 429 marks
 		// both via conductor MarkResult), so unavailable clients are counted as a
 		// union, not as two independent subtractions.
@@ -1148,11 +1152,14 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 			}
 		}
 		if registration.SuspendedClients != nil {
-			for clientID := range registration.SuspendedClients {
+			for clientID, reason := range registration.SuspendedClients {
 				if clientID == "" {
 					continue
 				}
 				if p, okProvider := r.clientProviders[clientID]; !okProvider || p != name {
+					continue
+				}
+				if strings.EqualFold(reason, "quota") {
 					continue
 				}
 				unavailable[clientID] = struct{}{}
