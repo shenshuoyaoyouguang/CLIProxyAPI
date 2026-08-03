@@ -1118,7 +1118,10 @@ func TestWebsocketRegistryDrainClosesAndEndsRetainedSession(t *testing.T) {
 
 // TestWebsocketReadTokenFilter verifies that readMessage drops events stamped
 // with a token < minToken (stale events from a previous turn on a reused
-// connection) and delivers events with a token >= minToken.
+// connection) and delivers events with a token >= minToken. The token ==
+// minToken case matters: the pump advances the counter before every read, so
+// the first event of the current turn can carry exactly minToken and must be
+// delivered (an inclusive bound would drop it).
 func TestWebsocketReadTokenFilter(t *testing.T) {
 	conn := &websocket.Conn{}
 	sess := &codexWebsocketSession{}

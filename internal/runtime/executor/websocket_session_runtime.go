@@ -306,14 +306,25 @@ func (r *websocketSessionRuntime) closeAllExecutionSessions(reason string) {
 
 	store := r.sessionStore()
 	store.mu.Lock()
+	sessionIDs := make([]string, 0, len(store.sessions))
 	sessions := make([]*codexWebsocketSession, 0, len(store.sessions))
 	for sessionID, sess := range store.sessions {
+		sessionIDs = append(sessionIDs, sessionID)
 		delete(store.sessions, sessionID)
 		if sess != nil {
 			sessions = append(sessions, sess)
 		}
 	}
 	store.mu.Unlock()
+
+	// Invoke the provider callback outside the store lock, mirroring the
+	// single-session path: a callback must not run under the global session
+	// lock, which would couple provider-state locking to the session store's.
+	if r.onSessionRemoved != nil {
+		for i := range sessionIDs {
+			r.onSessionRemoved(sessionIDs[i])
+		}
+	}
 
 	for i := range sessions {
 		r.closeExecutionSession(sessions[i], reason)
@@ -377,6 +388,16 @@ func closeWebsocketSession(sess *codexWebsocketSession, reason string, logDiscon
 // response.completed); they are dropped. Terminal error events are never
 // dropped: they apply to the connection itself, and dropping one would leave the
 // caller blocked instead of surfacing the disconnect.
+//
+// The comparison is intentionally strict: the pump advances the counter before
+// every ReadMessage, so the first event of the current turn can be stamped
+// exactly minToken when the pump began its read before the snapshot (a fresh
+// connection's first event always is); an inclusive bound would drop that
+// legitimate event. The residual race where the pump starts reading a stale
+// event after the snapshot but before the write stamps it > minToken and leaks
+// it through — closing that window would require coordination between the pump
+// and the consumer beyond the counter, so the strict comparison is the safe
+// choice for the common case.
 func (r *websocketSessionRuntime) readMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead, minToken uint64) (int, []byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
