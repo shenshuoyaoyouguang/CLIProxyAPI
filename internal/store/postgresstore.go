@@ -265,7 +265,12 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 				auth.Attributes[cliproxyauth.AttributePath] = path
 				auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourcePostgres
 				if relID, errRel := s.relativeAuthID(path); errRel == nil {
-					_ = s.upsertAuthRecord(ctx, relID, path)
+					if errUpsert := s.upsertAuthRecord(ctx, relID, path); errUpsert != nil {
+						// A transient DB failure must not be silent: the file write
+						// succeeded, but the DB row (used for lookups) may now be
+						// missing until the next sync.
+						log.WithError(errUpsert).WithField("path", path).Warn("postgres store: keep DB record in sync failed")
+					}
 				}
 				return path, nil
 			}
