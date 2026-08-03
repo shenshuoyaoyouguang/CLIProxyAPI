@@ -573,7 +573,14 @@ func (m *Manager) persistAuthCooldownState(ctx context.Context, authID string) {
 		}
 	}
 	m.mu.RUnlock()
-	if store == nil || authSnapshot == nil {
+	if store == nil {
+		return
+	}
+	if authSnapshot == nil {
+		// The auth is no longer registered. A per-auth write cannot address its
+		// cooldown file anymore (the auth's FileName/path attributes are gone),
+		// so fall back to the full snapshot save, which sweeps the stale file.
+		m.persistCooldownStatesLocked(ctx)
 		return
 	}
 

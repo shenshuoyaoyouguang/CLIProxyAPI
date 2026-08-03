@@ -340,6 +340,12 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
+		if shard == nil {
+			// No auth in this provider supports the model: mirror the guarded
+			// call sites below instead of relying on the nil receivers inside
+			// pickReadyLocked/availabilitySummaryLocked to return the same error.
+			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+		}
 		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 		if picked := shard.pickReadyLocked(false, strategy, predicate); picked != nil {
 			return picked, providerKey, nil
