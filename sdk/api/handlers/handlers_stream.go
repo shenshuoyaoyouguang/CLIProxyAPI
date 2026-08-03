@@ -298,6 +298,10 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	streamResult, err := h.AuthManager.ExecuteStream(streamCtx, providers, req, opts)
 	if err != nil {
+		// Cancel the per-attempt context so the failed attempt's executor
+		// goroutine and upstream body read are released immediately (H24j);
+		// the deferred cancel on the success path covers the goroutine exit.
+		cancelStream()
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errMsg := executionErrorMessage(err)
 		lifecycle.completeError(ctx, errMsg)
@@ -307,6 +311,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	if streamResult == nil {
+		cancelStream()
 		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("auth manager returned nil stream")}
 		lifecycle.completeError(ctx, errMsg)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
