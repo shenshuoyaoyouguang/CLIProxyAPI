@@ -452,7 +452,7 @@ func TestCaptureRequestInfoBoundsZstdCompressionBomb(t *testing.T) {
 	}
 }
 
-func TestCaptureRequestInfoRejectsOversizedBodyButPreservesIt(t *testing.T) {
+func TestCaptureRequestInfoOversizedBodySkipsCaptureButPreservesIt(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	oversized := bytes.Repeat([]byte("y"), int(maxEagerRequestBodyBytes)+2)
@@ -460,12 +460,15 @@ func TestCaptureRequestInfoRejectsOversizedBodyButPreservesIt(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(oversized))
 
+	// An oversized body skips eager capture but must not fail the request:
+	// returning an error here would make the middleware drop response logging
+	// for the whole request.
 	info, errCapture := captureRequestInfo(c, true)
-	if errCapture == nil {
-		t.Fatalf("captureRequestInfo succeeded for oversized body (captured %d bytes), want error", len(info.Body))
+	if errCapture != nil {
+		t.Fatalf("captureRequestInfo error = %v, want nil (logging continues without the body)", errCapture)
 	}
-	if !strings.Contains(errCapture.Error(), "exceeds") {
-		t.Fatalf("captureRequestInfo error = %v, want body-size-exceeds error", errCapture)
+	if len(info.Body) != 0 {
+		t.Fatalf("captured body length = %d, want 0 (eager capture skipped)", len(info.Body))
 	}
 
 	// Downstream handlers must still receive the complete body.

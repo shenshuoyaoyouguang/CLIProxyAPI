@@ -143,7 +143,15 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) {
+	// Clone under h.mu: Put/Patch/Delete mutate the slice under the same lock,
+	// so a lock-free read would race with in-place element writes (same crash
+	// class as the oauth-excluded-models / oauth-model-alias handlers).
+	h.mu.Lock()
+	keys := append([]string(nil), h.cfg.APIKeys...)
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"api-keys": keys})
+}
 func (h *Handler) PutAPIKeys(c *gin.Context) {
 	h.putStringList(c, func(v []string) {
 		h.cfg.APIKeys = append([]string(nil), v...)

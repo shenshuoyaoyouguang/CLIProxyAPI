@@ -53,8 +53,9 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		// Capture request information
 		requestInfo, err := captureRequestInfo(c, captureBody)
 		if err != nil {
-			// Log error but continue processing
-			// In a real implementation, you might want to use a proper logger here
+			// Log error but continue processing; response logging is skipped only
+			// when the request body itself failed to read.
+			log.WithError(err).Debug("failed to capture request info, continuing without request logging")
 			c.Next()
 			return
 		}
@@ -74,7 +75,7 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		// Finalize logging after request processing
 		if err = wrapper.Finalize(c); err != nil {
 			// Log error but don't interrupt the response
-			// In a real implementation, you might want to use a proper logger here
+			log.WithError(err).Debug("failed to finalize request log entry")
 		}
 	}
 }
@@ -344,14 +345,19 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 		if int64(len(bodyBytes)) > maxEagerRequestBodyBytes {
 			// Skip eager capture for oversized bodies, but preserve the full body
 			// for downstream handlers by recombining the bytes already read with
-			// whatever remains in the original reader.
+			// whatever remains in the original reader. The request is still
+			// logged with its headers and response, just without the body, so an
+			// oversized payload cannot silently disable request logging.
 			c.Request.Body = io.NopCloser(io.MultiReader(bytes.NewReader(bodyBytes), c.Request.Body))
-			return nil, fmt.Errorf("request body exceeds %d bytes", maxEagerRequestBodyBytes)
+			log.WithFields(log.Fields{
+				"url":    url,
+				"method": method,
+			}).Debugf("request body exceeds %d bytes, skipping body capture", maxEagerRequestBodyBytes)
+		} else {
+			// Restore the body for the actual request processing
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			body = decodeCapturedRequestBodyForLogWithLimit(bodyBytes, c.Request.Header.Get("Content-Encoding"), maxEagerRequestBodyBytes)
 		}
-
-		// Restore the body for the actual request processing
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		body = decodeCapturedRequestBodyForLogWithLimit(bodyBytes, c.Request.Header.Get("Content-Encoding"), maxEagerRequestBodyBytes)
 	}
 
 	return &RequestInfo{
