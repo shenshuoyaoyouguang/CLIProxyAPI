@@ -340,6 +340,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		var param any
 		var streamUsage helps.StreamUsageBuffer
 		defer streamUsage.Publish(ctx, reporter)
+		sawDone := false
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			trimmed := bytes.TrimSpace(line)
@@ -348,6 +349,9 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			}
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			streamUsage.ObserveOpenAIStream(line)
+			if bytes.Equal(bytes.TrimSpace(trimmed[len("data:"):]), []byte("[DONE]")) {
+				sawDone = true
+			}
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param, claudeInputTokens)
 			for i := range chunks {
 				select {
@@ -364,10 +368,11 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
 			}
-		} else {
-			// In case the upstream closed the stream without a terminal [DONE] marker,
-			// feed a synthetic one through the translator so pending completion events
-			// are still emitted exactly once.
+		} else if !sawDone {
+			// The upstream closed the stream without a terminal [DONE] marker.
+			// Feed a synthetic one through the translator so pending completion
+			// events are still emitted; when the stream already carried [DONE],
+			// nothing is synthesized, so the terminal event is never duplicated.
 			doneChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, []byte("data: [DONE]"), &param, claudeInputTokens)
 			for i := range doneChunks {
 				select {
