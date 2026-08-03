@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -443,7 +444,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		}()
 		// Read the SSE stream incrementally with a fixed-size bufio.Reader instead
 		// of a 50MiB-max bufio.Scanner, so a single pathological line can no longer
-		// balloon the per-stream buffer or terminate the stream with ErrTooLong.
+		// terminate the stream with ErrTooLong. Lines beyond maxSSELineBytes still
+		// fail the stream explicitly so a broken upstream cannot accumulate an
+		// unbounded line in memory.
 		reader := bufio.NewReaderSize(httpResp.Body, 64<<10)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
@@ -451,7 +454,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		defer streamUsage.Publish(ctx, reporter)
 		var readErr error
 		for {
-			line, errRead := reader.ReadBytes('\n')
+			line, errRead := readSSELine(reader)
 			if len(line) > 0 {
 				// bufio.Reader keeps the trailing newline; trim it the same way
 				// bufio.Scanner used to (one trailing "\n" and one "\r").
@@ -524,6 +527,44 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+// maxSSELineBytes caps a single SSE line. bufio.Reader.ReadBytes grows its
+// result without bound until the newline, so a pathological upstream line (for
+// example a stream that lost its newline terminator) must not accumulate the
+// whole stream in memory. Lines beyond the cap fail the stream explicitly.
+const maxSSELineBytes = 64 << 20
+
+var errSSELineTooLong = errors.New("openai compat executor: SSE line exceeds 64 MiB cap")
+
+// readSSELine reads one newline-terminated line from reader with a hard size
+// cap. The result is owned by the caller. A trailing partial line at EOF is
+// returned together with the EOF error, mirroring bufio.Reader.ReadBytes.
+func readSSELine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, errSlice := reader.ReadSlice('\n')
+		line = append(line, fragment...)
+		if len(line) > maxSSELineBytes {
+			if errSlice == bufio.ErrBufferFull {
+				// Drain the remainder of the oversized line so the stream
+				// position stays aligned with the frame boundaries.
+				for {
+					_, errDrain := reader.ReadSlice('\n')
+					if errDrain == nil || errDrain != bufio.ErrBufferFull {
+						break
+					}
+				}
+			}
+			return line, errSSELineTooLong
+		}
+		if errSlice == nil {
+			return line, nil
+		}
+		if errSlice != bufio.ErrBufferFull {
+			return line, errSlice
+		}
+	}
 }
 
 func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, endpointPath string) (_ *cliproxyexecutor.StreamResult, err error) {
