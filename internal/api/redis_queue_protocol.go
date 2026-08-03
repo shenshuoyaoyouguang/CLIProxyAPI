@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	log "github.com/sirupsen/logrus"
@@ -17,6 +18,19 @@ import (
 const (
 	redisUsageChannel  = "usage"
 	redisErrorsChannel = "errors"
+
+	// Protocol framing bounds: lengths and counts are attacker-controlled wire
+	// values that are parsed (and allocated from) before the AUTH check, so they
+	// must be capped to prevent a remote OOM crash on the main listen port.
+	maxRESPBulkStringBytes = 1 << 20 // 1 MiB per bulk string
+	maxRESPArrayCount      = 128     // elements per command array
+	maxRedisPopCount       = 1000    // elements per LPOP/RPOP count
+
+	// redisPreAuthIdleTimeout bounds an unauthenticated client that connects
+	// and sends nothing, which would otherwise hold a connection goroutine
+	// indefinitely. Once authenticated the deadline is cleared (SUBSCRIBE is
+	// intentionally long-lived).
+	redisPreAuthIdleTimeout = 30 * time.Second
 )
 
 type redisSubscriptionCommand struct {
@@ -67,6 +81,15 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 	for {
 		if !s.managementRoutesEnabled.Load() {
 			return
+		}
+
+		// Unauthenticated clients must not hold the connection (and its
+		// goroutine) indefinitely by sending nothing; authenticated
+		// connections are long-lived (SUBSCRIBE) and keep no deadline.
+		if !authed {
+			_ = conn.SetReadDeadline(time.Now().Add(redisPreAuthIdleTimeout))
+		} else {
+			_ = conn.SetReadDeadline(time.Time{})
 		}
 
 		args, errRead := readRESPArray(reader)
@@ -403,6 +426,9 @@ func parsePopCount(args []string) (count int, hasCount bool, ok bool) {
 	if errParse != nil {
 		return 0, true, true
 	}
+	if parsed > maxRedisPopCount {
+		return 0, true, true
+	}
 	return parsed, true, true
 }
 
@@ -421,6 +447,9 @@ func readRESPArray(reader *bufio.Reader) ([]string, error) {
 	count, errParse := strconv.Atoi(line)
 	if errParse != nil || count < 0 {
 		return nil, fmt.Errorf("protocol error")
+	}
+	if count > maxRESPArrayCount {
+		return nil, fmt.Errorf("protocol error: array count %d exceeds maximum %d", count, maxRESPArrayCount)
 	}
 	args := make([]string, 0, count)
 	for i := 0; i < count; i++ {
@@ -459,6 +488,9 @@ func readRESPBulkString(reader *bufio.Reader) (string, error) {
 	}
 	if length < 0 {
 		return "", nil
+	}
+	if length > maxRESPBulkStringBytes {
+		return "", fmt.Errorf("protocol error: bulk string length %d exceeds maximum %d", length, maxRESPBulkStringBytes)
 	}
 	buf := make([]byte, length+2)
 	if _, errRead := io.ReadFull(reader, buf); errRead != nil {

@@ -428,9 +428,12 @@ func pluginInstallRequestedVersion(c *gin.Context) (string, error) {
 	if c == nil || c.Request == nil || c.Request.Body == nil || c.Request.Body == http.NoBody {
 		return requestedVersion, nil
 	}
-	body, errRead := io.ReadAll(c.Request.Body)
+	body, errRead := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
 	if errRead != nil {
 		return "", fmt.Errorf("read install request: %w", errRead)
+	}
+	if int64(len(body)) > 1<<20 {
+		return "", fmt.Errorf("install request body exceeds 1 MiB")
 	}
 	if strings.TrimSpace(string(body)) == "" {
 		return requestedVersion, nil
@@ -676,11 +679,17 @@ func pluginAuthConfigured(source pluginstore.Source, plugin pluginstore.Plugin, 
 // Unresolved entries are left empty so callers can fall back gracefully.
 func (h *Handler) latestPluginVersions(ctx context.Context, client pluginstore.Client, plugins []pluginstore.Plugin) []string {
 	versions := make([]string, len(plugins))
+	// Bound concurrent GitHub lookups: a large registry would otherwise spawn
+	// one goroutine (and outbound HTTP call) per plugin on every listing.
+	const maxConcurrentPluginVersionLookups = 8
+	limit := make(chan struct{}, maxConcurrentPluginVersionLookups)
 	var wg sync.WaitGroup
 	for index := range plugins {
 		wg.Add(1)
+		limit <- struct{}{}
 		go func(index int) {
 			defer wg.Done()
+			defer func() { <-limit }()
 			versions[index] = h.latestPluginVersion(ctx, client, plugins[index])
 		}(index)
 	}

@@ -62,6 +62,9 @@ func (a *ClaudeAuthenticator) Login(ctx context.Context, cfg *config.Config, opt
 	}
 
 	oauthServer := claude.NewOAuthServer(callbackPort)
+	// Reject callbacks carrying any other state (spoofed callbacks would
+	// otherwise consume the single-slot result channel and abort the login).
+	oauthServer.SetExpectedState(state)
 	if err = oauthServer.Start(); err != nil {
 		if strings.Contains(err.Error(), "already in use") {
 			return nil, claude.NewAuthenticationError(claude.ErrPortInUse, err)

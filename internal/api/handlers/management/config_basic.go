@@ -21,6 +21,10 @@ import (
 const (
 	latestReleaseURL       = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
 	latestReleaseUserAgent = "CLIProxyAPI"
+
+	// maxConfigYAMLBytes bounds the config-upload body; a real config is a few
+	// hundred KiB at most.
+	maxConfigYAMLBytes = 8 << 20 // 8 MiB
 )
 
 func (h *Handler) GetConfig(c *gin.Context) {
@@ -117,9 +121,15 @@ func WriteConfig(path string, data []byte) error {
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	// Bound the body: an unbounded read plus yaml.v3 alias expansion (a YAML
+	// bomb) could exhaust CPU/memory from a small payload.
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxConfigYAMLBytes+1))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
+		return
+	}
+	if int64(len(body)) > maxConfigYAMLBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "config_too_large", "message": fmt.Sprintf("config exceeds %d bytes", maxConfigYAMLBytes)})
 		return
 	}
 	var cfg config.Config

@@ -26,7 +26,22 @@ const (
 	TokenURL    = "https://auth.openai.com/oauth/token"
 	ClientID    = "app_EMoamEEZ73f0CkXaXp7hrann"
 	RedirectURI = "http://localhost:1455/auth/callback"
+
+	// codexRefreshTimeout bounds a single token exchange so a hung token
+	// endpoint cannot block every refresh caller inside the singleflight group.
+	codexRefreshTimeout = 30 * time.Second
 )
+
+// truncatedTokenResponseBody caps the upstream error body embedded in errors:
+// a provider may echo the submitted refresh_token on a non-200 response, and
+// those errors are logged by refresh retry loops.
+func truncatedTokenResponseBody(body []byte) string {
+	const maxTokenErrorBody = 500
+	if len(body) <= maxTokenErrorBody {
+		return string(body)
+	}
+	return string(body[:maxTokenErrorBody]) + "...[truncated]"
+}
 
 // CodexAuth handles the OpenAI OAuth2 authentication flow.
 // It manages the HTTP client and provides methods for generating authorization URLs,
@@ -135,7 +150,9 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 	// log.Debugf("Token response: %s", string(body))
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(body))
+		// Truncate: a provider may echo the submitted refresh_token in the error
+		// body, and these errors are logged by refresh retry loops.
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, truncatedTokenResponseBody(body))
 	}
 
 	// Parse token response
@@ -215,7 +232,12 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 		"scope":         {"openid profile email"},
 	}
 
-	req, errReq := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(data.Encode()))
+	// Bound the token exchange: credential acquisition is where timeouts are
+	// permitted, and a hung token endpoint must not block every refresh caller
+	// inside the singleflight group (its context is WithoutCancel).
+	refreshCtx, cancelRefresh := context.WithTimeout(ctx, codexRefreshTimeout)
+	defer cancelRefresh()
+	req, errReq := http.NewRequestWithContext(refreshCtx, "POST", TokenURL, strings.NewReader(data.Encode()))
 	if errReq != nil {
 		return nil, fmt.Errorf("failed to create refresh request: %w", errReq)
 	}
@@ -239,7 +261,7 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, truncatedTokenResponseBody(body))
 	}
 
 	var tokenResp struct {

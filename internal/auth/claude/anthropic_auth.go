@@ -29,7 +29,21 @@ const (
 
 	claudeRefreshMinBackoff = 5 * time.Second
 	claudeRefreshMaxBackoff = 5 * time.Minute
+	// claudeRefreshTimeout bounds a single token exchange so a hung token
+	// endpoint cannot block every refresh caller inside the singleflight group.
+	claudeRefreshTimeout = 30 * time.Second
 )
+
+// truncatedTokenResponseBody caps the upstream error body embedded in errors:
+// a provider may echo the submitted refresh_token on a non-200 response, and
+// those errors are logged by refresh retry loops.
+func truncatedTokenResponseBody(body []byte) string {
+	const maxTokenErrorBody = 500
+	if len(body) <= maxTokenErrorBody {
+		return string(body)
+	}
+	return string(body[:maxTokenErrorBody]) + "...[truncated]"
+}
 
 var (
 	claudeRefreshGroup singleflight.Group
@@ -290,7 +304,9 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	// log.Debugf("Token response: %s", string(body))
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, string(body))
+		// Truncate: a provider may echo the submitted refresh_token in the error
+		// body, and these errors are logged by refresh retry loops.
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, truncatedTokenResponseBody(body))
 	}
 	// log.Debugf("Token response: %s", string(body))
 
@@ -372,7 +388,12 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(string(jsonBody)))
+	// Bound the token exchange: credential acquisition is where timeouts are
+	// permitted, and a hung token endpoint must not block every refresh caller
+	// inside the singleflight group (its context is WithoutCancel).
+	refreshCtx, cancelRefresh := context.WithTimeout(ctx, claudeRefreshTimeout)
+	defer cancelRefresh()
+	req, err := http.NewRequestWithContext(refreshCtx, "POST", TokenURL, strings.NewReader(string(jsonBody)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create refresh request: %w", err)
 	}
@@ -394,7 +415,9 @@ func (o *ClaudeAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		message := string(body)
+		// Truncate the body: a provider may echo the submitted refresh_token,
+		// and refreshHTTPError messages are surfaced in logs.
+		message := truncatedTokenResponseBody(body)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			retryAfter := parseClaudeRetryAfter(resp)
 			setClaudeRefreshBlockedUntil(refreshToken, time.Now().Add(retryAfter))

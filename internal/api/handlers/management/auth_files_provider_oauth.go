@@ -37,7 +37,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 
-	fmt.Println("Initializing Claude authentication...")
+	log.Info("Initializing Claude authentication...")
 
 	// Generate PKCE codes
 	pkceCodes, err := claude.GeneratePKCECodes()
@@ -113,7 +113,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 			}
 		}
 
-		fmt.Println("Waiting for authentication callback...")
+		log.Info("Waiting for authentication callback...")
 		// Wait up to 5 minutes
 		resultMap, errWait := waitForFile(waitFile, 5*time.Minute)
 		if errWait != nil {
@@ -171,9 +171,9 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		if bundle.APIKey != "" {
-			fmt.Println("API key obtained and saved")
+			log.Info("API key obtained and saved")
 		}
-		fmt.Println("You can now use Claude services through this CLI")
+		log.Info("You can now use Claude services through this CLI")
 		CompleteOAuthSession(state)
 	}()
 
@@ -184,7 +184,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 
-	fmt.Println("Initializing Codex authentication...")
+	log.Info("Initializing Codex authentication...")
 
 	// Generate PKCE codes
 	pkceCodes, err := codex.GeneratePKCECodes()
@@ -319,9 +319,9 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
 		if bundle.APIKey != "" {
-			fmt.Println("API key obtained and saved")
+			log.Info("API key obtained and saved")
 		}
-		fmt.Println("You can now use Codex services through this CLI")
+		log.Info("You can now use Codex services through this CLI")
 		CompleteOAuthSession(state)
 	}()
 
@@ -332,7 +332,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 
-	fmt.Println("Initializing Antigravity authentication...")
+	log.Info("Initializing Antigravity authentication...")
 
 	authSvc := antigravity.NewAntigravityAuth(h.cfg, nil)
 
@@ -489,7 +489,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		if projectID != "" {
 			fmt.Printf("Using GCP project: %s\n", util.HideAPIKey(projectID))
 		}
-		fmt.Println("You can now use Antigravity services through this CLI")
+		log.Info("You can now use Antigravity services through this CLI")
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
@@ -499,7 +499,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 
-	fmt.Println("Initializing xAI authentication...")
+	log.Info("Initializing xAI authentication...")
 
 	state := fmt.Sprintf("xai-%d", time.Now().UnixNano())
 	authSvc := xaiauth.NewXAIAuth(h.cfg)
@@ -522,7 +522,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 		defer cancelPoll()
 		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "xai")
 
-		fmt.Println("Waiting for xAI authentication...")
+		log.Info("Waiting for xAI authentication...")
 		bundle, errWaitForAuthorization := authSvc.WaitForAuthorization(pollCtx, deviceFlow)
 		if errWaitForAuthorization != nil {
 			if !IsOAuthSessionPending(state, "xai") {
@@ -593,7 +593,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 
 		CompleteOAuthSession(state)
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-		fmt.Println("You can now use xAI services through this CLI")
+		log.Info("You can now use xAI services through this CLI")
 	}()
 
 	response := gin.H{"status": "ok", "url": authURL, "state": state, "flow": "device"}
@@ -612,7 +612,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
 
-	fmt.Println("Initializing Kimi authentication...")
+	log.Info("Initializing Kimi authentication...")
 
 	state := fmt.Sprintf("kmi-%d", time.Now().UnixNano())
 	// Initialize Kimi auth service
@@ -637,7 +637,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		defer cancelPoll()
 		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "kimi")
 
-		fmt.Println("Waiting for authentication...")
+		log.Info("Waiting for authentication...")
 		authBundle, errWaitForAuthorization := kimiAuth.WaitForAuthorization(pollCtx, deviceFlow)
 		if errWaitForAuthorization != nil {
 			if !IsOAuthSessionPending(state, "kimi") {
@@ -690,7 +690,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		}
 
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-		fmt.Println("You can now use Kimi services through this CLI")
+		log.Info("You can now use Kimi services through this CLI")
 		CompleteOAuthSession(state)
 	}()
 

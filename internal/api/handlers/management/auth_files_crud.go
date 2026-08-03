@@ -304,9 +304,12 @@ func requestedAuthFileNamesForDelete(c *gin.Context) ([]string, error) {
 		return names, nil
 	}
 
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxAuthFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read body")
+	}
+	if int64(len(body)) > maxAuthFileBytes {
+		return nil, fmt.Errorf("request body exceeds %d bytes", maxAuthFileBytes)
 	}
 	body = bytes.TrimSpace(body)
 	if len(body) == 0 {

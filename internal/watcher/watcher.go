@@ -46,23 +46,28 @@ type Watcher struct {
 	stopped           atomic.Bool
 	reloadCallback    func(*config.Config)
 	watcher           *fsnotify.Watcher
-	lastAuthHashes    map[string]string
-	lastAuthContents  map[string]*coreauth.Auth
-	fileAuthsByPath   map[string]map[string]*coreauth.Auth
-	lastRemoveTimes   map[string]time.Time
-	lastConfigHash    string
-	authQueue         chan<- AuthUpdate
-	currentAuths      map[string]*coreauth.Auth
-	runtimeAuths      map[string]*coreauth.Auth
-	dispatchMu        sync.Mutex
-	dispatchCond      *sync.Cond
-	pendingUpdates    map[string]AuthUpdate
-	pendingOrder      []string
-	dispatchCancel    context.CancelFunc
-	storePersister    storePersister
-	pluginAuthParser  synthesizer.PluginAuthParser
-	mirroredAuthDir   string
-	oldConfigYaml     []byte
+	// persistCoalescers bound remote-store persistence to one in-flight
+	// goroutine per target; a bulk auth sync would otherwise spawn an unbounded
+	// goroutine (each doing up to 30s of network persistence) per event.
+	configPersist    persistCoalescer
+	authPersist      persistCoalescer
+	lastAuthHashes   map[string]string
+	lastAuthContents map[string]*coreauth.Auth
+	fileAuthsByPath  map[string]map[string]*coreauth.Auth
+	lastRemoveTimes  map[string]time.Time
+	lastConfigHash   string
+	authQueue        chan<- AuthUpdate
+	currentAuths     map[string]*coreauth.Auth
+	runtimeAuths     map[string]*coreauth.Auth
+	dispatchMu       sync.Mutex
+	dispatchCond     *sync.Cond
+	pendingUpdates   map[string]AuthUpdate
+	pendingOrder     []string
+	dispatchCancel   context.CancelFunc
+	storePersister   storePersister
+	pluginAuthParser synthesizer.PluginAuthParser
+	mirroredAuthDir  string
+	oldConfigYaml    []byte
 }
 
 // AuthUpdateAction represents the type of change detected in auth sources.

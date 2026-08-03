@@ -212,6 +212,16 @@ func mergeMappingPreserve(dst, src *yaml.Node, path ...[]string) {
 			dst.Content = append(dst.Content, deepCopyNode(sk), candidate)
 		}
 	}
+
+	// Prune dst keys absent from src: a deletion in the saved config must not
+	// silently revert on the next load (sequence elements already get this via
+	// pruneMissingMapKeys).
+	for i := 0; i+1 < len(dst.Content); i += 2 {
+		if findMapKeyIndex(src, dst.Content[i].Value) < 0 {
+			dst.Content = append(dst.Content[:i], dst.Content[i+2:]...)
+			i -= 2
+		}
+	}
 }
 
 // mergeNodePreserve merges src into dst for scalars, mappings and sequences while

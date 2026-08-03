@@ -425,10 +425,17 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		defer func() { _ = closeResponseBody() }()
 	}
 	helps.RecordAPIResponseMetadata(ctx, s.cfg, resp.StatusCode, resp.Header.Clone())
-	upstreamBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	// Read up to the cap plus one byte so an oversized response is detected
+	// instead of silently truncated (which would hand the client broken JSON).
+	upstreamBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20+1))
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, s.cfg, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read Codex search response"})
+		return
+	}
+	if len(upstreamBody) > 32<<20 {
+		helps.RecordAPIResponseError(ctx, s.cfg, fmt.Errorf("codex alpha search response exceeds 32 MiB"))
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Codex search response too large"})
 		return
 	}
 	helps.AppendAPIResponseChunk(ctx, s.cfg, upstreamBody)

@@ -6,6 +6,7 @@ package logging
 import (
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -134,16 +135,17 @@ type StreamingLogWriter interface {
 // FileRequestLogger implements RequestLogger using file-based storage.
 // It provides file-based logging functionality for HTTP requests and responses.
 type FileRequestLogger struct {
-	// enabled indicates whether request logging is currently enabled.
-	enabled bool
+	// enabled indicates whether request logging is currently enabled. Atomic:
+	// the config hot-reload goroutine writes it while request goroutines read it.
+	enabled atomic.Bool
 
 	// logsDir is the directory where log files are stored.
 	logsDir string
 
 	// errorLogsMaxFiles limits the number of error log files retained.
-	errorLogsMaxFiles int
+	errorLogsMaxFiles atomic.Int32
 
-	homeEnabled bool
+	homeEnabled atomic.Bool
 }
 
 // NewFileRequestLogger creates a new file-based request logger.
@@ -165,12 +167,13 @@ func NewFileRequestLogger(enabled bool, logsDir string, configDir string, errorL
 			logsDir = filepath.Join(configDir, logsDir)
 		}
 	}
-	return &FileRequestLogger{
-		enabled:           enabled,
-		logsDir:           logsDir,
-		errorLogsMaxFiles: errorLogsMaxFiles,
-		homeEnabled:       false,
+	l := &FileRequestLogger{
+		logsDir: logsDir,
 	}
+	l.enabled.Store(enabled)
+	l.errorLogsMaxFiles.Store(int32(errorLogsMaxFiles))
+	l.homeEnabled.Store(false)
+	return l
 }
 
 // IsEnabled returns whether request logging is currently enabled.
@@ -178,7 +181,7 @@ func NewFileRequestLogger(enabled bool, logsDir string, configDir string, errorL
 // Returns:
 //   - bool: True if logging is enabled, false otherwise
 func (l *FileRequestLogger) IsEnabled() bool {
-	return l.enabled
+	return l != nil && l.enabled.Load()
 }
 
 // SetEnabled updates the request logging enabled state.
@@ -187,12 +190,16 @@ func (l *FileRequestLogger) IsEnabled() bool {
 // Parameters:
 //   - enabled: Whether request logging should be enabled
 func (l *FileRequestLogger) SetEnabled(enabled bool) {
-	l.enabled = enabled
+	if l != nil {
+		l.enabled.Store(enabled)
+	}
 }
 
 // SetErrorLogsMaxFiles updates the maximum number of error log files to retain.
 func (l *FileRequestLogger) SetErrorLogsMaxFiles(maxFiles int) {
-	l.errorLogsMaxFiles = maxFiles
+	if l != nil {
+		l.errorLogsMaxFiles.Store(int32(maxFiles))
+	}
 }
 
 // NewFileBodySource creates a temp-backed source under the request log directory.

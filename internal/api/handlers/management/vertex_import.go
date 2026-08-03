@@ -37,9 +37,15 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 	}
 	defer file.Close()
 
-	data, err := io.ReadAll(file)
+	// Bound the upload so an oversized service-account file cannot exhaust
+	// memory (service-account JSON is a few KiB at most).
+	data, err := io.ReadAll(io.LimitReader(file, maxAuthFileBytes+1))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
+		return
+	}
+	if int64(len(data)) > maxAuthFileBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("file exceeds %d bytes", maxAuthFileBytes)})
 		return
 	}
 

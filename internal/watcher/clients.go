@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -420,17 +421,48 @@ func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int) {
 	return geminiAPIKeyCount, vertexCompatAPIKeyCount, claudeAPIKeyCount, codexAPIKeyCount, xaiAPIKeyCount, openAICompatCount
 }
 
+// persistCoalescer runs at most one persist goroutine at a time; events that
+// arrive while one is in flight are collapsed into a single follow-up run, so
+// a burst of watcher events cannot spawn an unbounded number of goroutines.
+type persistCoalescer struct {
+	mu      sync.Mutex
+	running bool
+	pending bool
+}
+
+func (c *persistCoalescer) schedule(label string, run func(ctx context.Context) error) {
+	c.mu.Lock()
+	if c.running {
+		c.pending = true
+		c.mu.Unlock()
+		return
+	}
+	c.running = true
+	c.mu.Unlock()
+	go func() {
+		defer func() {
+			c.mu.Lock()
+			c.running = false
+			again := c.pending
+			c.pending = false
+			c.mu.Unlock()
+			if again {
+				c.schedule(label, run)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := run(ctx); err != nil {
+			log.Errorf("failed to persist %s change: %v", label, err)
+		}
+	}()
+}
+
 func (w *Watcher) persistConfigAsync() {
 	if w == nil || w.storePersister == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := w.storePersister.PersistConfig(ctx); err != nil {
-			log.Errorf("failed to persist config change: %v", err)
-		}
-	}()
+	w.configPersist.schedule("config", w.storePersister.PersistConfig)
 }
 
 func (w *Watcher) persistAuthAsync(message string, paths ...string) {
@@ -446,13 +478,9 @@ func (w *Watcher) persistAuthAsync(message string, paths ...string) {
 	if len(filtered) == 0 {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := w.storePersister.PersistAuthFiles(ctx, message, filtered...); err != nil {
-			log.Errorf("failed to persist auth changes: %v", err)
-		}
-	}()
+	w.authPersist.schedule("auth", func(ctx context.Context) error {
+		return w.storePersister.PersistAuthFiles(ctx, message, filtered...)
+	})
 }
 
 func (w *Watcher) stopServerUpdateTimer() {

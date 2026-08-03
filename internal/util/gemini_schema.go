@@ -111,11 +111,17 @@ func removeKeywords(jsonStr string, keywords []string) string {
 
 // removePlaceholderFields removes placeholder-only properties ("_" and "reason") and their required entries.
 func removePlaceholderFields(jsonStr string) string {
-	// Remove "_" placeholder properties.
+	// Remove "_" placeholder properties. Only remove the exact shape this
+	// pipeline injects ("_": {"type":"boolean"}); a legitimate user schema
+	// property named "_" must be preserved.
 	paths := findPaths(jsonStr, "_")
 	sortByDepth(paths)
 	for _, p := range paths {
 		if !strings.HasSuffix(p, ".properties._") {
+			continue
+		}
+		propVal := gjson.Get(jsonStr, p)
+		if !propVal.IsObject() || len(propVal.Map()) != 1 || propVal.Get("type").String() != "boolean" {
 			continue
 		}
 		jsonStr, _ = sjson.Delete(jsonStr, p)

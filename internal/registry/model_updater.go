@@ -169,9 +169,16 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 			continue
 		}
 
-		data, err := io.ReadAll(resp.Body)
+		// Bound the catalog download (the codex updater caps at 8 MiB) so a
+		// large or hijacked response cannot grow memory without bound.
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20+1))
 		resp.Body.Close()
 		cancel()
+
+		if len(data) > 8<<20 {
+			log.Warnf("models catalog exceeds 8 MiB from %s; skipping", url)
+			continue
+		}
 
 		if err != nil {
 			log.Debugf("models fetch read error from %s: %v", url, err)

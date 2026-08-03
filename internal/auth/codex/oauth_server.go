@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"strings"
@@ -25,10 +26,22 @@ type OAuthServer struct {
 	resultChan chan *OAuthResult
 	// errorChan is a channel for sending OAuth errors
 	errorChan chan error
+	// expectedState is the state this flow generated; callbacks carrying any
+	// other state are rejected without consuming the result channel, so a LAN
+	// peer cannot spoof a callback and abort a login.
+	expectedState string
 	// mu is a mutex for protecting server state
 	mu sync.Mutex
 	// running indicates whether the server is currently running
 	running bool
+}
+
+// SetExpectedState records the state generated for this OAuth flow. Set it
+// before Start so the callback handler rejects spoofed callbacks.
+func (s *OAuthServer) SetExpectedState(state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expectedState = state
 }
 
 // OAuthResult contains the result of the OAuth callback.
@@ -83,18 +96,23 @@ func (s *OAuthServer) Start() error {
 	mux.HandleFunc("/auth/callback", s.handleCallback)
 	mux.HandleFunc("/success", s.handleSuccess)
 
+	// Bind loopback only: the callback server serves the local browser flow and
+	// must not be reachable from the LAN.
 	s.server = &http.Server{
-		Addr:         fmt.Sprintf(":%d", s.port),
+		Addr:         fmt.Sprintf("127.0.0.1:%d", s.port),
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 
 	s.running = true
+	// Capture into a local: Stop() sets s.server = nil under s.mu, and the
+	// goroutine must not dereference the field concurrently.
+	server := s.server
 
 	// Start server in goroutine
 	go func() {
-		if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.errorChan <- fmt.Errorf("server failed to start: %w", err)
 		}
 	}()
@@ -177,6 +195,18 @@ func (s *OAuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 	state := query.Get("state")
 	errorParam := query.Get("error")
 
+	// Reject callbacks whose state does not match the flow's generated state:
+	// otherwise any LAN peer able to reach this port could spoof a callback and
+	// consume the single-slot result channel, aborting the login.
+	s.mu.Lock()
+	expectedState := s.expectedState
+	s.mu.Unlock()
+	if expectedState != "" && state != expectedState {
+		log.Warn("OAuth callback state mismatch; rejecting spoofed callback")
+		http.Error(w, "Invalid state parameter", http.StatusBadRequest)
+		return
+	}
+
 	// Validate required parameters
 	if errorParam != "" {
 		log.Errorf("OAuth error received: %s", errorParam)
@@ -239,8 +269,9 @@ func (s *OAuthServer) handleSuccess(w http.ResponseWriter, r *http.Request) {
 		platformURL = "https://platform.openai.com"
 	}
 
-	// Generate success page HTML with dynamic content
-	successHTML := s.generateSuccessHTML(setupRequired, platformURL)
+	// Generate success page HTML with dynamic content; escape the interpolated
+	// URL so a reflected-XSS payload in platform_url cannot execute.
+	successHTML := s.generateSuccessHTML(setupRequired, html.EscapeString(platformURL))
 
 	_, err := w.Write([]byte(successHTML))
 	if err != nil {
