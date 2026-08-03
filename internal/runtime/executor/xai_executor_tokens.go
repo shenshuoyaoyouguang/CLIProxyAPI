@@ -115,8 +115,13 @@ func xaiCollectContentTokenSegments(content gjson.Result, segments *[]string) {
 		case "input_audio":
 			// The base64 audio payload must not be run through the text
 			// tokenizer (it would inflate the count ~4x); estimate from the
-			// duration metadata when present.
-			if duration := part.Get("duration").Float(); duration > 0 {
+			// duration metadata when present. The OpenAI-compatible wire nests
+			// the metadata under input_audio, so check both shapes.
+			duration := part.Get("input_audio.duration").Float()
+			if duration <= 0 {
+				duration = part.Get("duration").Float()
+			}
+			if duration > 0 {
 				*segments = append(*segments, strings.Repeat("a", int(duration*audioTokensPerSecond)))
 			}
 		}

@@ -118,6 +118,12 @@ func TestCountXAIInputTokensExcludesRequestStructure(t *testing.T) {
 			body:     []byte(`{"input":[{"type":"message","content":[{"type":"input_audio","data":"AAAA","duration":2.5}]}]}`),
 			expected: strings.Repeat("a", int(2.5*audioTokensPerSecond)),
 		},
+		"input audio with nested duration": {
+			// The OpenAI-compatible wire nests the audio metadata under
+			// input_audio; the estimate must read it from there.
+			body:     []byte(`{"input":[{"type":"message","content":[{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav","duration":3}}]}]}`),
+			expected: strings.Repeat("a", int(3*audioTokensPerSecond)),
+		},
 		"function call": {
 			body:     []byte(`{"input":[{"type":"function_call","call_id":"call-1","name":"unique_function","arguments":"{\"value\":\"unique argument\"}"}]}`),
 			expected: "unique_function\n{\"value\":\"unique argument\"}",
