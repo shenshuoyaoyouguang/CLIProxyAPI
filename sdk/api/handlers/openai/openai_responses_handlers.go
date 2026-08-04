@@ -9,6 +9,7 @@ package openai
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -240,6 +241,46 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	}
 }
 
+// writeResponsesTerminalError writes the terminal SSE frame for a forwarding
+// error: a response.failed lifecycle event when the stream has not yet ended
+// with a terminal event, otherwise a non-terminal event: error frame.
+func writeResponsesTerminalError(w io.Writer, framer *responsesSSEFramer, errMsg *interfaces.ErrorMessage) {
+	if framer != nil {
+		framer.Flush(w)
+	}
+	if errMsg == nil {
+		return
+	}
+	status := http.StatusInternalServerError
+	if errMsg.StatusCode > 0 {
+		status = errMsg.StatusCode
+	}
+	errText := http.StatusText(status)
+	if errMsg.Error != nil && errMsg.Error.Error() != "" {
+		errText = errMsg.Error.Error()
+	}
+	if framer != nil && framer.terminalSeen {
+		// A terminal lifecycle event already ended the stream; a trailing
+		// response.failed would violate the single-terminal-event contract, so
+		// fall back to the non-terminal error event for diagnostics.
+		chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
+		_, _ = fmt.Fprintf(w, "\nevent: error\ndata: %s\n\n", string(chunk))
+		return
+	}
+	var responseID string
+	var createdAt int64
+	sequenceNumber := 0
+	if framer != nil {
+		responseID = framer.responseID
+		createdAt = framer.responseCreatedAt
+		if framer.hasLastSequenceNumber {
+			sequenceNumber = framer.lastSequenceNumber + 1
+		}
+	}
+	chunk := handlers.BuildOpenAIResponsesStreamFailedChunk(status, errText, sequenceNumber, responseID, createdAt)
+	_, _ = fmt.Fprintf(w, "\nevent: response.failed\ndata: %s\n\n", string(chunk))
+}
+
 func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, framer *responsesSSEFramer) {
 	if framer == nil {
 		framer = &responsesSSEFramer{}
@@ -249,20 +290,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			framer.WriteChunk(c.Writer, chunk)
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
-			framer.Flush(c.Writer)
-			if errMsg == nil {
-				return
-			}
-			status := http.StatusInternalServerError
-			if errMsg.StatusCode > 0 {
-				status = errMsg.StatusCode
-			}
-			errText := http.StatusText(status)
-			if errMsg.Error != nil && errMsg.Error.Error() != "" {
-				errText = errMsg.Error.Error()
-			}
-			chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
-			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(chunk))
+			writeResponsesTerminalError(c.Writer, framer, errMsg)
 		},
 		WriteDone: func() {
 			framer.Flush(c.Writer)

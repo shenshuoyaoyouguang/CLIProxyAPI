@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -43,6 +44,19 @@ type responsesSSEFramer struct {
 	outputItems          map[int][]byte
 	outputOrder          []int
 	unindexedOutputItems [][]byte
+	// terminalSeen records whether a terminal Responses lifecycle event
+	// (response.completed/failed/incomplete) has been emitted, so callers can
+	// avoid appending a second terminal event after the stream already ended.
+	terminalSeen bool
+	// responseID and responseCreatedAt capture the response identity from the
+	// first response.created frame, so a synthesized response.failed terminal
+	// event can carry the same id/created_at the consumer already saw.
+	responseID        string
+	responseCreatedAt int64
+	// lastSequenceNumber tracks the largest sequence_number seen so far, so a
+	// synthesized response.failed event can continue the stream's numbering.
+	lastSequenceNumber    int
+	hasLastSequenceNumber bool
 }
 
 // responsesSSECompactThreshold is the number of already-emitted bytes that may
@@ -155,14 +169,22 @@ func (f *responsesSSEFramer) repairFrame(frame []byte) []byte {
 		return frame
 	}
 
-	switch gjson.GetBytes(payload, "type").String() {
+	eventType := gjson.GetBytes(payload, "type").String()
+	f.recordSequenceNumber(payload)
+
+	switch eventType {
 	case "response.output_item.done":
 		f.recordOutputItem(payload)
+	case "response.created":
+		f.recordResponseIdentity(payload)
 	case "response.completed":
+		f.terminalSeen = true
 		repaired := f.repairCompletedPayload(payload)
 		if !bytes.Equal(repaired, payload) {
 			return responsesSSEFrameWithData(frame, repaired)
 		}
+	case "response.failed", "response.incomplete":
+		f.terminalSeen = true
 	}
 	return frame
 }
@@ -204,6 +226,30 @@ func responsesSSEFrameWithData(frame, payload []byte) []byte {
 	}
 	out.WriteByte('\n')
 	return out.Bytes()
+}
+
+// recordSequenceNumber keeps the largest sequence_number seen in the stream.
+func (f *responsesSSEFramer) recordSequenceNumber(payload []byte) {
+	sequenceNumber := gjson.GetBytes(payload, "sequence_number")
+	if !sequenceNumber.Exists() {
+		return
+	}
+	value := int(sequenceNumber.Int())
+	if !f.hasLastSequenceNumber || value > f.lastSequenceNumber {
+		f.lastSequenceNumber = value
+		f.hasLastSequenceNumber = true
+	}
+}
+
+// recordResponseIdentity captures the response id and created_at from a
+// response.created frame, keeping the first non-empty values seen.
+func (f *responsesSSEFramer) recordResponseIdentity(payload []byte) {
+	if id := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String()); id != "" && f.responseID == "" {
+		f.responseID = id
+	}
+	if createdAt := gjson.GetBytes(payload, "response.created_at").Int(); createdAt > 0 && f.responseCreatedAt == 0 {
+		f.responseCreatedAt = createdAt
+	}
 }
 
 func (f *responsesSSEFramer) recordOutputItem(payload []byte) {
