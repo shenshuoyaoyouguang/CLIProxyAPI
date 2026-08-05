@@ -56,6 +56,12 @@ type ModelInfo struct {
 	MaxContextLength int `json:"-"`
 	// MaxCompletionTokens is the maximum completion tokens
 	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+	// PreferMaxCompletionTokens indicates the upstream only accepts the
+	// max_completion_tokens field (not the legacy max_tokens). When true and
+	// enhanceModelParams injects a default, it writes max_completion_tokens.
+	// Models that accept both fields should leave this false (default) so the
+	// legacy max_tokens field is used for broader client compatibility.
+	PreferMaxCompletionTokens bool `json:"prefer_max_completion_tokens,omitempty"`
 	// SupportedParameters lists supported parameters
 	SupportedParameters []string `json:"supported_parameters,omitempty"`
 	// SupportedInputModalities lists supported input modalities (e.g., TEXT, IMAGE, VIDEO, AUDIO)

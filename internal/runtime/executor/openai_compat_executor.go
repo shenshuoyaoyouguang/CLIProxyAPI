@@ -488,7 +488,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 						// error objects are terminal; forward anything else as a
 						// data line instead of failing the whole stream.
 						if gjson.ValidBytes(trimmedLine) && gjson.GetBytes(trimmedLine, "error").Exists() {
-							streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
+							streamErr := statusErr{code: classifyBareJSONErrorStatus(trimmedLine), msg: string(trimmedLine)}
 							helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 							reporter.PublishFailure(ctx, streamErr)
 							select {
@@ -784,16 +784,24 @@ func (e *OpenAICompatExecutor) enhanceModelParams(body []byte, modelID string) [
 
 	info := e.modelLookup(modelID, e.Identifier())
 	if info == nil {
+		log.WithFields(log.Fields{
+			"model":    modelID,
+			"provider": e.Identifier(),
+		}).Warn("enhanceModelParams: model not in registry, passing through without default params")
 		return body
 	}
 
 	// 1. max_tokens / max_completion_tokens default
 	if info.MaxCompletionTokens > 0 {
 		if !gjson.GetBytes(body, "max_tokens").Exists() && !gjson.GetBytes(body, "max_completion_tokens").Exists() {
-			body, _ = sjson.SetBytes(body, "max_tokens", info.MaxCompletionTokens)
+			field := "max_tokens"
+			if info.PreferMaxCompletionTokens {
+				field = "max_completion_tokens"
+			}
+			body, _ = sjson.SetBytes(body, field, info.MaxCompletionTokens)
 			log.WithFields(log.Fields{
 				"model": modelID,
-				"field": "max_tokens",
+				"field": field,
 				"value": info.MaxCompletionTokens,
 			}).Debug("enhanceModelParams: injected default")
 		}
@@ -1088,6 +1096,31 @@ func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byt
 		return payload
 	}
 	return helps.SetStringIfDifferent(payload, "model", model)
+}
+
+// classifyBareJSONErrorStatus maps a bare-JSON upstream error body (emitted
+// without an SSE data: prefix during streaming) to an HTTP status code based
+// on the OpenAI error.type convention. Returns 502 Bad Gateway when the type
+// is absent or unrecognized, preserving the prior fallback behavior.
+//
+// Accurate classification matters because conductor cooldown branches on the
+// status code: a 429 triggers exponential quota backoff, a 401 triggers OAuth
+// refresh, while a 502 only triggers a short transient cooldown. Misclassifying
+// a rate-limit error as 502 would cause the proxy to retry too aggressively.
+func classifyBareJSONErrorStatus(body []byte) int {
+	errType := gjson.GetBytes(body, "error.type").String()
+	switch errType {
+	case "rate_limit_error":
+		return http.StatusTooManyRequests
+	case "authentication_error":
+		return http.StatusUnauthorized
+	case "permission_error":
+		return http.StatusForbidden
+	case "invalid_request_error":
+		return http.StatusBadRequest
+	default:
+		return http.StatusBadGateway
+	}
 }
 
 type statusErr struct {

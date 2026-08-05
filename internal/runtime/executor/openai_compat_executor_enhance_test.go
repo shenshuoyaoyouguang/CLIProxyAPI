@@ -286,3 +286,90 @@ func TestEnhanceModelParamsExtraBodyDeepMerge(t *testing.T) {
 			"expected depth guard warn, got: %s", logs)
 	})
 }
+
+// TestEnhanceModelParamsPreferMaxCompletionTokens verifies that when a model
+// declares PreferMaxCompletionTokens=true (e.g. GPT-5 / o4 family that only
+// accepts max_completion_tokens), enhanceModelParams injects the default into
+// the max_completion_tokens field instead of the legacy max_tokens field.
+func TestEnhanceModelParamsPreferMaxCompletionTokens(t *testing.T) {
+	modelID := "test-model-prefer-mct"
+	provider := "openai-compatibility"
+
+	testModel := &registry.ModelInfo{
+		ID:                        modelID,
+		Object:                    "model",
+		Created:                   1234567890,
+		OwnedBy:                   provider,
+		Type:                      "chat",
+		DisplayName:               "Prefer MCT Model",
+		ContextLength:             128000,
+		MaxCompletionTokens:       16384,
+		PreferMaxCompletionTokens: true,
+	}
+
+	executor := &OpenAICompatExecutor{
+		provider:    provider,
+		cfg:         &config.Config{},
+		modelLookup: makeModelLookup(modelID, provider, testModel),
+	}
+
+	t.Run("injects max_completion_tokens when both absent", func(t *testing.T) {
+		body := []byte(`{"model": "test-model-prefer-mct", "messages": [{"role": "user", "content": "hi"}]}`)
+		result := executor.enhanceModelParams(body, modelID)
+		assert.True(t, gjson.GetBytes(result, "max_completion_tokens").Exists(),
+			"max_completion_tokens must be injected for PreferMaxCompletionTokens models")
+		assert.Equal(t, float64(16384), gjson.GetBytes(result, "max_completion_tokens").Float())
+		assert.False(t, gjson.GetBytes(result, "max_tokens").Exists(),
+			"max_tokens must NOT be injected for PreferMaxCompletionTokens models")
+	})
+
+	t.Run("respects existing max_completion_tokens", func(t *testing.T) {
+		body := []byte(`{"model": "test-model-prefer-mct", "max_completion_tokens": 100}`)
+		result := executor.enhanceModelParams(body, modelID)
+		assert.Equal(t, float64(100), gjson.GetBytes(result, "max_completion_tokens").Float())
+		assert.False(t, gjson.GetBytes(result, "max_tokens").Exists())
+	})
+
+	t.Run("respects existing max_tokens (user override)", func(t *testing.T) {
+		body := []byte(`{"model": "test-model-prefer-mct", "max_tokens": 500}`)
+		result := executor.enhanceModelParams(body, modelID)
+		assert.Equal(t, float64(500), gjson.GetBytes(result, "max_tokens").Float())
+		assert.False(t, gjson.GetBytes(result, "max_completion_tokens").Exists(),
+			"must not inject max_completion_tokens when user set max_tokens explicitly")
+	})
+
+	t.Run("debug log uses max_completion_tokens field name", func(t *testing.T) {
+		body := []byte(`{"model": "test-model-prefer-mct", "messages": [{"role": "user", "content": "hi"}]}`)
+		logs := captureLogs(func() {
+			_ = executor.enhanceModelParams(body, modelID)
+		})
+		assert.True(t, strings.Contains(logs, "injected default"), "expected injection log, got: %s", logs)
+		assert.True(t, strings.Contains(logs, "max_completion_tokens"),
+			"expected max_completion_tokens in log, got: %s", logs)
+		assert.False(t, strings.Contains(logs, "\"field\":\"max_tokens\""),
+			"must not log max_tokens field for PreferMaxCompletionTokens models, got: %s", logs)
+	})
+}
+
+// TestEnhanceModelParamsUnknownModelWarns verifies that when the model is not
+// found in the registry, enhanceModelParams emits a warn log so operators can
+// monitor unknown-model pass-through frequency (P1-3). The body is still
+// returned unchanged to preserve backward-compatible pass-through behavior.
+func TestEnhanceModelParamsUnknownModelWarns(t *testing.T) {
+	provider := "openai-compatibility"
+	executor := &OpenAICompatExecutor{
+		provider:    provider,
+		cfg:         &config.Config{},
+		modelLookup: makeModelLookup("known-model", provider, &registry.ModelInfo{ID: "known-model"}),
+	}
+
+	body := []byte(`{"model": "brand-new-unregistered-model", "messages": [{"role": "user", "content": "hi"}]}`)
+	logs := captureLogs(func() {
+		result := executor.enhanceModelParams(body, "brand-new-unregistered-model")
+		assert.JSONEq(t, string(body), string(result), "body must pass through unchanged for unknown models")
+	})
+	assert.True(t, strings.Contains(logs, "not in registry"),
+		"expected warn log about unknown model, got: %s", logs)
+	assert.True(t, strings.Contains(logs, "brand-new-unregistered-model"),
+		"expected model name in log, got: %s", logs)
+}

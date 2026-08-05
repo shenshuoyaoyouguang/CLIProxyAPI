@@ -192,7 +192,7 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 									partItems = append(partItems, geminiInlineDataPart(pieces[0], pieces[1][7:], ""))
 								}
 							} else if imageURL != "" {
-								log.Warn("skipping non-data image_url: Gemini requires inline base64 images")
+								log.Error("skipping non-data image_url: Gemini requires inline base64 images")
 							}
 						case "video_url":
 							videoURL := item.Get("video_url.url").String()
@@ -202,7 +202,7 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 									partItems = append(partItems, geminiInlineDataPart(pieces[0], pieces[1][7:], ""))
 								}
 							} else if videoURL != "" {
-								log.Warn("skipping non-data video_url: Gemini requires inline base64 videos")
+								log.Error("skipping non-data video_url: Gemini requires inline base64 videos")
 							}
 						case "file":
 							filename := item.Get("file.filename").String()
