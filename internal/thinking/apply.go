@@ -335,11 +335,26 @@ func applyThinking(body, sourceBody []byte, model string, fromFormat string, toF
 	}
 	if modelInfo.Thinking == nil {
 		config := extractThinkingConfig(body, providerFormat)
-		if hasThinkingConfig(config) || summaryConfig.Mode != SummaryUnspecified {
+		if hasThinkingConfig(config) {
+			// Registry has no thinking block for this model, but the request
+			// carries explicit thinking effort (reasoning_effort, thinking.*,
+			// enable_thinking, etc). Don't unilaterally strip — pass through
+			// to the upstream provider for裁决 (mirrors user-defined model
+			// behavior, where the upstream is authoritative).
 			log.WithFields(log.Fields{
 				"model":    baseModel,
 				"provider": providerFormat,
-			}).Debug("thinking: model does not support thinking, stripping config |")
+			}).Debug("thinking: registry missing thinking block, passing user intent through |")
+			return applyUserDefinedModel(body, modelInfo, fromFormat, providerFormat, providerKey, suffixResult, summaryConfig)
+		}
+		// Pure summary-visibility control (no thinking effort). Strip so a
+		// non-thinking upstream doesn't reject an includeThoughts / display
+		// field it never asked for.
+		if summaryConfig.Mode != SummaryUnspecified {
+			log.WithFields(log.Fields{
+				"model":    baseModel,
+				"provider": providerFormat,
+			}).Debug("thinking: model does not support thinking, stripping summary-only config |")
 			return StripThinkingConfig(body, providerFormat), nil
 		}
 		log.WithFields(log.Fields{

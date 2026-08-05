@@ -736,7 +736,10 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectField: "",
 			expectErr:   false,
 		},
-		// Case 59: Budget 8192 → no thinking support → suffix stripped → no configuration
+		// Case 59: Budget 8192 → registry missing thinking block → suffix
+		// intent passed through to upstream. Openai applier sees
+		// modelInfo.Thinking==nil and leaves body untouched (no
+		// reasoning_effort written), so suffix never materialises.
 		{
 			name:        "59",
 			from:        "gemini",
@@ -746,7 +749,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectField: "",
 			expectErr:   false,
 		},
-		// Case 60: Budget 0 → suffix stripped → no configuration
+		// Case 60: Budget 0 → suffix intent passthrough; no reasoning_effort written.
 		{
 			name:        "60",
 			from:        "gemini",
@@ -756,7 +759,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectField: "",
 			expectErr:   false,
 		},
-		// Case 61: Budget -1 → suffix stripped → no configuration
+		// Case 61: Budget -1 (auto) → suffix intent passthrough; no reasoning_effort written.
 		{
 			name:        "61",
 			from:        "gemini",
@@ -776,7 +779,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectField: "",
 			expectErr:   false,
 		},
-		// Case 63: Budget 8192 → suffix stripped → no configuration
+		// Case 63: Budget 8192 suffix → passthrough (openai applier skips nil-Thinking models).
 		{
 			name:        "63",
 			from:        "claude",
@@ -786,7 +789,7 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectField: "",
 			expectErr:   false,
 		},
-		// Case 64: Budget 0 → suffix stripped → no configuration
+		// Case 64: Budget 0 suffix → passthrough; no reasoning_effort written.
 		{
 			name:        "64",
 			from:        "claude",
@@ -1810,34 +1813,39 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectField: "",
 			expectErr:   false,
 		},
-		// Case 59: thinkingBudget=8192 → stripped
+		// Case 59: thinkingBudget=8192 → registry missing thinking block, but
+		// translated body carries reasoning_effort=medium. Pass through to
+		// upstream (no longer stripped).
 		{
 			name:        "59",
 			from:        "gemini",
 			to:          "openai",
 			model:       "no-thinking-model",
 			inputJSON:   `{"model":"no-thinking-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":8192}}}`,
-			expectField: "",
+			expectField: "reasoning_effort",
+			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 60: thinkingBudget=0 → stripped
+		// Case 60: thinkingBudget=0 → maps to reasoning_effort=none; passed through.
 		{
 			name:        "60",
 			from:        "gemini",
 			to:          "openai",
 			model:       "no-thinking-model",
 			inputJSON:   `{"model":"no-thinking-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}`,
-			expectField: "",
+			expectField: "reasoning_effort",
+			expectValue: "none",
 			expectErr:   false,
 		},
-		// Case 61: thinkingBudget=-1 → stripped
+		// Case 61: thinkingBudget=-1 → maps to reasoning_effort=auto; passed through.
 		{
 			name:        "61",
 			from:        "gemini",
 			to:          "openai",
 			model:       "no-thinking-model",
 			inputJSON:   `{"model":"no-thinking-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":-1}}}`,
-			expectField: "",
+			expectField: "reasoning_effort",
+			expectValue: "auto",
 			expectErr:   false,
 		},
 		// Case 62: Claude no param → passthrough
@@ -1850,34 +1858,37 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectField: "",
 			expectErr:   false,
 		},
-		// Case 63: thinking.budget_tokens=8192 → stripped
+		// Case 63: thinking.budget_tokens=8192 → translated to reasoning_effort=medium; passed through.
 		{
 			name:        "63",
 			from:        "claude",
 			to:          "openai",
 			model:       "no-thinking-model",
 			inputJSON:   `{"model":"no-thinking-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":8192}}`,
-			expectField: "",
+			expectField: "reasoning_effort",
+			expectValue: "medium",
 			expectErr:   false,
 		},
-		// Case 64: thinking.budget_tokens=0 → stripped
+		// Case 64: thinking.budget_tokens=0 → reasoning_effort=none; passed through.
 		{
 			name:        "64",
 			from:        "claude",
 			to:          "openai",
 			model:       "no-thinking-model",
 			inputJSON:   `{"model":"no-thinking-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":0}}`,
-			expectField: "",
+			expectField: "reasoning_effort",
+			expectValue: "none",
 			expectErr:   false,
 		},
-		// Case 65: thinking.budget_tokens=-1 → stripped
+		// Case 65: thinking.budget_tokens=-1 → reasoning_effort=auto; passed through.
 		{
 			name:        "65",
 			from:        "claude",
 			to:          "openai",
 			model:       "no-thinking-model",
 			inputJSON:   `{"model":"no-thinking-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":-1}}`,
-			expectField: "",
+			expectField: "reasoning_effort",
+			expectValue: "auto",
 			expectErr:   false,
 		},
 
@@ -3074,7 +3085,8 @@ func TestThinkingE2EClaudeAdaptive_Body(t *testing.T) {
 			to:          "openai",
 			model:       "no-thinking-model",
 			inputJSON:   `{"model":"no-thinking-model","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`,
-			expectField: "",
+			expectField: "reasoning_effort",
+			expectValue: "high",
 			expectErr:   false,
 		},
 
