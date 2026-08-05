@@ -460,9 +460,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
 		var streamUsage helps.StreamUsageBuffer
+		var seenDone bool
 		defer streamUsage.Publish(ctx, reporter)
 		var readErr error
-		sawDone := false
+
 		for {
 			line, errRead := readSSELine(reader)
 			if len(line) > 0 {
@@ -510,10 +511,13 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 					continue
 				}
 
+				// OpenAI SSE treats data: [DONE] as the terminal event. Process it once,
+				// then stop so trailing non-spec chunks (e.g. cost metadata after DONE)
+				// are not reordered ahead of the handler-emitted terminal marker.
+				dataPayload := bytes.TrimSpace(trimmedLine[len("data:"):])
+				isDone := bytes.Equal(dataPayload, []byte("[DONE]"))
+
 				// OpenAI-compatible streams must use SSE data lines.
-				if bytes.Equal(bytes.TrimSpace(trimmedLine[5:]), []byte("[DONE]")) {
-					sawDone = true
-				}
 				chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(trimmedLine), &param, claudeInputTokens)
 				for i := range chunks {
 					select {
@@ -521,6 +525,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 					case <-ctx.Done():
 						return
 					}
+				}
+				if isDone {
+					seenDone = true
+					break
 				}
 			}
 			if errRead != nil {
@@ -537,8 +545,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			case out <- cliproxyexecutor.StreamChunk{Err: readErr}:
 			case <-ctx.Done():
 			}
-		} else if !sawDone {
-			// In case the upstream close the stream without a terminal [DONE] marker.
+		} else if !seenDone {
+			// Upstream closed without a terminal [DONE] marker.
 			// Feed a synthetic done marker through the translator so pending
 			// response.completed events are still emitted exactly once. Skip it
 			// when the upstream already sent [DONE]: passthrough response formats

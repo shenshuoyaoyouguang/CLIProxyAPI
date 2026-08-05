@@ -401,6 +401,39 @@ func TestClaudeStreamUsageAccumulatorDetailWithoutUsageEvents(t *testing.T) {
 	}
 }
 
+func TestParseClaudeUsagePreservesThinkingTokensAsReasoningSubset(t *testing.T) {
+	// Sanitized shape from local Anthropic request logs under ~/.config/cpa/logs.
+	data := []byte(`{"usage":{"input_tokens":2,"cache_creation_input_tokens":831,"cache_read_input_tokens":44225,"output_tokens":244,"output_tokens_details":{"thinking_tokens":40}}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.OutputTokens != 244 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 244)
+	}
+	if detail.ReasoningTokens != 40 {
+		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 40)
+	}
+	if detail.TotalTokens != 45302 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 45302)
+	}
+	if !detail.TokenBreakdown.Valid() ||
+		detail.TokenBreakdown.Output.TotalTokens != 244 ||
+		detail.TokenBreakdown.Output.NonReasoningTokens != 204 ||
+		detail.TokenBreakdown.Output.ReasoningTokens != 40 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
+}
+
+
+func TestParseClaudeUsageFallsBackToTopLevelThinkingTokens(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":3,"output_tokens":10,"thinking_tokens":4}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.OutputTokens != 10 || detail.ReasoningTokens != 4 || detail.TotalTokens != 13 {
+		t.Fatalf("detail = %+v", detail)
+	}
+	if detail.TokenBreakdown.Output.NonReasoningTokens != 6 {
+		t.Fatalf("token breakdown = %+v", detail.TokenBreakdown)
+	}
+}
+
 func TestParseGeminiUsageNormalizesCachedContent(t *testing.T) {
 	detail := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":4,"totalTokenCount":12}}`))
 	if detail.CachedTokens != 4 {
