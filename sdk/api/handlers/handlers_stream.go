@@ -656,7 +656,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			}
 			if coreauth.StreamRecoveryEnabled(opts.StreamRecovery) {
 				// Full-stream recovery at the conductor supersedes handler-side
-				// bootstrap retries: surface the bootstrap error directly.
+				// bootstrap retries: surface the bootstrap error directly and
+				// release the failed attempt's executor goroutine (H24j).
+				cancelStream()
 				bootstrapStreamErr = enrichAuthSelectionError(bootstrapStreamErr, providers, normalizedModel)
 				bootstrapErr = executionErrorMessage(bootstrapStreamErr)
 				return

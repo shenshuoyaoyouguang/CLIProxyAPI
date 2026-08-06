@@ -168,7 +168,10 @@ type Options struct {
 
 // StreamRecoveryPolicy bounds pre-commit streaming retries.
 type StreamRecoveryPolicy struct {
-	// BootstrapRetries preserves legacy retries before semantic stream commitment.
+	// BootstrapRetries enables commitment-aware provisional buffering in the
+	// conductor when full-stream recovery is disabled. Handler-side bootstrap
+	// retries are driven by the same config value; recovery mode supersedes
+	// both.
 	BootstrapRetries int
 	// Enabled allows duration-only recovery when Attempts is zero.
 	Enabled bool

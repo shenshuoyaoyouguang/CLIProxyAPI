@@ -491,7 +491,10 @@ func (m *Manager) wrapStreamResultWithDone(ctx context.Context, auth *Auth, prov
 				return
 			}
 		}
-		if !failed && (ctx == nil || ctx.Err() == nil) {
+		// Home dispatch results are always reported for reconciliation even when
+		// the request context was cancelled; non-ephemeral streams only record
+		// success when the stream was fully delivered.
+		if !failed && (ctx == nil || ctx.Err() == nil || ephemeralResult) {
 			m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true}, auth, ephemeralResult)
 		}
 	}()
@@ -538,29 +541,53 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if recoveryState := streamRecoveryFromContext(ctx); recoveryState != nil {
 			streamResult, buffered, remaining, errRecovery := m.executeStreamWithRecovery(ctx, executor, auth, execReq, execOpts, provider, resultModel)
 			if errRecovery != nil && ctx.Err() == nil && allowRetry {
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(ctx, auth, errRecovery, didRefreshOnUnauthorized); okRefresh {
+				alreadyTried := didRefreshOnUnauthorized
+				willAttemptHomeRefresh := ephemeralResult && !alreadyTried && auth != nil && auth.AuthKind() == AuthKindOAuth && isUnauthorizedError(errRecovery)
+				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, executor, auth, errRecovery, alreadyTried, ephemeralResult)
+				if willAttemptHomeRefresh {
+					didRefreshOnUnauthorized = true
+					if unauthorizedRefreshTried != nil {
+						unauthorizedRefreshTried[auth.ID] = struct{}{}
+					}
+				}
+				if errRefresh != nil {
+					errRecovery = errRefresh
+				} else if okRefresh {
 					auth = refreshed
+					m.replaceHomeExecutionLifecycleAuth(execOpts.ExecutionLifecycle, auth)
+					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					streamResult, buffered, remaining, errRecovery = m.executeStreamWithRecovery(ctx, executor, auth, execReq, execOpts, provider, resultModel)
+					if errRecovery != nil {
+						if errCtx := ctx.Err(); errCtx != nil {
+							return nil, errCtx
+						}
+					}
 				}
 			}
 			if errRecovery != nil {
 				if errCtx := ctx.Err(); errCtx != nil {
 					return nil, errCtx
 				}
+				if !ephemeralResult {
+					if errCancel := claudeOAuthRequestCancellation(ctx, auth, errRecovery); errCancel != nil {
+						return nil, errCancel
+					}
+				}
 				rerr := resultErrorFromError(errRecovery)
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(errRecovery)
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-				if isRequestScopedError(errRecovery) || isRequestInvalidError(errRecovery) {
+				if isRequestInvalidError(errRecovery) {
 					return nil, errRecovery
 				}
 				lastErr = errRecovery
 				continue
 			}
+			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, execModel, aliasResult)
 			// Every recovery success path holds the slot until the buffered result
 			// is drained or cancelled, so the done hook always releases it.
-			return m.wrapStreamResultWithDone(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, aliasResult, ephemeralResult, recoveryState.releaseSlot, recoveryState.releaseAfterFirstRemaining), nil
+			return m.wrapStreamResultWithDone(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, attemptAliasResult, ephemeralResult, recoveryState.releaseSlot, recoveryState.releaseAfterFirstRemaining), nil
 		}
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 		if errStream != nil {
