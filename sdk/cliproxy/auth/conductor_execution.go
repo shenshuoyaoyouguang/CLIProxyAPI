@@ -122,7 +122,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
-	if streamRecoveryEnabled(opts.StreamRecovery) && !m.HomeEnabled() {
+	if StreamRecoveryEnabled(opts.StreamRecovery) && !m.HomeEnabled() {
 		if m.acquireStreamRecovery(opts.StreamRecovery.MaxConcurrent) {
 			state := &streamRecoveryState{
 				policy:    opts.StreamRecovery,

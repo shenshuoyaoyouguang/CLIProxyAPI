@@ -574,18 +574,18 @@ func TestCollectRecoveryAttemptOverflowFailsOpenExactlyOnce(t *testing.T) {
 	chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("def"), Commitment: cliproxyexecutor.StreamCommitmentSemantic}
 	chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("ghi"), Commitment: cliproxyexecutor.StreamCommitmentTerminal}
 	close(chunks)
-	buffered, remaining, terminal, failOpen, err := collectRecoveryAttempt(context.Background(), &cliproxyexecutor.StreamResult{Chunks: chunks}, 5)
-	if err != nil || terminal || failOpen != "buffer_overflow" {
-		t.Fatalf("terminal=%v failOpen=%v err=%v", terminal, failOpen, err)
+	outcome := collectRecoveryAttempt(context.Background(), &cliproxyexecutor.StreamResult{Chunks: chunks}, 5)
+	if outcome.err != nil || outcome.terminal || outcome.failOpenReason != "buffer_overflow" {
+		t.Fatalf("terminal=%v failOpen=%v err=%v", outcome.terminal, outcome.failOpenReason, outcome.err)
 	}
-	if gotBytes := bufferedStreamBytes(buffered); gotBytes > 5 {
+	if gotBytes := bufferedStreamBytes(outcome.buffered); gotBytes > 5 {
 		t.Fatalf("buffered bytes = %d, exceeds limit", gotBytes)
 	}
 	var got string
-	for _, chunk := range buffered {
+	for _, chunk := range outcome.buffered {
 		got += string(chunk.Payload)
 	}
-	for chunk := range remaining {
+	for chunk := range outcome.remaining {
 		got += string(chunk.Payload)
 	}
 	if got != "abcdefghi" {
@@ -746,15 +746,15 @@ func TestCollectRecoveryAttemptOverflowPreservesLaterError(t *testing.T) {
 	chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("def"), Commitment: cliproxyexecutor.StreamCommitmentSemantic}
 	chunks <- cliproxyexecutor.StreamChunk{Err: laterErr}
 	close(chunks)
-	buffered, remaining, _, failOpen, err := collectRecoveryAttempt(context.Background(), &cliproxyexecutor.StreamResult{Chunks: chunks}, 5)
-	if err != nil || failOpen != "buffer_overflow" || bufferedStreamBytes(buffered) != 3 {
-		t.Fatalf("buffered=%d failOpen=%v err=%v", bufferedStreamBytes(buffered), failOpen, err)
+	outcome := collectRecoveryAttempt(context.Background(), &cliproxyexecutor.StreamResult{Chunks: chunks}, 5)
+	if outcome.err != nil || outcome.failOpenReason != "buffer_overflow" || bufferedStreamBytes(outcome.buffered) != 3 {
+		t.Fatalf("buffered=%d failOpen=%v err=%v", bufferedStreamBytes(outcome.buffered), outcome.failOpenReason, outcome.err)
 	}
-	first := <-remaining
+	first := <-outcome.remaining
 	if string(first.Payload) != "def" {
 		t.Fatalf("overflow chunk = %q, want def", first.Payload)
 	}
-	second := <-remaining
+	second := <-outcome.remaining
 	if second.Err != laterErr {
 		t.Fatalf("later error = %v, want %v", second.Err, laterErr)
 	}

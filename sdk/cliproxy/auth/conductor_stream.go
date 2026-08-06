@@ -59,13 +59,9 @@ func streamRecoveryFromContext(ctx context.Context) *streamRecoveryState {
 	return state
 }
 
-func streamRecoveryEnabled(policy cliproxyexecutor.StreamRecoveryPolicy) bool {
-	return policy.Attempts > 0 || (policy.Enabled && policy.MaxRetryWindow > 0)
-}
-
 // StreamRecoveryEnabled reports whether the policy enables full-stream recovery.
 func StreamRecoveryEnabled(policy cliproxyexecutor.StreamRecoveryPolicy) bool {
-	return streamRecoveryEnabled(policy)
+	return policy.Attempts > 0 || (policy.Enabled && policy.MaxRetryWindow > 0)
 }
 
 // canRetry reports whether another full-stream attempt may begin. It is a pure
@@ -73,7 +69,7 @@ func StreamRecoveryEnabled(policy cliproxyexecutor.StreamRecoveryPolicy) bool {
 // (see executeStreamWithRecovery), so a retry aborted by cancellation or by the
 // retry-start deadline does not waste the budget.
 func (s *streamRecoveryState) canRetry() bool {
-	if s == nil || !streamRecoveryEnabled(s.policy) {
+	if s == nil || !StreamRecoveryEnabled(s.policy) {
 		return false
 	}
 	if s.policy.MaxRetryWindow > 0 && time.Since(s.started) >= s.policy.MaxRetryWindow {
@@ -249,12 +245,17 @@ func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamR
 	}
 }
 
+// emptyStreamError reports an upstream execution that produced no stream source.
+func emptyStreamError() *Error {
+	return &Error{Code: "empty_stream", Message: "upstream stream has no source", Retryable: true}
+}
+
 func validateStreamResult(result *cliproxyexecutor.StreamResult, err error) (*cliproxyexecutor.StreamResult, error) {
 	if err != nil {
 		return result, err
 	}
 	if result == nil || result.Chunks == nil {
-		return result, &Error{Code: "empty_stream", Message: "upstream stream has no source", Retryable: true}
+		return result, emptyStreamError()
 	}
 	return result, nil
 }
@@ -307,32 +308,43 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 	}
 }
 
-func collectRecoveryAttempt(ctx context.Context, streamResult *cliproxyexecutor.StreamResult, maxBufferBytes int) (buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, terminal bool, failOpenReason string, err error) {
+// recoveryAttemptOutcome is the result of draining one full-stream attempt.
+type recoveryAttemptOutcome struct {
+	buffered       []cliproxyexecutor.StreamChunk
+	remaining      <-chan cliproxyexecutor.StreamChunk
+	terminal       bool
+	failOpenReason string
+	err            error
+}
+
+func collectRecoveryAttempt(ctx context.Context, streamResult *cliproxyexecutor.StreamResult, maxBufferBytes int) recoveryAttemptOutcome {
 	if streamResult == nil || streamResult.Chunks == nil {
-		return nil, nil, false, "", &Error{Code: "empty_stream", Message: "upstream stream has no source", Retryable: true}
+		return recoveryAttemptOutcome{err: emptyStreamError()}
 	}
 	bufferedBytes := 0
+	terminal := false
+	var buffered []cliproxyexecutor.StreamChunk
 	for {
 		select {
 		case <-ctx.Done():
 			discardStreamChunks(streamResult.Chunks)
-			return nil, nil, false, "", ctx.Err()
+			return recoveryAttemptOutcome{err: ctx.Err()}
 		case chunk, ok := <-streamResult.Chunks:
 			if !ok {
 				if terminal {
-					return buffered, closedStreamChunks(), true, "", nil
+					return recoveryAttemptOutcome{buffered: buffered, remaining: closedStreamChunks(), terminal: true}
 				}
-				return nil, nil, false, "", &Error{Code: requestScopedErrorCode, Message: "upstream stream closed before terminal completion", Retryable: true, HTTPStatus: http.StatusRequestTimeout}
+				return recoveryAttemptOutcome{err: &Error{Code: requestScopedErrorCode, Message: "upstream stream closed before terminal completion", Retryable: true, HTTPStatus: http.StatusRequestTimeout}}
 			}
 			if chunk.Err != nil {
 				discardStreamChunks(streamResult.Chunks)
-				return nil, nil, false, "", chunk.Err
+				return recoveryAttemptOutcome{err: chunk.Err}
 			}
 			if chunk.Commitment == cliproxyexecutor.StreamCommitmentUnknown && len(chunk.Payload) > 0 {
-				return buffered, prependStreamChunk(ctx, chunk, streamResult.Chunks), false, "unknown_commitment", nil
+				return recoveryAttemptOutcome{buffered: buffered, remaining: prependStreamChunk(ctx, chunk, streamResult.Chunks), failOpenReason: "unknown_commitment"}
 			}
 			if maxBufferBytes > 0 && len(chunk.Payload) > maxBufferBytes-bufferedBytes {
-				return buffered, prependStreamChunk(ctx, chunk, streamResult.Chunks), false, "buffer_overflow", nil
+				return recoveryAttemptOutcome{buffered: buffered, remaining: prependStreamChunk(ctx, chunk, streamResult.Chunks), failOpenReason: "buffer_overflow"}
 			}
 			cloned := cloneStreamChunk(chunk)
 			buffered = append(buffered, cloned)
@@ -360,24 +372,21 @@ func (m *Manager) executeStreamWithRecovery(ctx context.Context, executor Provid
 		attempt++
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, req, opts)
 		if errStream == nil {
-			var failOpenReason string
-			var terminal bool
-			var buffered []cliproxyexecutor.StreamChunk
-			var remaining <-chan cliproxyexecutor.StreamChunk
-			buffered, remaining, terminal, failOpenReason, errStream = collectRecoveryAttempt(ctx, streamResult, state.policy.MaxBufferBytes)
-			if errStream == nil {
-				if failOpenReason != "" {
+			outcome := collectRecoveryAttempt(ctx, streamResult, state.policy.MaxBufferBytes)
+			if outcome.err == nil {
+				if outcome.failOpenReason != "" {
 					state.holdUntilDrain = true
 					state.releaseAfterFirstRemaining = true
-					log.WithFields(log.Fields{"provider": provider, "model": model, "attempt": attempt, "reason": failOpenReason, "buffered_bytes": bufferedStreamBytes(buffered), "elapsed": time.Since(state.started)}).Debug("stream recovery failed open to ordinary streaming")
-					return streamResult, buffered, remaining, nil
+					log.WithFields(log.Fields{"provider": provider, "model": model, "attempt": attempt, "reason": outcome.failOpenReason, "buffered_bytes": bufferedStreamBytes(outcome.buffered), "elapsed": time.Since(state.started)}).Debug("stream recovery failed open to ordinary streaming")
+					return streamResult, outcome.buffered, outcome.remaining, nil
 				}
-				if terminal {
+				if outcome.terminal {
 					state.holdUntilDrain = true
-					log.WithFields(log.Fields{"provider": provider, "model": model, "attempt": attempt, "reason": "terminal_success", "buffered_bytes": bufferedStreamBytes(buffered), "elapsed": time.Since(state.started)}).Debug("stream recovery succeeded")
-					return streamResult, buffered, remaining, nil
+					log.WithFields(log.Fields{"provider": provider, "model": model, "attempt": attempt, "reason": "terminal_success", "buffered_bytes": bufferedStreamBytes(outcome.buffered), "elapsed": time.Since(state.started)}).Debug("stream recovery succeeded")
+					return streamResult, outcome.buffered, outcome.remaining, nil
 				}
 			}
+			errStream = outcome.err
 		}
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, nil, nil, errCtx
@@ -638,7 +647,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			continue
 		}
 
-		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks, !streamRecoveryEnabled(execOpts.StreamRecovery) && execOpts.StreamRecovery.BootstrapRetries > 0)
+		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks, !StreamRecoveryEnabled(execOpts.StreamRecovery) && execOpts.StreamRecovery.BootstrapRetries > 0)
 		if bootstrapErr != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
 				discardStreamChunks(streamResult.Chunks)
@@ -674,7 +683,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 						streamResult = &cliproxyexecutor.StreamResult{}
 					} else {
 						streamResult = retryStream
-						buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks, !streamRecoveryEnabled(execOpts.StreamRecovery) && execOpts.StreamRecovery.BootstrapRetries > 0)
+						buffered, closed, bootstrapErr = readStreamBootstrap(ctx, streamResult.Chunks, !StreamRecoveryEnabled(execOpts.StreamRecovery) && execOpts.StreamRecovery.BootstrapRetries > 0)
 					}
 				}
 			}
