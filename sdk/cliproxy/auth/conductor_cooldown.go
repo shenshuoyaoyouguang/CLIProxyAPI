@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -907,7 +908,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Unlock()
 	if authSnapshot != nil {
 		// Persist outside the global lock: store.Save can be Postgres network I/O.
-		_ = m.persist(ctx, authSnapshot)
+		if errPersist := m.persist(ctx, authSnapshot); errPersist != nil {
+			// In-memory cooldown state stays live; surface the failure because a
+			// lost persist means cooldown limits can be bypassed after a restart.
+			log.WithError(errPersist).WithFields(log.Fields{"provider": authSnapshot.Provider, "auth_id": authSnapshot.ID}).
+				Error("failed to persist auth state after result; cooldown state may not survive restart")
+		}
 	}
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
@@ -973,7 +979,10 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 	m.mu.Unlock()
 	if authSnapshot != nil {
 		// Persist outside the global lock: store.Save can be Postgres network I/O.
-		_ = m.persist(ctx, authSnapshot)
+		if errPersist := m.persist(ctx, authSnapshot); errPersist != nil {
+			log.WithError(errPersist).WithFields(log.Fields{"provider": authSnapshot.Provider, "auth_id": authSnapshot.ID}).
+				Error("failed to persist auth state after neutral result; changes will be lost on restart")
+		}
 	}
 
 	m.hook.OnResult(ctx, result)

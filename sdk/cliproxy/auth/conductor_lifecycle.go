@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // SetRetryConfig updates retry attempts, credential retry limit and cooldown wait interval.
@@ -95,7 +96,12 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(auth.Clone())
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	if errPersist := m.persist(ctx, auth); errPersist != nil {
+		// In-memory state is already live above; do not roll back, but surface
+		// the failure so operators know the entry will not survive a restart.
+		log.WithError(errPersist).WithFields(log.Fields{"provider": auth.Provider, "auth_id": auth.ID}).
+			Error("failed to persist auth credentials; changes will be lost on restart")
+	}
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if clearedCooldown {
 		m.persistCooldownStates(ctx)
@@ -148,7 +154,12 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(auth.Clone())
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	if errPersist := m.persist(ctx, auth); errPersist != nil {
+		// In-memory state is already live above; do not roll back, but surface
+		// the failure so operators know the entry will not survive a restart.
+		log.WithError(errPersist).WithFields(log.Fields{"provider": auth.Provider, "auth_id": auth.ID}).
+			Error("failed to persist updated auth credentials; changes will be lost on restart")
+	}
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if clearedCooldown {
 		m.persistCooldownStates(ctx)
