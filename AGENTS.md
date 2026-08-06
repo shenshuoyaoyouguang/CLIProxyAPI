@@ -22,6 +22,13 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Auth material defaults under `auths/`
 - Storage backends: file-based default; optional Postgres/git/object store (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`)
 
+## Workflow & CI
+- PR base is auto-retargeted from `main` to `dev` (`auto-retarget-main-pr-to-dev.yml`); open PRs against `dev`.
+- CI (`pr-test-build`) only builds `./cmd/server` — it does NOT run tests. Always run `go test ./...` locally before pushing.
+- PRs that modify `AGENTS.md` are auto-closed by `agents-md-guard.yml`; never include `AGENTS.md` changes in a PR.
+- PRs that touch `internal/translator/` are blocked by `pr-path-guard.yml` (enforces the translator rule below).
+- Lint is not in CI; run `golangci-lint run ./...` locally (config: `.golangci.yml`; reports only new issues vs baseline).
+
 ## Architecture
 - `cmd/server/` — Server entrypoint
 - `internal/api/` — Gin HTTP API (routes, middleware, protocol multiplexer, management handlers)
@@ -56,3 +63,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Use logrus structured logging; avoid leaking secrets/tokens in logs
 - Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
 - Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the xAI websocket idle read deadline in `internal/runtime/executor/xai_websockets_executor.go` (both applied by the shared websocket session runtime `internal/runtime/executor/websocket_session_runtime.go`), the wsrelay session deadlines in `internal/wsrelay/session.go`, the downstream responses websocket liveness deadline and ping period in `sdk/api/handlers/openai/openai_responses_websocket.go` (ping-based only; data-flow timing is unaffected), the management APICall timeout in `internal/api/handlers/management/api_tools.go`, the Antigravity credits-hint background probe timeout (`antigravityCreditsHintRefreshTimeout` in `internal/runtime/executor/antigravity_executor.go`, consumed by `internal/runtime/executor/antigravity_executor_credits.go`), the utls connection-establishment deadline (`utlsConnectTimeout` in `internal/runtime/executor/helps/utls_client.go`, cleared once the HTTP/2 connection is usable), and the `cmd/fetch_antigravity_models` utility timeouts
+
+## References
+- `docs/PITFALLS.md` — thinking / multi-turn CoT traps; consult before changing passback or translator paths.
+- `docs/CODE_WIKI.md` — broader architecture and module reference.

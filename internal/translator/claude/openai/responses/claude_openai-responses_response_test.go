@@ -1149,3 +1149,42 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_RestoresNamespaceFuncti
 		t.Fatalf("non-stream output namespace = %q, want mcp__node_repl", got)
 	}
 }
+
+func TestConvertClaudeResponseToOpenAIResponses_CustomToolCallIDPrefix(t *testing.T) {
+	originalRequest := []byte(`{
+		"model":"gpt-test",
+		"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"exec"}]}]
+	}`)
+	chunks := [][]byte{
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_custom_id","usage":{"input_tokens":1,"output_tokens":0}}}`),
+		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_custom_id","name":"exec","input":{}}}`),
+		[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"input\":\"pwd\"}"}}`),
+		[]byte(`data: {"type":"content_block_stop","index":0}`),
+		[]byte(`data: {"type":"message_stop"}`),
+	}
+
+	var param any
+	var addedID, doneID string
+	for _, chunk := range chunks {
+		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", originalRequest, nil, chunk, &param) {
+			event, data := parseClaudeResponsesSSEEvent(t, output)
+			switch event {
+			case "response.output_item.added":
+				if data.Get("item.type").String() == "custom_tool_call" {
+					addedID = data.Get("item.id").String()
+				}
+			case "response.output_item.done":
+				if data.Get("item.type").String() == "custom_tool_call" {
+					doneID = data.Get("item.id").String()
+				}
+			}
+		}
+	}
+
+	if !strings.HasPrefix(addedID, "ctc_") {
+		t.Fatalf("added item.id = %q, want ctc_ prefix", addedID)
+	}
+	if !strings.HasPrefix(doneID, "ctc_") {
+		t.Fatalf("done item.id = %q, want ctc_ prefix", doneID)
+	}
+}

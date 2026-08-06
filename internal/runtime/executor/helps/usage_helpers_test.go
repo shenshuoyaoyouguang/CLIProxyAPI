@@ -422,7 +422,6 @@ func TestParseClaudeUsagePreservesThinkingTokensAsReasoningSubset(t *testing.T) 
 	}
 }
 
-
 func TestParseClaudeUsageFallsBackToTopLevelThinkingTokens(t *testing.T) {
 	data := []byte(`{"usage":{"input_tokens":3,"output_tokens":10,"thinking_tokens":4}}`)
 	detail := ParseClaudeUsage(data)

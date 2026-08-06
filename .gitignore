@@ -38,6 +38,7 @@ GEMINI.md
 # Tooling metadata
 .vscode/*
 .worktrees/
+.codeartsdoer/
 .codex/*
 .claude/*
 .claude
@@ -48,6 +49,7 @@ GEMINI.md
 .pi
 .agents/*
 .opencode/*
+.workbuddy/
 .idea/*
 .beads/*
 .bmad/*
