@@ -110,7 +110,13 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 		// Persist the hashed value back to the config file to avoid re-hashing on next startup.
 		// Preserve YAML comments and ordering; update only the nested key.
-		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "secret-key"}, hashed)
+		if errWrite := SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "secret-key"}, hashed); errWrite != nil {
+			// The in-memory value is already hashed, so startup remains correct;
+			// surface the write failure so operators know re-hashing will happen
+			// again on the next start.
+			log.WithError(errWrite).WithField("config_file", configFile).
+				Warn("failed to persist hashed remote-management secret-key; it will be re-hashed on next startup")
+		}
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)

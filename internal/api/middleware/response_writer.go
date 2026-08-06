@@ -208,7 +208,10 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 			go w.processStreamingChunks(doneChan)
 
 			// Write status immediately
-			_ = streamWriter.WriteStatus(statusCode, w.headers)
+			if errStatus := streamWriter.WriteStatus(statusCode, w.headers); errStatus != nil {
+				log.WithError(errStatus).WithField("request_id", w.requestInfo.RequestID).
+					Debugf("streaming log: failed to write status %d", statusCode)
+			}
 		}
 	}
 
@@ -344,16 +347,24 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 			WriteAPIResponseSource(*logging.FileBodySource) error
 		}); ok {
 			if len(apiRequest) > 0 {
-				_ = w.streamWriter.WriteAPIRequest(apiRequest)
+				if errWrite := w.streamWriter.WriteAPIRequest(apiRequest); errWrite != nil {
+					log.WithError(errWrite).Debug("streaming log: failed to write API request")
+				}
 			}
 			if apiRequestSource != nil && apiRequestSource.HasPayload() {
-				_ = sourceWriter.WriteAPIRequestSource(apiRequestSource)
+				if errWrite := sourceWriter.WriteAPIRequestSource(apiRequestSource); errWrite != nil {
+					log.WithError(errWrite).Debug("streaming log: failed to write API request source")
+				}
 			}
 			if len(apiResponse) > 0 {
-				_ = w.streamWriter.WriteAPIResponse(apiResponse)
+				if errWrite := w.streamWriter.WriteAPIResponse(apiResponse); errWrite != nil {
+					log.WithError(errWrite).Debug("streaming log: failed to write API response")
+				}
 			}
 			if apiResponseSource != nil && apiResponseSource.HasPayload() {
-				_ = sourceWriter.WriteAPIResponseSource(apiResponseSource)
+				if errWrite := sourceWriter.WriteAPIResponseSource(apiResponseSource); errWrite != nil {
+					log.WithError(errWrite).Debug("streaming log: failed to write API response source")
+				}
 			}
 		} else {
 			var errMerge error
@@ -368,10 +379,14 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 				return errMerge
 			}
 			if len(apiRequest) > 0 {
-				_ = w.streamWriter.WriteAPIRequest(apiRequest)
+				if errWrite := w.streamWriter.WriteAPIRequest(apiRequest); errWrite != nil {
+					log.WithError(errWrite).Debug("streaming log: failed to write merged API request")
+				}
 			}
 			if len(apiResponse) > 0 {
-				_ = w.streamWriter.WriteAPIResponse(apiResponse)
+				if errWrite := w.streamWriter.WriteAPIResponse(apiResponse); errWrite != nil {
+					log.WithError(errWrite).Debug("streaming log: failed to write merged API response")
+				}
 			}
 		}
 		apiWebsocketTimeline := w.extractAPIWebsocketTimeline(c)
