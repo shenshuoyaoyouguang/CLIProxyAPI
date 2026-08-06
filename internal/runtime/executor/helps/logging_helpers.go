@@ -706,6 +706,11 @@ func formatAuthInfo(info UpstreamRequestLog) string {
 	return strings.Join(parts, ", ")
 }
 
+// maxErrorBodySummaryLen caps how much of an upstream error body is ever
+// surfaced in logs. Error bodies may echo request content (including user
+// prompts), so they must never be logged verbatim in full.
+const maxErrorBodySummaryLen = 512
+
 func SummarizeErrorBody(contentType string, body []byte) string {
 	isHTML := strings.Contains(strings.ToLower(contentType), "text/html")
 	if !isHTML {
@@ -716,17 +721,37 @@ func SummarizeErrorBody(contentType string, body []byte) string {
 	}
 	if isHTML {
 		if title := extractHTMLTitle(body); title != "" {
-			return title
+			return sanitizeBodySummary(title)
 		}
 		return "[html body omitted]"
 	}
 
 	// Try to extract error message from JSON response
 	if message := extractJSONErrorMessage(body); message != "" {
-		return message
+		return sanitizeBodySummary(message)
 	}
 
-	return string(body)
+	return sanitizeBodySummary(string(body))
+}
+
+// sanitizeBodySummary trims whitespace, strips control characters, repairs
+// invalid UTF-8 and caps the length of a string destined for the log output.
+func sanitizeBodySummary(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x20 && r != '\n' && r != '\t' {
+			continue // strip control characters, keep newline/tab for readability
+		}
+		b.WriteRune(r)
+	}
+	s = b.String()
+	if runes := []rune(s); len(runes) > maxErrorBodySummaryLen {
+		s = string(runes[:maxErrorBodySummaryLen]) + "...(truncated)"
+	}
+	return s
 }
 
 func extractHTMLTitle(body []byte) string {

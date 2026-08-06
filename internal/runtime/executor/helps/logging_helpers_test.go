@@ -53,3 +53,50 @@ func TestRecordAPIResponseMetadataStoresHeadersWhenRequestLogDisabled(t *testing
 		t.Fatalf("response header = %q, want %q", got.Get("X-Upstream-Request-Id"), "upstream-req-1")
 	}
 }
+
+func TestSummarizeErrorBodyTruncatesOversizedBodies(t *testing.T) {
+	long := strings.Repeat("x", maxErrorBodySummaryLen*2)
+	got := SummarizeErrorBody("text/plain", []byte(long))
+	if len(got) > maxErrorBodySummaryLen+len("...(truncated)") {
+		t.Fatalf("summary length = %d, want capped at ~%d", len(got), maxErrorBodySummaryLen)
+	}
+	if !strings.HasSuffix(got, "...(truncated)") {
+		t.Fatalf("summary = %q, want truncation suffix", got)
+	}
+}
+
+func TestSummarizeErrorBodyStripsControlCharacters(t *testing.T) {
+	got := SummarizeErrorBody("text/plain", []byte("line1\x00\x01\x02\r\nline2\x1b"))
+	if strings.ContainsAny(got, "\x00\x01\x02\x1b") {
+		t.Fatalf("summary contains control characters: %q", got)
+	}
+	if !strings.Contains(got, "\n") {
+		t.Fatalf("summary should keep newlines for readability: %q", got)
+	}
+}
+
+func TestSummarizeErrorBodyRepairsInvalidUTF8(t *testing.T) {
+	got := SummarizeErrorBody("text/plain", []byte{0xff, 0xfe, 'a', 'b', 'c'})
+	if !strings.Contains(got, "abc") {
+		t.Fatalf("summary lost valid runes after invalid prefix: %q", got)
+	}
+	if strings.ToValidUTF8(got, "") != got {
+		t.Fatalf("summary is not valid UTF-8: %q", got)
+	}
+}
+
+func TestSummarizeErrorBodyJSONMessageAlsoCapped(t *testing.T) {
+	longMsg := strings.Repeat("m", maxErrorBodySummaryLen+100)
+	body := []byte(`{"error":{"message":"` + longMsg + `"}}`)
+	got := SummarizeErrorBody("application/json", body)
+	if len(got) > maxErrorBodySummaryLen+len("...(truncated)") {
+		t.Fatalf("JSON message summary length = %d, want capped", len(got))
+	}
+}
+
+func TestSummarizeErrorBodyKeepsShortBodiesVerbatim(t *testing.T) {
+	body := "upstream refused connection"
+	if got := SummarizeErrorBody("text/plain", []byte(body)); got != body {
+		t.Fatalf("short body summary = %q, want %q", got, body)
+	}
+}
