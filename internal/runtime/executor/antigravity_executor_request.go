@@ -244,14 +244,6 @@ func antigravityFunctionDeclarationPaths(payloadStr string) []string {
 	return paths
 }
 
-// antigravitySchemaPaths returns every payload path that holds a JSON schema document.
-// A function declaration may carry a schema for its parameters and for its result, so all of
-// them must be cleaned; anything omitted here reaches the upstream API uncleaned.
-func antigravitySchemaPaths(payloadStr string) []string {
-	paths := antigravityDeclarationSchemaPaths(payloadStr)
-	return append(paths, antigravityGenerationSchemaPaths(payloadStr)...)
-}
-
 func antigravityDeclarationSchemaPaths(payloadStr string) []string {
 	paths := make([]string, 0, 8)
 	for _, base := range antigravityFunctionDeclarationPaths(payloadStr) {
@@ -335,10 +327,6 @@ func resolveHost(base string) string {
 
 func resolveUserAgent(auth *cliproxyauth.Auth) string {
 	return misc.AntigravityRequestUserAgent(antigravityConfiguredUserAgent(auth))
-}
-
-func resolveLoadCodeAssistUserAgent(auth *cliproxyauth.Auth) string {
-	return misc.AntigravityLoadCodeAssistUserAgent(antigravityConfiguredUserAgent(auth))
 }
 
 func antigravityConfiguredUserAgent(auth *cliproxyauth.Auth) string {

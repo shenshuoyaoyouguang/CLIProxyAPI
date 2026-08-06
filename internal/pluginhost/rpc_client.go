@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -587,18 +585,4 @@ func (a *rpcPluginAdapter) HandleManagement(ctx context.Context, req pluginapi.M
 		ManagementRequest: req,
 		HostCallbackID:    callbackID,
 	})
-}
-
-func httpResponseFromPlugin(resp pluginapi.ExecutorHTTPResponse, req *http.Request) *http.Response {
-	status := resp.StatusCode
-	if status == 0 {
-		status = http.StatusOK
-	}
-	return &http.Response{
-		StatusCode: status,
-		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
-		Header:     cloneHeader(resp.Headers),
-		Body:       io.NopCloser(bytes.NewReader(bytes.Clone(resp.Body))),
-		Request:    req,
-	}
 }

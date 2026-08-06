@@ -1,12 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/net/context"
 )
 
 type pinnedAuthContextKey struct{}

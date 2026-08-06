@@ -215,10 +215,6 @@ func inspectDoubleLayerSignature(sig string) (*claudeSignatureTree, error) {
 	return signature.InspectClaudeDoubleLayerSignature(sig)
 }
 
-func inspectSingleLayerSignature(sig string) (*claudeSignatureTree, error) {
-	return signature.InspectClaudeSingleLayerSignature(sig)
-}
-
 func inspectClaudeSignaturePayload(payload []byte, encodingLayers int) (*claudeSignatureTree, error) {
 	return signature.InspectClaudeSignaturePayload(payload, encodingLayers)
 }

@@ -50,14 +50,6 @@ func resolveThinkingSignatureRequired(ctx context.Context, modelName, thinkingTe
 	return resolveBypassModeSignatureForProvider(targetProvider, rawSignature), nil
 }
 
-func resolveCacheModeSignature(modelName, thinkingText, rawSignature string) string {
-	signature, errSignature := resolveCacheModeSignatureRequired(context.Background(), modelName, thinkingText, rawSignature)
-	if errSignature != nil {
-		return ""
-	}
-	return signature
-}
-
 func resolveCacheModeSignatureRequired(ctx context.Context, modelName, thinkingText, rawSignature string) (string, error) {
 	targetProvider := sigcompat.SignatureProviderFromModelName(modelName)
 	if thinkingText != "" {

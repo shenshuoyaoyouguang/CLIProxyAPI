@@ -238,25 +238,6 @@ func antigravityTextContent(root gjson.Result) string {
 	return textBuilder.String()
 }
 
-func antigravityUsageTokens(root gjson.Result) (int64, int64) {
-	usage := root.Get("response.usageMetadata")
-	if !usage.Exists() {
-		usage = root.Get("usageMetadata")
-	}
-	inputTokens := usage.Get("promptTokenCount").Int()
-	outputTokens := usage.Get("candidatesTokenCount").Int() + usage.Get("thoughtsTokenCount").Int()
-	if outputTokens == 0 {
-		totalTokens := usage.Get("totalTokenCount").Int()
-		if totalTokens > 0 {
-			outputTokens = totalTokens - inputTokens
-			if outputTokens < 0 {
-				outputTokens = 0
-			}
-		}
-	}
-	return inputTokens, outputTokens
-}
-
 func webSearchQueryFromGrounding(groundingMetadata gjson.Result) string {
 	if queries := groundingMetadata.Get("webSearchQueries"); queries.IsArray() && len(queries.Array()) > 0 {
 		return queries.Array()[0].String()

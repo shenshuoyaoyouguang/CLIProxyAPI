@@ -221,11 +221,6 @@ func (h *Host) callHostHTTPStreamClose(request []byte) ([]byte, error) {
 	return marshalRPCResult(rpcEmptyResponse{})
 }
 
-func decodeHostHTTPRequest(raw []byte) (pluginapi.HTTPRequest, error) {
-	httpReq, _, errDecode := decodeHostHTTPRequestWithCallbackID(raw)
-	return httpReq, errDecode
-}
-
 func decodeHostHTTPRequestWithCallbackID(raw []byte) (pluginapi.HTTPRequest, string, error) {
 	var req rpcHostHTTPRequest
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {

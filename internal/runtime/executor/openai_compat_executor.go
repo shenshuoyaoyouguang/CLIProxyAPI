@@ -1099,13 +1099,6 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 	return nil
 }
 
-func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
-	if len(payload) == 0 || model == "" {
-		return payload
-	}
-	return helps.SetStringIfDifferent(payload, "model", model)
-}
-
 // classifyBareJSONErrorStatus maps a bare-JSON upstream error body (emitted
 // without an SSE data: prefix during streaming) to an HTTP status code based
 // on the OpenAI error.type convention. Returns 502 Bad Gateway when the type

@@ -167,6 +167,8 @@ func (s *FileBodySource) Paths() []string {
 }
 
 // WriteTo merges all ordered parts into w.
+//
+//nolint:govet // stdmethods: single-value merged-write semantics, not io.WriterTo
 func (s *FileBodySource) WriteTo(w io.Writer) error {
 	if s == nil || w == nil {
 		return nil

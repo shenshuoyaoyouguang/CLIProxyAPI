@@ -126,14 +126,6 @@ func codexStreamPayload(rawJSON []byte) []byte {
 	return rawJSON
 }
 
-func codexStreamEventType(rawJSON []byte) string {
-	payload := codexStreamPayload(rawJSON)
-	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-		return ""
-	}
-	return gjson.GetBytes(payload, "type").String()
-}
-
 func appendCodexInteractionsCreated(out [][]byte, st *codexToInteractionsStreamState, response gjson.Result) [][]byte {
 	if st.Started {
 		return out

@@ -289,10 +289,6 @@ func appendInteractionsDone(out [][]byte, st *openAIToInteractionsStreamState) [
 	return out
 }
 
-func isOpenAIStreamDone(rawJSON []byte) bool {
-	return bytes.Equal(bytes.TrimSpace(openAIChatSSEPayload(rawJSON)), []byte("[DONE]"))
-}
-
 func openAIChatSSEPayload(rawJSON []byte) []byte {
 	trimmed := bytes.TrimSpace(rawJSON)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) {

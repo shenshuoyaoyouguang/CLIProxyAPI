@@ -305,10 +305,6 @@ func videoIDFromPayload(payload []byte) string {
 	return videoID
 }
 
-func (h *OpenAIAPIHandler) bindVideoAuthIDFromPayload(payload []byte, authID string) {
-	h.bindVideoAuthIDAndModelFromPayload(payload, authID, strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
-}
-
 func (h *OpenAIAPIHandler) bindVideoAuthIDAndModelFromPayload(payload []byte, authID string, model string) {
 	videoID := videoIDFromPayload(payload)
 	if videoID == "" {

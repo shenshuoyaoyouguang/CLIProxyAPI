@@ -39,6 +39,14 @@ type windowsPluginAPI struct {
 	shutdown   uintptr
 }
 
+// uintptrToPointer reinterprets a Windows syscall address as an unsafe.Pointer.
+// The address either comes from LocalAlloc (OS-managed memory) or is an
+// opaque callback handle whose lifetime is owned by the native caller, so the
+// conversion never points into Go heap memory that the GC could move.
+func uintptrToPointer(addr uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+}
+
 var (
 	windowsHostCallbackID      atomic.Uintptr
 	windowsHostCallbackEntries sync.Map
@@ -282,7 +290,7 @@ func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request 
 	defer func() {
 		_, _ = windows.LocalFree(windows.Handle(responseMem))
 	}()
-	response := (*windowsBuffer)(unsafe.Pointer(responseMem))
+	response := (*windowsBuffer)(uintptrToPointer(responseMem))
 	rc, _, _ := syscall.SyscallN(
 		c.api.call,
 		uintptr(unsafe.Pointer(methodBytes)),
@@ -292,7 +300,7 @@ func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request 
 	)
 	var out []byte
 	if response.ptr != 0 && response.len > 0 {
-		out = unsafe.Slice((*byte)(unsafe.Pointer(response.ptr)), response.len)
+		out = unsafe.Slice((*byte)(uintptrToPointer(response.ptr)), response.len)
 		out = append([]byte(nil), out...)
 	}
 	if response.ptr != 0 {
@@ -342,14 +350,14 @@ func (c *dynamicLibraryClient) close(releaseDLL bool) {
 
 func windowsHostCall(hostCtx uintptr, methodPtr uintptr, requestPtr uintptr, requestLen uintptr, responsePtr uintptr) uintptr {
 	if responsePtr != 0 {
-		response := (*windowsBuffer)(unsafe.Pointer(responsePtr))
+		response := (*windowsBuffer)(uintptrToPointer(responsePtr))
 		response.ptr = 0
 		response.len = 0
 	}
 	if hostCtx == 0 || methodPtr == 0 {
 		return 1
 	}
-	id := *(*uintptr)(unsafe.Pointer(hostCtx))
+	id := *(*uintptr)(uintptrToPointer(hostCtx))
 	rawHost, okHost := windowsHostCallbackEntries.Load(id)
 	if !okHost {
 		return 1
@@ -360,7 +368,7 @@ func windowsHostCall(hostCtx uintptr, methodPtr uintptr, requestPtr uintptr, req
 	}
 	var request []byte
 	if requestPtr != 0 && requestLen > 0 {
-		request = unsafe.Slice((*byte)(unsafe.Pointer(requestPtr)), requestLen)
+		request = unsafe.Slice((*byte)(uintptrToPointer(requestPtr)), requestLen)
 		request = append([]byte(nil), request...)
 	}
 	ctx := withHostCallbackPluginID(context.Background(), entry.pluginID)
@@ -375,8 +383,8 @@ func windowsHostCall(hostCtx uintptr, methodPtr uintptr, requestPtr uintptr, req
 	if errAlloc != nil || mem == 0 {
 		return 1
 	}
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(mem)), len(resp)), resp)
-	response := (*windowsBuffer)(unsafe.Pointer(responsePtr))
+	copy(unsafe.Slice((*byte)(uintptrToPointer(mem)), len(resp)), resp)
+	response := (*windowsBuffer)(uintptrToPointer(responsePtr))
 	response.ptr = mem
 	response.len = uintptr(len(resp))
 	return 0
@@ -395,7 +403,7 @@ func windowsString(ptr uintptr) string {
 	}
 	bytes := make([]byte, 0)
 	for offset := uintptr(0); ; offset++ {
-		b := *(*byte)(unsafe.Pointer(ptr + offset))
+		b := *(*byte)(uintptrToPointer(ptr + offset))
 		if b == 0 {
 			break
 		}

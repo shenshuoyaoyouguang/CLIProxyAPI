@@ -150,9 +150,17 @@ func newSession(conn *websocket.Conn, mgr *Manager, id string) *session {
 		closed:   make(chan struct{}),
 	}
 	conn.SetReadLimit(maxInboundMessageLen)
-	conn.SetReadDeadline(time.Now().Add(readTimeout))
+	if errReadDeadline := conn.SetReadDeadline(time.Now().Add(readTimeout)); errReadDeadline != nil {
+		if mgr != nil {
+			mgr.logWarnf("wsrelay: set initial read deadline: %v", errReadDeadline)
+		}
+	}
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(readTimeout))
+		if errReadDeadline := conn.SetReadDeadline(time.Now().Add(readTimeout)); errReadDeadline != nil {
+			if mgr != nil {
+				mgr.logWarnf("wsrelay: pong handler set read deadline: %v", errReadDeadline)
+			}
+		}
 		return nil
 	})
 	s.startHeartbeat()

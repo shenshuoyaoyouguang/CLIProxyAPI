@@ -321,10 +321,6 @@ func (t *responsesWebsocketToolCacheTurn) commit() {
 	}
 }
 
-func repairResponsesWebsocketToolCalls(sessionKey string, payload []byte) []byte {
-	return repairResponsesWebsocketToolCallsWithCaches(defaultWebsocketToolOutputCache, defaultWebsocketToolCallCache, sessionKey, payload)
-}
-
 func repairResponsesWebsocketToolCallsWithoutRecording(sessionKey string, payload []byte) []byte {
 	defaultWebsocketToolCacheTransactionMu.RLock()
 	defer defaultWebsocketToolCacheTransactionMu.RUnlock()
