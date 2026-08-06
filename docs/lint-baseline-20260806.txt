@@ -1,0 +1,1837 @@
+===== internal/access =====
+0 issues.
+===== internal/access/config_access =====
+0 issues.
+===== internal/api =====
+level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key ctrlflow/facts for package locales: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\e8\\e8008863c06c5d44c480ca2231097ed9302d9a715ffa5f66936a8afad0fcae4f-a: Access is denied."
+level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key ctrlflow/facts for package taskloop: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\fa\\fa76ed440f8fe142c28011496d02e2239a5c108d239023780aee824f83f6a2cb-a: Access is denied."
+level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key typedness/facts for package sha3: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\ae\\ae609b9c26066b6aaee7ab74a0619836364b8ef003c98841a216d2b34bdf163e-a: Access is denied."
+level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key ctrlflow/facts for package chat_completions: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\f2\\f24a23b6759191751aa82545c769014c27e3e51c603d7f02e31ce64f091f074e-a: Access is denied."
+..\..\internal\api\server_test.go:1872:1: File is not properly formatted (gofmt)
+		map[string][]string{"Content-Type": []string{"application/json"}},
+^
+..\..\internal\api\server_options.go:38:41: SA5011: possible nil pointer dereference (staticcheck)
+	logger := logging.NewFileRequestLogger(cfg.RequestLog, logsDir, configDir, cfg.ErrorLogsMaxFiles)
+	                                       ^
+..\..\internal\api\server_options.go:39:24: SA5011(related information): this check suggests that the pointer can be nil (staticcheck)
+	logger.SetHomeEnabled(cfg != nil && cfg.Home.Enabled)
+	                      ^
+..\..\internal\api\server_routes.go:256:26: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, func() {}, errors.New("Home dispatch selection is nil")
+		                       ^
+..\..\internal\api\server_routes.go:287:48: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(c.Request.Context(), "gin", c)
+	                                              ^
+..\..\internal\api\server_routes.go:347:23: ST1005: error strings should not be capitalized (staticcheck)
+	errMissingBaseURL := errors.New("Codex Alpha Search API key base URL unavailable")
+	                     ^
+6 issues:
+* gofmt: 1
+* staticcheck: 5
+===== internal/api/handlers/management =====
+..\..\internal\api\handlers\management\logs.go:1243:2: S1017: should replace this if statement with an unconditional strings.TrimPrefix (staticcheck)
+	if strings.HasPrefix(line, "[") {
+	^
+..\..\internal\api\handlers\management\logs.go:1300:2: S1017: should replace this if statement with an unconditional strings.TrimSuffix (staticcheck)
+	if strings.HasSuffix(clean, ".gz") {
+	^
+2 issues:
+* staticcheck: 2
+===== internal/api/middleware =====
+..\..\internal\api\middleware\request_logging_test.go:217:58: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+		executorCtx := context.WithValue(context.Background(), "gin", c)
+		                                                       ^
+..\..\internal\api\middleware\response_writer.go:239:29: QF1008: could remove embedded field "ResponseWriter" from selector (staticcheck)
+	for key, values := range w.ResponseWriter.Header() {
+	                           ^
+2 issues:
+* staticcheck: 2
+===== internal/auth =====
+0 issues.
+===== internal/auth/antigravity =====
+0 issues.
+===== internal/auth/claude =====
+..\..\internal\auth\claude\oauth_server.go:299:9: QF1004: could use strings.ReplaceAll instead (staticcheck)
+	html = strings.Replace(html, "{{PLATFORM_URL}}", platformURL, -1)
+	       ^
+..\..\internal\auth\claude\oauth_server.go:303:18: QF1004: could use strings.ReplaceAll instead (staticcheck)
+		setupNotice := strings.Replace(SetupNoticeHtml, "{{PLATFORM_URL}}", platformURL, -1)
+		               ^
+2 issues:
+* staticcheck: 2
+===== internal/auth/codex =====
+..\..\internal\auth\codex\oauth_server.go:296:9: QF1004: could use strings.ReplaceAll instead (staticcheck)
+	html = strings.Replace(html, "{{PLATFORM_URL}}", platformURL, -1)
+	       ^
+..\..\internal\auth\codex\oauth_server.go:300:18: QF1004: could use strings.ReplaceAll instead (staticcheck)
+		setupNotice := strings.Replace(SetupNoticeHtml, "{{PLATFORM_URL}}", platformURL, -1)
+		               ^
+2 issues:
+* staticcheck: 2
+===== internal/auth/empty =====
+0 issues.
+===== internal/auth/kimi =====
+0 issues.
+===== internal/auth/vertex =====
+0 issues.
+===== internal/auth/xai =====
+..\..\internal\auth\xai\xai.go:257:130: ST1008: error should be returned as the last argument (staticcheck)
+func (a *XAIAuth) exchangeDeviceCode(ctx context.Context, tokenEndpoint, deviceCode string, interval time.Duration) (*TokenData, error, time.Duration, bool) {
+                                                                                                                                 ^
+1 issues:
+* staticcheck: 1
+===== internal/browser =====
+0 issues.
+===== internal/buildinfo =====
+0 issues.
+===== internal/cache =====
+..\..\internal\cache\signature_cache_test.go:381:5: SA4000: identical expressions on the left and right side of the '!=' operator (staticcheck)
+	if hashText("same") != hashText("same") {
+	   ^
+1 issues:
+* staticcheck: 1
+===== internal/client/claude/models =====
+0 issues.
+===== internal/client/codex/live =====
+..\..\internal\client\codex\live\live.go:198:48: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(c.Request.Context(), "gin", c)
+	                                              ^
+..\..\internal\client\codex\live\live.go:479:23: ST1005: error strings should not be capitalized (staticcheck)
+var errBodyTooLarge = errors.New("Codex live request body too large")
+                      ^
+..\..\internal\client\codex\live\live.go:523:23: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, "", "", errors.New("Codex live multipart boundary is missing")
+		                    ^
+..\..\internal\client\codex\live\live.go:553:25: ST1005: error strings should not be capitalized (staticcheck)
+				return nil, "", "", errors.New("Codex live session field must contain valid JSON")
+				                    ^
+..\..\internal\client\codex\live\live.go:560:23: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, "", "", errors.New("Codex live multipart body requires an sdp field")
+		                    ^
+..\..\internal\client\codex\live\live.go:592:15: ST1005: error strings should not be capitalized (staticcheck)
+			return "", errors.New("Codex live call request requires an SDP offer")
+			           ^
+..\..\internal\client\codex\live\live.go:597:14: ST1005: error strings should not be capitalized (staticcheck)
+		return "", errors.New("Codex live media relay requires an SDP or JSON call request")
+		           ^
+..\..\internal\client\codex\live\live.go:606:14: ST1005: error strings should not be capitalized (staticcheck)
+		return "", errors.New("Codex live call request requires an SDP offer")
+		           ^
+..\..\internal\client\codex\live\live.go:621:19: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, "", errors.New("Codex live media relay requires an SDP or JSON call request")
+		                ^
+..\..\internal\client\codex\live\live.go:649:15: ST1005: error strings should not be capitalized (staticcheck)
+			return "", errors.New("Codex live response requires an SDP answer")
+			           ^
+..\..\internal\client\codex\live\live.go:654:14: ST1005: error strings should not be capitalized (staticcheck)
+		return "", errors.New("Codex live response requires an SDP answer")
+		           ^
+..\..\internal\client\codex\live\media.go:230:4: SA1019: settingEngine.SetNAT1To1IPs is deprecated: Use SetICEAddressRewriteRules instead. To mirror the legacy behavior, supply ICEAddressRewriteRule with External set to ips, AsCandidateType set to candidateType, and Mode set to ICEAddressRewriteReplace for host candidates or ICEAddressRewriteAppend for server reflexive candidates. Or leave Mode unspecified to use the default behavior; replace for host candidates and append for server reflexive candidates. (staticcheck)
+			settingEngine.SetNAT1To1IPs([]string{publicIP}, webrtc.ICECandidateTypeHost)
+			^
+..\..\internal\client\codex\live\media.go:262:19: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, "", errors.New("Codex live media relay unavailable")
+		                ^
+..\..\internal\client\codex\live\media.go:276:20: ST1005: error strings should not be capitalized (staticcheck)
+			return nil, "", errors.New("Codex live remote TCP proxy does not support cancellation")
+			                ^
+..\..\internal\client\codex\live\media.go:281:19: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, "", errors.New("Codex live media relay capacity exhausted")
+		                ^
+..\..\internal\client\codex\live\media.go:408:14: ST1005: error strings should not be capitalized (staticcheck)
+		return "", errors.New("Codex live media session unavailable")
+		           ^
+..\..\internal\client\codex\live\media.go:420:17: ST1005: error strings should not be capitalized (staticcheck)
+			errClosed := errors.New("Codex live media session closed while configuring TCP proxy")
+			             ^
+..\..\internal\client\codex\live\sideband.go:338:48: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(c.Request.Context(), "gin", c)
+	                                              ^
+..\..\internal\client\codex\live\tcp_proxy.go:93:19: ST1005: error strings should not be capitalized (staticcheck)
+		return "", nil, errors.New("Codex live TCP proxy dialer is unavailable")
+		                ^
+..\..\internal\client\codex\live\tcp_proxy.go:169:20: ST1005: error strings should not be capitalized (staticcheck)
+			return "", nil, errors.New("Codex live TCP proxy listener returned an invalid address")
+			                ^
+..\..\internal\client\codex\live\tcp_proxy.go:291:15: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, errors.New("Codex live TCP proxy target is not allowed")
+		            ^
+..\..\internal\client\codex\live\tcp_proxy.go:294:15: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, errors.New("Codex live TCP proxy tunnel configuration is incomplete")
+		            ^
+22 issues:
+* staticcheck: 22
+===== internal/client/codex/models =====
+0 issues.
+===== internal/client/codex/optimize-multi-agent-v2 =====
+..\..\internal\client\codex\optimize-multi-agent-v2\optimize_multi_agent_v2_test.go:362:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginContext)
+	                                               ^
+..\..\internal\client\codex\optimize-multi-agent-v2\optimize_multi_agent_v2_test.go:651:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+2 issues:
+* staticcheck: 2
+===== internal/client/grokbuild =====
+0 issues.
+===== internal/cmd =====
+0 issues.
+===== internal/config =====
+0 issues.
+===== internal/constant =====
+0 issues.
+===== internal/credentialweight =====
+0 issues.
+===== internal/home =====
+..\..\internal\home\client.go:1906:10: ST1005: error strings should not be capitalized (staticcheck)
+		return fmt.Errorf("Home subscription ACK is missing")
+		       ^
+..\..\internal\home\client.go:1960:6: func sleepWithContext is unused (unused)
+func sleepWithContext(ctx context.Context, d time.Duration) {
+     ^
+2 issues:
+* staticcheck: 1
+* unused: 1
+===== internal/homeplugins =====
+..\..\internal\homeplugins\sync_test.go:702:49: SA1029: should not use empty anonymous struct as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), struct{}{}, "contextual")
+	                                               ^
+..\..\internal\homeplugins\sync.go:481:6: func currentPluginFilePath is unused (unused)
+func currentPluginFilePath(root string, id string) (string, error) {
+     ^
+..\..\internal\homeplugins\sync.go:575:6: func pluginIDFromPath is unused (unused)
+func pluginIDFromPath(path string) string {
+     ^
+3 issues:
+* staticcheck: 1
+* unused: 2
+===== internal/htmlsanitize =====
+0 issues.
+===== internal/httpfetch =====
+0 issues.
+===== internal/httpwire =====
+0 issues.
+===== internal/interfaces =====
+0 issues.
+===== internal/logging =====
+..\..\internal\logging\request_logger_body_source.go:170:26: stdmethods: method WriteTo(w io.Writer) error should have signature WriteTo(io.Writer) (int64, error) (govet)
+func (s *FileBodySource) WriteTo(w io.Writer) error {
+                         ^
+..\..\internal\logging\cpa_trace.go:145:46: QF1008: could remove embedded field "ResponseWriter" from selector (staticcheck)
+	if w == nil || w.ResponseWriter == nil || w.ResponseWriter.Written() {
+	                                            ^
+..\..\internal\logging\global_logger.go:78:4: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+			b.WriteString(fmt.Sprintf("\\x%02x", r))
+			^
+..\..\internal\logging\request_logger_format.go:380:2: S1031: unnecessary nil check around range (staticcheck)
+	if responseHeaders != nil {
+	^
+..\..\internal\logging\request_logger_format.go:501:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		content.WriteString(fmt.Sprintf("HTTP Status: %d\n", apiResponseErrors[i].StatusCode))
+		^
+..\..\internal\logging\request_logger_format.go:528:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	content.WriteString(fmt.Sprintf("Status: %d\n", status))
+	^
+..\..\internal\logging\request_logger_format.go:530:2: S1031: unnecessary nil check around range (staticcheck)
+	if responseHeaders != nil {
+	^
+..\..\internal\logging\request_logger_format.go:533:5: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+				content.WriteString(fmt.Sprintf("%s: %s\n", key, value))
+				^
+..\..\internal\logging\request_logger_format.go:718:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	content.WriteString(fmt.Sprintf("Version: %s\n", buildinfo.Version))
+	^
+..\..\internal\logging\request_logger_format.go:719:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	content.WriteString(fmt.Sprintf("URL: %s\n", url))
+	^
+..\..\internal\logging\request_logger_format.go:720:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	content.WriteString(fmt.Sprintf("Method: %s\n", method))
+	^
+..\..\internal\logging\request_logger_format.go:722:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		content.WriteString(fmt.Sprintf("Downstream Transport: %s\n", downstreamTransport))
+		^
+..\..\internal\logging\request_logger_format.go:725:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		content.WriteString(fmt.Sprintf("Upstream Transport: %s\n", upstreamTransport))
+		^
+..\..\internal\logging\request_logger_format.go:727:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	content.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
+	^
+..\..\internal\logging\request_logger_format.go:734:4: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+			content.WriteString(fmt.Sprintf("%s: %s\n", key, masked))
+			^
+..\..\internal\logging\request_logger_writer.go:297:2: S1017: should replace this if statement with an unconditional strings.TrimPrefix (staticcheck)
+	if strings.HasPrefix(path, "/") {
+	^
+..\..\internal\logging\request_logger_format.go:448:29: func (*FileRequestLogger).formatLogContent is unused (unused)
+func (l *FileRequestLogger) formatLogContent(url, method string, headers map[string][]string, body, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline, response []byte, status int, responseHeaders map[string][]string, apiResponseErrors []*interfaces.ErrorMessage) string {
+                            ^
+..\..\internal\logging\request_logger_format.go:714:29: func (*FileRequestLogger).formatRequestInfo is unused (unused)
+func (l *FileRequestLogger) formatRequestInfo(url, method string, headers map[string][]string, body []byte, downstreamTransport string, upstreamTransport string, includeBody bool) string {
+                            ^
+18 issues:
+* govet: 1
+* staticcheck: 15
+* unused: 2
+===== internal/managementasset =====
+0 issues.
+===== internal/misc =====
+0 issues.
+===== internal/modelconfig =====
+0 issues.
+===== internal/pluginhost =====
+..\..\internal\pluginhost\adapters_test.go:219:1: File is not properly formatted (gofmt)
+			"plugin-provider": []config.OAuthModelAlias{{Name: "upstream-model", Alias: "alias-model"}},
+^
+..\..\internal\pluginhost\loader_windows.go:285:31: unsafeptr: possible misuse of unsafe.Pointer (govet)
+	response := (*windowsBuffer)(unsafe.Pointer(responseMem))
+	                             ^
+..\..\internal\pluginhost\loader_windows.go:295:30: unsafeptr: possible misuse of unsafe.Pointer (govet)
+		out = unsafe.Slice((*byte)(unsafe.Pointer(response.ptr)), response.len)
+		                           ^
+..\..\internal\pluginhost\loader_windows.go:345:32: unsafeptr: possible misuse of unsafe.Pointer (govet)
+		response := (*windowsBuffer)(unsafe.Pointer(responsePtr))
+		                             ^
+..\..\internal\pluginhost\loader_windows.go:352:20: unsafeptr: possible misuse of unsafe.Pointer (govet)
+	id := *(*uintptr)(unsafe.Pointer(hostCtx))
+	                  ^
+..\..\internal\pluginhost\loader_windows.go:363:34: unsafeptr: possible misuse of unsafe.Pointer (govet)
+		request = unsafe.Slice((*byte)(unsafe.Pointer(requestPtr)), requestLen)
+		                               ^
+..\..\internal\pluginhost\loader_windows.go:378:28: unsafeptr: possible misuse of unsafe.Pointer (govet)
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(mem)), len(resp)), resp)
+	                          ^
+..\..\internal\pluginhost\loader_windows.go:379:31: unsafeptr: possible misuse of unsafe.Pointer (govet)
+	response := (*windowsBuffer)(unsafe.Pointer(responsePtr))
+	                             ^
+..\..\internal\pluginhost\loader_windows.go:398:17: unsafeptr: possible misuse of unsafe.Pointer (govet)
+		b := *(*byte)(unsafe.Pointer(ptr + offset))
+		              ^
+..\..\internal\pluginhost\loader_windows_test.go:51:28: unsafeptr: possible misuse of unsafe.Pointer (govet)
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(mem)), len(raw)), raw)
+	                          ^
+..\..\internal\pluginhost\loader_windows_test.go:52:31: unsafeptr: possible misuse of unsafe.Pointer (govet)
+	response := (*windowsBuffer)(unsafe.Pointer(responsePtr))
+	                             ^
+..\..\internal\pluginhost\host_callbacks_test.go:77:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\pluginhost\platform.go:299:21: S1016: should convert file (type pluginFile) to PluginFileInfo instead of using struct literal (staticcheck)
+		out = append(out, PluginFileInfo{
+		                  ^
+..\..\internal\pluginhost\auth_provider.go:194:16: func (*Host).callParseAuth is unused (unused)
+func (h *Host) callParseAuth(ctx context.Context, record capabilityRecord, req pluginapi.AuthParseRequest) (auth *coreauth.Auth, handled bool, err error) {
+               ^
+..\..\internal\pluginhost\host_callbacks.go:224:6: func decodeHostHTTPRequest is unused (unused)
+func decodeHostHTTPRequest(raw []byte) (pluginapi.HTTPRequest, error) {
+     ^
+..\..\internal\pluginhost\rpc_client.go:592:6: func httpResponseFromPlugin is unused (unused)
+func httpResponseFromPlugin(resp pluginapi.ExecutorHTTPResponse, req *http.Request) *http.Response {
+     ^
+16 issues:
+* gofmt: 1
+* govet: 10
+* staticcheck: 2
+* unused: 3
+===== internal/pluginstore =====
+level=warning msg="[runner/nolint_filter] Found unknown linters in //nolint directives: gosec -- test servers use ephemeral certificates."
+..\..\internal\pluginstore\auth_test.go:206:10: SA6006: use io.Writer.Write instead of converting from []byte to string to use io.WriteString (staticcheck)
+		_, _ = io.WriteString(w, string(artifactData))
+		       ^
+..\..\internal\pluginstore\install.go:402:6: type pluginFileInfo is unused (unused)
+type pluginFileInfo struct {
+     ^
+..\..\internal\pluginstore\install.go:408:6: func discoverCurrentPluginFiles is unused (unused)
+func discoverCurrentPluginFiles(root string) ([]pluginFileInfo, error) {
+     ^
+..\..\internal\pluginstore\install.go:450:6: func pluginCandidateDirs is unused (unused)
+func pluginCandidateDirs(root string, goos string, goarch string) []string {
+     ^
+..\..\internal\pluginstore\install.go:457:6: func pluginIDFromPath is unused (unused)
+func pluginIDFromPath(path string) string {
+     ^
+..\..\internal\pluginstore\install.go:472:6: func pluginFileInfoFromPath is unused (unused)
+func pluginFileInfoFromPath(filePath string, requiredExtension string) (pluginFileInfo, bool) {
+     ^
+6 issues:
+* staticcheck: 1
+* unused: 5
+===== internal/redisqueue =====
+..\..\internal\redisqueue\plugin_test.go:307:50: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+		ctx := context.WithValue(context.Background(), "gin", ginCtx)
+		                                               ^
+1 issues:
+* staticcheck: 1
+===== internal/registry =====
+..\..\internal\registry\codex_client_models.go:74:10: ST1005: error strings should not be capitalized (staticcheck)
+		return fmt.Errorf("Codex client model catalog has no models")
+		       ^
+..\..\internal\registry\codex_client_models.go:81:11: ST1005: error strings should not be capitalized (staticcheck)
+			return fmt.Errorf("Codex client model catalog models[%d]: %w", i, err)
+			       ^
+..\..\internal\registry\codex_client_models.go:84:11: ST1005: error strings should not be capitalized (staticcheck)
+			return fmt.Errorf("Codex client model catalog contains duplicate slug %q", slug)
+			       ^
+..\..\internal\registry\codex_client_models.go:89:11: ST1005: error strings should not be capitalized (staticcheck)
+			return fmt.Errorf("Codex client model catalog model %q: %w", slug, err)
+			       ^
+..\..\internal\registry\codex_client_models.go:93:10: ST1005: error strings should not be capitalized (staticcheck)
+		return fmt.Errorf("Codex client model catalog is missing default template %q", "gpt-5.5")
+		       ^
+5 issues:
+* staticcheck: 5
+===== internal/runtime/executor =====
+..\..\internal\runtime\executor\claude_executor_test.go:212:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(req, auth, "key-baseline", false, nil, nil, cfg, nil, false)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:248:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(firstReq, auth, "key-upgrade", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:258:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(thirdPartyReq, auth, "key-upgrade", false, nil, nil, cfg, nil, false)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:268:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(higherReq, auth, "key-upgrade", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:278:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(lowerReq, auth, "key-upgrade", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:310:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(olderClaudeReq, auth, "key-baseline-floor", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:320:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(newerClaudeReq, auth, "key-baseline-floor", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:362:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(officialReq, auth, "key-baseline-reload", false, nil, nil, oldCfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:372:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(thirdPartyReq, auth, "key-baseline-reload", false, nil, nil, newCfg, nil, false)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:404:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(thirdPartyReq, auth, "key-custom-baseline-learning", false, nil, nil, cfg, nil, false)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:414:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(officialReq, auth, "key-custom-baseline-learning", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:424:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(postLearningThirdPartyReq, auth, "key-custom-baseline-learning", false, nil, nil, cfg, nil, false)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:562:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(thirdPartyReq, auth, "key-third-party-then-official", false, nil, nil, cfg, nil, false)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:572:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(officialReq, auth, "key-third-party-then-official", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:604:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(firstReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:614:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(thirdPartyReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, false)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:624:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(lowerReq, auth, "key-disable-stability", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:655:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(req, auth, "key-legacy-ua-override", false, nil, nil, cfg, nil, true)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:686:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(req, auth, "key-legacy-runtime-os-arch", false, nil, nil, cfg, nil, false)
+	                  ^
+..\..\internal\runtime\executor\claude_executor_test.go:713:20: Error return value is not checked (errcheck)
+	applyClaudeHeaders(req, auth, "key-unset-runtime-os-arch", false, nil, nil, cfg, nil, false)
+	                  ^
+..\..\internal\runtime\executor\codex_websockets_execute.go:235:6: ineffectual assignment to wsReqBody (ineffassign)
+					wsReqBody = wsReqBodyRetry
+					^
+..\..\internal\runtime\executor\codex_websockets_stream.go:263:4: ineffectual assignment to wsReqBody (ineffassign)
+			wsReqBody = wsReqBodyRetry
+			^
+..\..\internal\runtime\executor\antigravity_executor_auth.go:84:47: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
+			                                           ^
+..\..\internal\runtime\executor\antigravity_executor_buildrequest_test.go:234:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\antigravity_executor_credits.go:382:48: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+				refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
+				                                           ^
+..\..\internal\runtime\executor\antigravity_executor_credits.go:417:47: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
+			                                           ^
+..\..\internal\runtime\executor\antigravity_executor_credits_test.go:395:2: SA2001: empty critical section (staticcheck)
+	state.mu.Unlock()
+	^
+..\..\internal\runtime\executor\antigravity_executor_credits_test.go:633:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\antigravity_executor_credits_test.go:666:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\antigravity_executor_credits_test.go:721:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\antigravity_executor_stream.go:29:31: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx = context.WithValue(ctx, "alt", "")
+	                             ^
+..\..\internal\runtime\executor\antigravity_executor_tokens.go:29:36: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	respCtx := context.WithValue(ctx, "alt", opts.Alt)
+	                                  ^
+..\..\internal\runtime\executor\claude_executor_auth_test.go:45:42: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
+			                                      ^
+..\..\internal\runtime\executor\claude_executor_cloaking.go:388:5: S1009: should omit nil check; len() for nil maps is defined as zero (staticcheck)
+	if cacheControl != nil && len(cacheControl) > 0 {
+	   ^
+..\..\internal\runtime\executor\claude_executor_diagnostics_test.go:54:25: SA1008: keys in http.Header are canonicalized, "anthropic-beta" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+			betas = strings.Join(req.Header["anthropic-beta"], ",")
+			                     ^
+..\..\internal\runtime\executor\claude_executor_diagnostics_test.go:61:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	                                               ^
+..\..\internal\runtime\executor\claude_executor_fast_error_test.go:86:42: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
+			                                      ^
+..\..\internal\runtime\executor\claude_executor_fast_error_test.go:173:42: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
+			                                      ^
+..\..\internal\runtime\executor\claude_executor_fast_error_test.go:216:40: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	                                      ^
+..\..\internal\runtime\executor\claude_executor_fast_error_test.go:254:40: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	                                      ^
+..\..\internal\runtime\executor\claude_executor_test.go:62:58: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	return req.WithContext(context.WithValue(req.Context(), "gin", ginCtx))
+	                                                        ^
+..\..\internal\runtime\executor\claude_executor_test.go:2364:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	                                               ^
+..\..\internal\runtime\executor\claude_executor_test.go:2417:51: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+			                                               ^
+..\..\internal\runtime\executor\claude_executor_test.go:2487:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	                                               ^
+..\..\internal\runtime\executor\claude_executor_test.go:2526:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	                                               ^
+..\..\internal\runtime\executor\claude_executor_test.go:2551:25: SA1008: keys in http.Header are canonicalized, "anthropic-beta" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	if got := strings.Join(upstreamHeaders["anthropic-beta"], ","); got != wantBetas {
+	                       ^
+..\..\internal\runtime\executor\claude_executor_test.go:3067:5: QF1001: could apply De Morgan's law (staticcheck)
+	if !(idxModel < idxMessages && idxMessages < idxTools && idxTools < idxSystem) {
+	   ^
+..\..\internal\runtime\executor\claude_executor_test.go:3121:5: QF1001: could apply De Morgan's law (staticcheck)
+	if !(idxModel < idxMessages && idxMessages < idxTools && idxTools < idxSystem) {
+	   ^
+..\..\internal\runtime\executor\claude_executor_test.go:4895:55: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	callerCtx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                                     ^
+..\..\internal\runtime\executor\claude_executor_test.go:4903:54: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	otherCtx := context.WithValue(context.Background(), "gin", otherGinCtx)
+	                                                    ^
+..\..\internal\runtime\executor\claude_executor_test.go:5923:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	                                               ^
+..\..\internal\runtime\executor\claude_executor_test.go:6071:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	                                               ^
+..\..\internal\runtime\executor\codex_executor_cache_test.go:25:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\codex_executor_cache_test.go:188:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\codex_executor_cache_test.go:297:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\codex_executor_reasoning_replay_cache_test.go:327:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	return context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\codex_executor_spawn_agent_test.go:145:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	return context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\codex_executor_stream_output_test.go:303:51: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			                                               ^
+..\..\internal\runtime\executor\codex_executor_stream_output_test.go:353:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\codex_executor_stream_output_test.go:385:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\codex_websockets_execute.go:27:12: QF1008: could remove embedded field "CodexExecutor" from selector (staticcheck)
+		return e.CodexExecutor.executeCompact(ctx, auth, req, opts)
+		         ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1088:12: SA1008: keys in http.Header are canonicalized, "session_id" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	if got := headers["session_id"]; len(got) != 1 || got[0] != "legacy-session" {
+	          ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1109:12: SA1008: keys in http.Header are canonicalized, "session_id" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	if got := headers["session_id"]; len(got) != 1 || got[0] != "legacy-underscore-session" {
+	          ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1248:16: SA1008: keys in http.Header are canonicalized, "ChatGPT-Account-ID" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	values, ok := headers["ChatGPT-Account-ID"]
+	              ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1262:12: SA1008: keys in http.Header are canonicalized, "session_id" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	if got := headers["session_id"]; len(got) != 1 || got[0] != "cache-1" {
+	          ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1286:12: SA1008: keys in http.Header are canonicalized, "session_id" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	if got := headers["session_id"]; len(got) != 1 || got[0] != cacheKey {
+	          ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1349:12: SA1008: keys in http.Header are canonicalized, "session_id" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	if got := firstHeaders["session_id"]; len(got) != 1 || got[0] != firstKey {
+	          ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1352:12: SA1008: keys in http.Header are canonicalized, "session_id" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	if got := secondHeaders["session_id"]; len(got) != 1 || got[0] != firstKey {
+	          ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1368:12: SA1008: keys in http.Header are canonicalized, "session_id" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	if got := headers["session_id"]; len(got) != 0 {
+	          ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1404:19: SA1008: keys in http.Header are canonicalized, "session_id" is not canonical; fix the constant or use http.CanonicalHeaderKey (staticcheck)
+	if gotSession := headers["session_id"]; len(gotSession) != 1 || gotSession[0] != expectedPromptCacheKey {
+	                 ^
+..\..\internal\runtime\executor\codex_websockets_executor_test.go:1759:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	return context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\gemini_executor.go:572:4: S1021: should merge variable declaration with assignment on next line (staticcheck)
+			var lines [][]byte
+			^
+..\..\internal\runtime\executor\gemini_executor.go:630:36: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	respCtx := context.WithValue(ctx, "alt", opts.Alt)
+	                                  ^
+..\..\internal\runtime\executor\gemini_vertex_executor.go:629:36: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	respCtx := context.WithValue(ctx, "alt", opts.Alt)
+	                                  ^
+..\..\internal\runtime\executor\gemini_vertex_executor.go:858:2: QF1003: could use tagged switch on loc (staticcheck)
+	if loc == "" {
+	^
+..\..\internal\runtime\executor\kimi_executor.go:393:11: QF1008: could remove embedded field "ClaudeExecutor" from selector (staticcheck)
+	return e.ClaudeExecutor.countTokensUpstream(ctx, auth, req, opts)
+	         ^
+..\..\internal\runtime\executor\kimi_executor_test.go:33:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\kimi_executor_test.go:79:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\kimi_executor_test.go:118:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\kimi_executor_test.go:149:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\kimi_executor_test.go:150:31: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx = context.WithValue(ctx, "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                             ^
+..\..\internal\runtime\executor\kimi_thinking_replay_test.go:162:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\kimi_thinking_replay_test.go:238:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\kimi_thinking_replay_test.go:301:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", kimiRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\websocket_session_target_test.go:333:26: SA1019: websocket.NewClient is deprecated: Use Dialer instead. (staticcheck)
+	wsConn, _, errClient := websocket.NewClient(counting, parsed, nil, 1024, 1024)
+	                        ^
+..\..\internal\runtime\executor\xai_executor_test.go:38:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	return context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\xai_websockets_executor.go:934:36: QF1008: could remove embedded field "XAIExecutor" from selector (staticcheck)
+	prepared, data, headers, err := e.XAIExecutor.executeCompactRequest(ctx, auth, compactReq, opts)
+	                                  ^
+..\..\internal\runtime\executor\antigravity_executor_credits.go:631:6: func antigravityIsInShortCooldown is unused (unused)
+func antigravityIsInShortCooldown(auth *cliproxyauth.Auth, modelName string, now time.Time) (bool, time.Duration) {
+     ^
+..\..\internal\runtime\executor\antigravity_executor_credits.go:689:6: func markAntigravityShortCooldown is unused (unused)
+func markAntigravityShortCooldown(auth *cliproxyauth.Auth, modelName string, now time.Time, duration time.Duration) {
+     ^
+..\..\internal\runtime\executor\antigravity_executor_request.go:250:6: func antigravitySchemaPaths is unused (unused)
+func antigravitySchemaPaths(payloadStr string) []string {
+     ^
+..\..\internal\runtime\executor\antigravity_executor_request.go:340:6: func resolveLoadCodeAssistUserAgent is unused (unused)
+func resolveLoadCodeAssistUserAgent(auth *cliproxyauth.Auth) string {
+     ^
+..\..\internal\runtime\executor\antigravity_executor_signature_test.go:29:6: func testGeminiSignaturePayload is unused (unused)
+func testGeminiSignaturePayload() string {
+     ^
+..\..\internal\runtime\executor\antigravity_reasoning_replay.go:417:6: func antigravityExistingToolCallKeys is unused (unused)
+func antigravityExistingToolCallKeys(payload []byte) map[string]bool {
+     ^
+..\..\internal\runtime\executor\antigravity_reasoning_replay.go:472:6: func antigravityAnyKeyExists is unused (unused)
+func antigravityAnyKeyExists(existing map[string]bool, keys []string) bool {
+     ^
+..\..\internal\runtime\executor\antigravity_reasoning_replay.go:2020:6: func applyAntigravityNativeSignatureReplayIfNeeded is unused (unused)
+func applyAntigravityNativeSignatureReplayIfNeeded(modelName string, payload []byte) []byte {
+     ^
+..\..\internal\runtime\executor\codex_executor_auth.go:73:25: func (*CodexExecutor).resolveCodexConfig is unused (unused)
+func (e *CodexExecutor) resolveCodexConfig(auth *cliproxyauth.Auth) *config.CodexKey {
+                        ^
+..\..\internal\runtime\executor\codex_websockets_request.go:165:6: func ensureHeaderCasePreserved is unused (unused)
+func ensureHeaderCasePreserved(target http.Header, source http.Header, key, configValue, fallbackValue string) {
+     ^
+..\..\internal\runtime\executor\gemini_executor.go:730:26: func (*GeminiExecutor).resolveGeminiConfig is unused (unused)
+func (e *GeminiExecutor) resolveGeminiConfig(auth *cliproxyauth.Auth) *config.GeminiKey {
+                         ^
+..\..\internal\runtime\executor\gemini_vertex_executor.go:907:32: func (*GeminiVertexExecutor).resolveVertexConfig is unused (unused)
+func (e *GeminiVertexExecutor) resolveVertexConfig(auth *cliproxyauth.Auth) *config.VertexCompatKey {
+                               ^
+..\..\internal\runtime\executor\openai_compat_executor.go:1102:32: func (*OpenAICompatExecutor).overrideModel is unused (unused)
+func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
+                               ^
+100 issues:
+* errcheck: 20
+* ineffassign: 2
+* staticcheck: 65
+* unused: 13
+===== internal/runtime/executor/helps =====
+..\..\internal\runtime\executor\helps\antigravity_grounding_urls_test.go:26:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", groundingURLRoundTripper(func(req *http.Request) (*http.Response, error) {
+	                                               ^
+..\..\internal\runtime\executor\helps\claude_code_session_test.go:25:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\helps\logging_helpers.go:160:5: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+				builder.WriteString(fmt.Sprintf("\n[API REQUEST BODY TRUNCATED: captured first %d bytes]", captureLength))
+				^
+..\..\internal\runtime\executor\helps\logging_helpers.go:171:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	builder.WriteString(fmt.Sprintf("=== API REQUEST %d ===\n", index))
+	^
+..\..\internal\runtime\executor\helps\logging_helpers.go:172:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", timestamp.Format(time.RFC3339Nano)))
+	^
+..\..\internal\runtime\executor\helps\logging_helpers.go:174:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		builder.WriteString(fmt.Sprintf("Upstream URL: %s\n", info.URL))
+		^
+..\..\internal\runtime\executor\helps\logging_helpers.go:179:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		builder.WriteString(fmt.Sprintf("HTTP Method: %s\n", info.Method))
+		^
+..\..\internal\runtime\executor\helps\logging_helpers.go:182:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		builder.WriteString(fmt.Sprintf("Auth: %s\n", auth))
+		^
+..\..\internal\runtime\executor\helps\logging_helpers.go:299:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
+	^
+..\..\internal\runtime\executor\helps\logging_helpers.go:302:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		builder.WriteString(fmt.Sprintf("Upstream URL: %s\n", info.URL))
+		^
+..\..\internal\runtime\executor\helps\logging_helpers.go:305:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		builder.WriteString(fmt.Sprintf("Auth: %s\n", auth))
+		^
+..\..\internal\runtime\executor\helps\logging_helpers.go:332:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
+	^
+..\..\internal\runtime\executor\helps\logging_helpers.go:335:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		builder.WriteString(fmt.Sprintf("Status: %d\n", status))
+		^
+..\..\internal\runtime\executor\helps\logging_helpers.go:395:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
+	^
+..\..\internal\runtime\executor\helps\logging_helpers.go:415:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	builder.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
+	^
+..\..\internal\runtime\executor\helps\logging_helpers.go:418:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		builder.WriteString(fmt.Sprintf("Stage: %s\n", trimmed))
+		^
+..\..\internal\runtime\executor\helps\logging_helpers.go:420:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	builder.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
+	^
+..\..\internal\runtime\executor\helps\logging_helpers.go:663:4: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+			builder.WriteString(fmt.Sprintf("%s:\n", key))
+			^
+..\..\internal\runtime\executor\helps\logging_helpers.go:668:4: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+			builder.WriteString(fmt.Sprintf("%s: %s\n", key, masked))
+			^
+..\..\internal\runtime\executor\helps\logging_helpers_test.go:19:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\helps\payload_helpers.go:506:2: S1017: should replace this if statement with an unconditional strings.TrimPrefix (staticcheck)
+	if strings.HasPrefix(p, ".") {
+	^
+..\..\internal\runtime\executor\helps\session_isolate_test.go:30:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	return context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\helps\session_isolate_test.go:45:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	return context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\helps\session_isolate_test.go:164:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\internal\runtime\executor\helps\utls_client.go:451:18: ST1023: should omit type http.RoundTripper from declaration; it will be inferred from the right-hand side (staticcheck)
+	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL)
+	                ^
+..\..\internal\runtime\executor\helps\utls_client.go:452:24: ST1023: should omit type http.RoundTripper from declaration; it will be inferred from the right-hand side (staticcheck)
+	var standardTransport http.RoundTripper = http.DefaultTransport
+	                      ^
+..\..\internal\runtime\executor\helps\utls_client_test.go:276:51: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", utlsClientRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			                                               ^
+27 issues:
+* staticcheck: 27
+===== internal/safemode =====
+0 issues.
+===== internal/signature =====
+..\..\internal\signature\claude_messages_sanitize.go:211:3: QF1003: could use tagged switch on targetProvider (staticcheck)
+		if targetProvider == SignatureProviderClaude {
+		^
+..\..\internal\signature\claude_validation.go:795:7: QF1001: could apply De Morgan's law (staticcheck)
+			if !((b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')) {
+			   ^
+..\..\internal\signature\gemini_validation.go:183:16: ST1005: error strings should not be capitalized (staticcheck)
+			return nil, fmt.Errorf("Gemini thought signature bypass sentinel is not allowed")
+			            ^
+..\..\internal\signature\gemini_validation.go:378:15: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, fmt.Errorf("Gemini thought signature exceeds maximum length (%d bytes)", MaxGeminiThoughtSignatureLen)
+		            ^
+..\..\internal\signature\gemini_validation.go:494:7: QF1001: could apply De Morgan's law (staticcheck)
+			if !((b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')) {
+			   ^
+..\..\internal\signature\grok_validation.go:48:15: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, fmt.Errorf("Grok encrypted_content exceeds maximum length (%d bytes)", MaxGrokEncryptedContentLen)
+		            ^
+..\..\internal\signature\grok_validation.go:51:15: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, fmt.Errorf("Grok encrypted_content has leading or trailing whitespace")
+		            ^
+..\..\internal\signature\grok_validation.go:72:16: ST1005: error strings should not be capitalized (staticcheck)
+			return nil, fmt.Errorf("Grok encrypted_content looks like GPT/Codex reasoning signature")
+			            ^
+..\..\internal\signature\grok_validation.go:75:16: ST1005: error strings should not be capitalized (staticcheck)
+			return nil, fmt.Errorf("Grok encrypted_content looks like Claude thinking signature")
+			            ^
+..\..\internal\signature\grok_validation.go:78:16: ST1005: error strings should not be capitalized (staticcheck)
+			return nil, fmt.Errorf("Grok encrypted_content looks like Claude CAIS thinking signature")
+			            ^
+..\..\internal\signature\grok_validation.go:81:16: ST1005: error strings should not be capitalized (staticcheck)
+			return nil, fmt.Errorf("Grok encrypted_content looks like Gemini thoughtSignature")
+			            ^
+11 issues:
+* staticcheck: 11
+===== internal/sse =====
+0 issues.
+===== internal/store =====
+level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key typedness/facts for package filesystem: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\4d\\4d2384bd8315f5fc2ed33af5017a149c0f260a390992f109504da115e00e6d54-a: Access is denied."
+0 issues.
+===== internal/thinking =====
+0 issues.
+===== internal/thinking/provider/antigravity =====
+0 issues.
+===== internal/thinking/provider/claude =====
+0 issues.
+===== internal/thinking/provider/codex =====
+0 issues.
+===== internal/thinking/provider/deepseek =====
+0 issues.
+===== internal/thinking/provider/gemini =====
+0 issues.
+===== internal/thinking/provider/interactions =====
+0 issues.
+===== internal/thinking/provider/kimi =====
+0 issues.
+===== internal/thinking/provider/nvidia =====
+0 issues.
+===== internal/thinking/provider/openai =====
+0 issues.
+===== internal/thinking/provider/xai =====
+0 issues.
+===== internal/thinking/provider/zai =====
+0 issues.
+===== internal/translator =====
+0 issues.
+===== internal/translator/antigravity/claude =====
+..\..\internal\translator\antigravity\claude\signature_validation.go:44:2: ineffectual assignment to marked (ineffassign)
+	marked = true
+	^
+..\..\internal\translator\antigravity\claude\antigravity_claude_request.go:371:4: QF1003: could use tagged switch on role (staticcheck)
+			if role == "assistant" {
+			^
+..\..\internal\translator\antigravity\claude\antigravity_claude_response.go:373:5: SA9003: empty branch (staticcheck)
+				if params.ResponseType == 2 {
+				^
+..\..\internal\translator\antigravity\claude\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\internal\translator\antigravity\claude\antigravity_claude_request.go:53:6: func resolveCacheModeSignature is unused (unused)
+func resolveCacheModeSignature(modelName, thinkingText, rawSignature string) string {
+     ^
+..\..\internal\translator\antigravity\claude\signature_validation.go:218:6: func inspectSingleLayerSignature is unused (unused)
+func inspectSingleLayerSignature(sig string) (*claudeSignatureTree, error) {
+     ^
+..\..\internal\translator\antigravity\claude\web_search.go:241:6: func antigravityUsageTokens is unused (unused)
+func antigravityUsageTokens(root gjson.Result) (int64, int64) {
+     ^
+7 issues:
+* ineffassign: 1
+* staticcheck: 3
+* unused: 3
+===== internal/translator/antigravity/gemini =====
+..\..\internal\translator\antigravity\gemini\antigravity_gemini_response_test.go:86:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "alt", "")
+	                                               ^
+..\..\internal\translator\antigravity\gemini\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+2 issues:
+* staticcheck: 2
+===== internal/translator/antigravity/interactions =====
+..\..\internal\translator\antigravity\interactions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\internal\translator\antigravity\interactions\interactions_antigravity_test.go:115:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "alt", "")
+	                                               ^
+2 issues:
+* staticcheck: 2
+===== internal/translator/antigravity/openai/chat-completions =====
+..\..\internal\translator\antigravity\openai\chat-completions\antigravity_openai_response.go:19:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/gemini/openai/chat-completions"
+	^
+..\..\internal\translator\antigravity\openai\chat-completions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+2 issues:
+* staticcheck: 2
+===== internal/translator/antigravity/openai/responses =====
+..\..\internal\translator\antigravity\openai\responses\antigravity_openai-responses_request.go:8:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/antigravity/gemini"
+	^
+..\..\internal\translator\antigravity\openai\responses\antigravity_openai-responses_request.go:9:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/gemini/openai/responses"
+	^
+..\..\internal\translator\antigravity\openai\responses\antigravity_openai-responses_response.go:6:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/gemini/openai/responses"
+	^
+..\..\internal\translator\antigravity\openai\responses\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+4 issues:
+* staticcheck: 4
+===== internal/translator/claude/gemini =====
+..\..\internal\translator\claude\gemini\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/claude/interactions =====
+..\..\internal\translator\claude\interactions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/claude/openai/chat-completions =====
+..\..\internal\translator\claude\openai\chat-completions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/claude/openai/responses =====
+..\..\internal\translator\claude\openai\responses\claude_openai-responses_request.go:451:2: ineffectual assignment to toolNameMap (ineffassign)
+	toolNameMap := map[string]string{}
+	^
+..\..\internal\translator\claude\openai\responses\claude_openai-responses_response.go:352:3: QF1003: could use tagged switch on typ (staticcheck)
+		if typ == "text" {
+		^
+..\..\internal\translator\claude\openai\responses\claude_openai-responses_response.go:433:3: QF1003: could use tagged switch on dt (staticcheck)
+		if dt == "text_delta" {
+		^
+..\..\internal\translator\claude\openai\responses\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+4 issues:
+* ineffassign: 1
+* staticcheck: 3
+===== internal/translator/codex/claude =====
+..\..\internal\translator\codex\claude\codex_claude_request.go:233:9: QF1003: could use tagged switch on toolResultContentType (staticcheck)
+								if toolResultContentType == "image" {
+								^
+..\..\internal\translator\codex\claude\codex_claude_response_test.go:811:5: QF1001: could apply De Morgan's law (staticcheck)
+	if !(finalArgumentPosition < stopPosition && stopPosition < messageDeltaPosition) {
+	   ^
+..\..\internal\translator\codex\claude\codex_claude_response_web_search.go:69:99: S1002: should omit comparison to bool constant, can be simplified to !item.Get("action").Exists() (staticcheck)
+	if codexWebSearchQuery(root, item) == "" && len(codexWebSearchResultContent(root, item)) == 0 && item.Get("action").Exists() == false {
+	                                                                                                 ^
+..\..\internal\translator\codex\claude\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+4 issues:
+* staticcheck: 4
+===== internal/translator/codex/gemini =====
+..\..\internal\translator\codex\gemini\codex_gemini_response.go:171:2: QF1003: could use tagged switch on typeStr (staticcheck)
+	if typeStr == "response.created" { // Handle response creation - set model and response ID
+	^
+..\..\internal\translator\codex\gemini\codex_gemini_response.go:229:3: S1011: should replace loop with chunks = append(chunks, params.LastStorageOutputs...) (staticcheck)
+		for _, stored := range params.LastStorageOutputs {
+		^
+..\..\internal\translator\codex\gemini\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+3 issues:
+* staticcheck: 3
+===== internal/translator/codex/interactions =====
+..\..\internal\translator\codex\interactions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\internal\translator\codex\interactions\interactions_codex_response.go:129:6: func codexStreamEventType is unused (unused)
+func codexStreamEventType(rawJSON []byte) string {
+     ^
+2 issues:
+* staticcheck: 1
+* unused: 1
+===== internal/translator/codex/openai/chat-completions =====
+..\..\internal\translator\codex\openai\chat-completions\codex_openai_request_test.go:1138:56: SA1012: do not pass a nil Context, even if a function permits it; pass context.TODO if you are unsure about which Context to use (staticcheck)
+	chatResponse := ConvertCodexResponseToOpenAINonStream(nil, "", originalRequest, nil, upstreamResponse, nil)
+	                                                      ^
+..\..\internal\translator\codex\openai\chat-completions\codex_openai_response.go:125:2: QF1003: could use tagged switch on dataType (staticcheck)
+	if dataType == "response.reasoning_summary_text.delta" {
+	^
+..\..\internal\translator\codex\openai\chat-completions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+3 issues:
+* staticcheck: 3
+===== internal/translator/codex/openai/responses =====
+..\..\internal\translator\codex\openai\responses\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/common =====
+0 issues.
+===== internal/translator/gemini/claude =====
+..\..\internal\translator\gemini\claude\gemini_claude_request.go:73:4: QF1003: could use tagged switch on role (staticcheck)
+			if role == "assistant" {
+			^
+..\..\internal\translator\gemini\claude\gemini_claude_response.go:146:8: SA9003: empty branch (staticcheck)
+							if (*param).(*Params).ResponseType == 2 {
+							^
+..\..\internal\translator\gemini\claude\gemini_claude_response.go:174:8: SA9003: empty branch (staticcheck)
+							if (*param).(*Params).ResponseType == 2 {
+							^
+..\..\internal\translator\gemini\claude\gemini_claude_response.go:219:5: SA9003: empty branch (staticcheck)
+				if (*param).(*Params).ResponseType == 2 {
+				^
+..\..\internal\translator\gemini\claude\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+5 issues:
+* staticcheck: 5
+===== internal/translator/gemini/common =====
+0 issues.
+===== internal/translator/gemini/gemini =====
+..\..\internal\translator\gemini\gemini\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/gemini/interactions =====
+..\..\internal\translator\gemini\interactions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/gemini/openai/chat-completions =====
+..\..\internal\translator\gemini\openai\chat-completions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/gemini/openai/responses =====
+..\..\internal\translator\gemini\openai\responses\signature_carrier.go:41:2: ineffectual assignment to marked (ineffassign)
+	marked = true
+	^
+..\..\internal\translator\gemini\openai\responses\gemini_openai-responses_response.go:412:6: QF1002: could use tagged switch on st.ReasoningEnc (staticcheck)
+					switch {
+					^
+..\..\internal\translator\gemini\openai\responses\gemini_openai-responses_response_test.go:120:5: QF1001: could apply De Morgan's law (staticcheck)
+	if !(posTextDone < posPartDone && posPartDone < posMessageDone && posMessageDone < posFuncAdded) {
+	   ^
+..\..\internal\translator\gemini\openai\responses\gemini_openai-responses_response_test.go:1248:6: QF1001: could apply De Morgan's law (staticcheck)
+		if !(posAdded[idx] < posArgsDelta[idx] && posArgsDelta[idx] < posArgsDone[idx] && posArgsDone[idx] < posItemDone[idx]) {
+		   ^
+..\..\internal\translator\gemini\openai\responses\gemini_openai-responses_response_test.go:1251:17: QF1001: could apply De Morgan's law (staticcheck)
+		if idx > 0 && !(posItemDone[idx-1] < posAdded[idx]) {
+		              ^
+..\..\internal\translator\gemini\openai\responses\gemini_openai-responses_response_test.go:1265:5: QF1001: could apply De Morgan's law (staticcheck)
+	if !(posItemDone[2] < posCompleted) {
+	   ^
+..\..\internal\translator\gemini\openai\responses\gemini_openai-responses_response_test.go:1315:5: QF1001: could apply De Morgan's law (staticcheck)
+	if !(posFuncDone < posMsgAdded) {
+	   ^
+..\..\internal\translator\gemini\openai\responses\gemini_openai-responses_response_test.go:1318:5: QF1001: could apply De Morgan's law (staticcheck)
+	if !(posMsgAdded < posCompleted) {
+	   ^
+..\..\internal\translator\gemini\openai\responses\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\internal\translator\gemini\openai\responses\gemini_openai-responses_request.go:477:6: func isTrailingOpenAIResponsesAssistantPrefill is unused (unused)
+func isTrailingOpenAIResponsesAssistantPrefill(items []gjson.Result, assistantIndex int) bool {
+     ^
+10 issues:
+* ineffassign: 1
+* staticcheck: 8
+* unused: 1
+===== internal/translator/interactions =====
+0 issues.
+===== internal/translator/interactions/claude =====
+..\..\internal\translator\interactions\claude\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/openai/claude =====
+..\..\internal\translator\openai\claude\deepseek_multi_turn_test.go:343:3: SA1012: do not pass a nil Context, even if a function permits it; pass context.TODO if you are unsure about which Context to use (staticcheck)
+		nil, "",
+		^
+..\..\internal\translator\openai\claude\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\internal\translator\openai\claude\openai_claude_request.go:278:13: SA9003: empty branch (staticcheck)
+					} else if hasToolResults && !hasContent {
+					       ^
+3 issues:
+* staticcheck: 3
+===== internal/translator/openai/gemini =====
+..\..\internal\translator\openai\gemini\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\internal\translator\openai\gemini\openai_gemini_response.go:458:2: QF1003: could use tagged switch on startRune (staticcheck)
+	if startRune == '{' {
+	^
+..\..\internal\translator\openai\gemini\openai_gemini_response.go:490:3: QF1003: could use tagged switch on r (staticcheck)
+		if r == startRune {
+		^
+3 issues:
+* staticcheck: 3
+===== internal/translator/openai/interactions/chat-completions =====
+..\..\internal\translator\openai\interactions\chat-completions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\internal\translator\openai\interactions\chat-completions\interactions_openai_response.go:292:6: func isOpenAIStreamDone is unused (unused)
+func isOpenAIStreamDone(rawJSON []byte) bool {
+     ^
+2 issues:
+* staticcheck: 1
+* unused: 1
+===== internal/translator/openai/interactions/responses =====
+..\..\internal\translator\openai\interactions\responses\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/openai/openai/chat-completions =====
+..\..\internal\translator\openai\openai\chat-completions\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== internal/translator/openai/openai/responses =====
+..\..\internal\translator\openai\openai\responses\init.go:4:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\internal\translator\openai\openai\responses\openai_openai-responses_response.go:816:3: S1017: should replace this if statement with an unconditional strings.TrimPrefix (staticcheck)
+		if strings.HasPrefix(rid, "resp_") {
+		^
+2 issues:
+* staticcheck: 2
+===== internal/translator/translator =====
+0 issues.
+===== internal/tui =====
+..\..\internal\tui\dashboard.go:131:2: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+	sb.WriteString(fmt.Sprintf("  %s", m.client.baseURL))
+	^
+..\..\internal\tui\dashboard.go:211:4: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+			sb.WriteString(fmt.Sprintf("  %s %s\n",
+			^
+..\..\internal\tui\dashboard.go:223:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		sb.WriteString(fmt.Sprintf("  %s %s\n",
+		^
+..\..\internal\tui\keys_tab.go:370:4: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+			sb.WriteString(fmt.Sprintf("  %d. %s\n", i+1, info))
+			^
+..\..\internal\tui\keys_tab.go:405:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+		sb.WriteString(fmt.Sprintf("  %d. %s\n", i+1, info))
+		^
+..\..\internal\tui\dashboard.go:233:6: func formatKV is unused (unused)
+func formatKV(key, value string) string {
+     ^
+..\..\internal\tui\dashboard.go:275:6: func formatLargeNumber is unused (unused)
+func formatLargeNumber(n int64) string {
+     ^
+..\..\internal\tui\dashboard.go:285:6: func truncate is unused (unused)
+func truncate(s string, maxLen int) string {
+     ^
+..\..\internal\tui\styles.go:9:2: var colorSecondary is unused (unused)
+	colorSecondary = lipgloss.Color("#6366F1") // indigo
+	^
+..\..\internal\tui\styles.go:15:2: var colorBg is unused (unused)
+	colorBg        = lipgloss.Color("#1E1E2E") // dark bg
+	^
+..\..\internal\tui\styles.go:61:2: var sectionStyle is unused (unused)
+	sectionStyle = lipgloss.NewStyle().
+	^
+..\..\internal\tui\styles.go:103:2: var tableCellStyle is unused (unused)
+	tableCellStyle = lipgloss.NewStyle().
+	^
+..\..\internal\tui\styles.go:107:2: var tableSelectedStyle is unused (unused)
+	tableSelectedStyle = lipgloss.NewStyle().
+	^
+..\..\internal\tui\styles.go:113:6: func logLevelStyle is unused (unused)
+func logLevelStyle(level string) lipgloss.Style {
+     ^
+14 issues:
+* staticcheck: 5
+* unused: 9
+===== internal/util =====
+..\..\internal\util\gemini_schema_test.go:296:16: Error return value of `json.Unmarshal` is not checked (errcheck)
+	json.Unmarshal([]byte(result), &resMap)
+	              ^
+..\..\internal\util\gemini_schema_test.go:391:16: Error return value of `json.Unmarshal` is not checked (errcheck)
+	json.Unmarshal([]byte(result), &resMap)
+	              ^
+..\..\internal\util\gemini_schema.go:820:5: S1003: should use !strings.ContainsAny(key, ".*?") instead (staticcheck)
+	if strings.IndexAny(key, ".*?") == -1 {
+	   ^
+..\..\internal\util\gemini_schema.go:873:2: QF1002: could use tagged switch on childDesc (staticcheck)
+	switch {
+	^
+..\..\internal\util\sanitize_test.go:52:8: QF1001: could apply De Morgan's law (staticcheck)
+				if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_') {
+				   ^
+..\..\internal\util\util.go:36:6: QF1001: could apply De Morgan's law (staticcheck)
+		if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_') {
+		   ^
+6 issues:
+* errcheck: 2
+* staticcheck: 4
+===== internal/watcher =====
+..\..\internal\watcher\watcher_test.go:279:14: Error return value of `w.Stop` is not checked (errcheck)
+	defer w.Stop()
+	            ^
+..\..\internal\watcher\watcher_test.go:1489:14: Error return value of `w.Stop` is not checked (errcheck)
+	defer w.Stop()
+	            ^
+..\..\internal\watcher\watcher_test.go:162:5: SA5011(related information): this check suggests that the pointer can be nil (staticcheck)
+	if geminiAPIKeyAuth == nil {
+	   ^
+..\..\internal\watcher\watcher_test.go:166:22: SA5011: possible nil pointer dereference (staticcheck)
+	if geminiAPIKeyAuth.Attributes["excluded_models_hash"] != expectedAPIKeyHash {
+	                    ^
+..\..\internal\watcher\watcher_test.go:721:5: S1009: should omit nil check; len() for nil maps is defined as zero (staticcheck)
+	if w.currentAuths != nil && len(w.currentAuths) != 0 {
+	   ^
+5 issues:
+* errcheck: 2
+* staticcheck: 3
+===== internal/watcher/diff =====
+0 issues.
+===== internal/watcher/synthesizer =====
+0 issues.
+===== internal/wsrelay =====
+..\..\internal\wsrelay\session.go:153:22: Error return value of `conn.SetReadDeadline` is not checked (errcheck)
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
+	                    ^
+..\..\internal\wsrelay\session.go:155:23: Error return value of `conn.SetReadDeadline` is not checked (errcheck)
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
+		                    ^
+2 issues:
+* errcheck: 2
+===== sdk/access =====
+0 issues.
+===== sdk/api =====
+0 issues.
+===== sdk/api/handlers =====
+..\..\sdk\api\handlers\handlers.go:175:35: inline: Type alias context.Context should be inlined (govet)
+func requestExecutionMetadata(ctx context.Context) map[string]any {
+                                  ^
+..\..\sdk\api\handlers\handlers.go:415:98: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *gin.Context, ctx context.Context) (context.Context, APIHandlerCancelFunc) {
+                                                                                                 ^
+..\..\sdk\api\handlers\handlers.go:418:15: inline: Call of context.Background should be inlined (govet)
+		parentCtx = context.Background()
+		            ^
+..\..\sdk\api\handlers\handlers.go:421:17: inline: Type alias context.Context should be inlined (govet)
+	var requestCtx context.Context
+	               ^
+..\..\sdk\api\handlers\handlers.go:433:20: inline: Call of context.WithCancel should be inlined (govet)
+	newCtx, cancel := context.WithCancel(parentCtx)
+	                  ^
+..\..\sdk\api\handlers\handlers.go:473:11: inline: Call of context.WithValue should be inlined (govet)
+	newCtx = context.WithValue(newCtx, "gin", c)
+	         ^
+..\..\sdk\api\handlers\handlers.go:474:11: inline: Call of context.WithValue should be inlined (govet)
+	newCtx = context.WithValue(newCtx, "handler", handler)
+	         ^
+..\..\sdk\api\handlers\handlers.go:527:73: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) StartNonStreamingKeepAlive(c *gin.Context, ctx context.Context) func() {
+                                                                        ^
+..\..\sdk\api\handlers\handlers.go:540:9: inline: Call of context.Background should be inlined (govet)
+		ctx = context.Background()
+		      ^
+..\..\sdk\api\handlers\handlers_context.go:23:27: inline: Type alias context.Context should be inlined (govet)
+func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
+                          ^
+..\..\sdk\api\handlers\handlers_context.go:29:9: inline: Call of context.Background should be inlined (govet)
+		ctx = context.Background()
+		      ^
+..\..\sdk\api\handlers\handlers_context.go:31:9: inline: Call of context.WithValue should be inlined (govet)
+	return context.WithValue(ctx, pinnedAuthContextKey{}, authID)
+	       ^
+..\..\sdk\api\handlers\handlers_context.go:35:37: inline: Type alias context.Context should be inlined (govet)
+func WithSelectedAuthIDCallback(ctx context.Context, callback func(string)) context.Context {
+                                    ^
+..\..\sdk\api\handlers\handlers_context.go:40:9: inline: Call of context.Background should be inlined (govet)
+		ctx = context.Background()
+		      ^
+..\..\sdk\api\handlers\handlers_context.go:42:9: inline: Call of context.WithValue should be inlined (govet)
+	return context.WithValue(ctx, selectedAuthCallbackContextKey{}, callback)
+	       ^
+..\..\sdk\api\handlers\handlers_context.go:47:54: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) PrepareStreamModelRoute(ctx context.Context, handlerType string, modelName string, rawJSON []byte) (context.Context, bool) {
+                                                     ^
+..\..\sdk\api\handlers\handlers_context.go:49:9: inline: Call of context.Background should be inlined (govet)
+		ctx = context.Background()
+		      ^
+..\..\sdk\api\handlers\handlers_context.go:52:8: inline: Call of context.WithValue should be inlined (govet)
+	ctx = context.WithValue(ctx, preparedModelRouteContextKey{}, decision)
+	      ^
+..\..\sdk\api\handlers\handlers_context.go:57:40: inline: Type alias context.Context should be inlined (govet)
+func preparedModelRouteFromContext(ctx context.Context, skipRouterPluginID string) (modelRouteDecision, bool) {
+                                       ^
+..\..\sdk\api\handlers\handlers_context.go:69:33: inline: Type alias context.Context should be inlined (govet)
+func WithExecutionSessionID(ctx context.Context, sessionID string) context.Context {
+                                ^
+..\..\sdk\api\handlers\handlers_context.go:75:9: inline: Call of context.Background should be inlined (govet)
+		ctx = context.Background()
+		      ^
+..\..\sdk\api\handlers\handlers_context.go:77:9: inline: Call of context.WithValue should be inlined (govet)
+	return context.WithValue(ctx, executionSessionContextKey{}, sessionID)
+	       ^
+..\..\sdk\api\handlers\handlers_context.go:81:31: inline: Type alias context.Context should be inlined (govet)
+func WithDisallowFreeAuth(ctx context.Context) context.Context {
+                              ^
+..\..\sdk\api\handlers\handlers_context.go:83:9: inline: Call of context.Background should be inlined (govet)
+		ctx = context.Background()
+		      ^
+..\..\sdk\api\handlers\handlers_context.go:85:9: inline: Call of context.WithValue should be inlined (govet)
+	return context.WithValue(ctx, disallowFreeAuthContextKey{}, true)
+	       ^
+..\..\sdk\api\handlers\handlers_context.go:91:29: inline: Type alias context.Context should be inlined (govet)
+func headersFromContext(ctx context.Context) http.Header {
+                            ^
+..\..\sdk\api\handlers\handlers_context.go:105:27: inline: Type alias context.Context should be inlined (govet)
+func queryFromContext(ctx context.Context) url.Values {
+                          ^
+..\..\sdk\api\handlers\handlers_context.go:115:34: inline: Type alias context.Context should be inlined (govet)
+func pinnedAuthIDFromContext(ctx context.Context) string {
+                                 ^
+..\..\sdk\api\handlers\handlers_context.go:130:44: inline: Type alias context.Context should be inlined (govet)
+func selectedAuthIDCallbackFromContext(ctx context.Context) func(string) {
+                                           ^
+..\..\sdk\api\handlers\handlers_context.go:141:40: inline: Type alias context.Context should be inlined (govet)
+func executionSessionIDFromContext(ctx context.Context) string {
+                                       ^
+..\..\sdk\api\handlers\handlers_context.go:156:38: inline: Type alias context.Context should be inlined (govet)
+func disallowFreeAuthFromContext(ctx context.Context) bool {
+                                     ^
+..\..\sdk\api\handlers\handlers_errors.go:163:54: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) LoggingAPIResponseError(ctx context.Context, err *interfaces.ErrorMessage) {
+                                                     ^
+..\..\sdk\api\handlers\handlers_execution.go:17:24: inline: Type alias context.Context should be inlined (govet)
+	ExecutePluginExecutor(context.Context, string, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error)
+	                      ^
+..\..\sdk\api\handlers\handlers_execution.go:18:30: inline: Type alias context.Context should be inlined (govet)
+	ExecutePluginExecutorStream(context.Context, string, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error)
+	                            ^
+..\..\sdk\api\handlers\handlers_execution.go:19:22: inline: Type alias context.Context should be inlined (govet)
+	CountPluginExecutor(context.Context, string, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error)
+	                    ^
+..\..\sdk\api\handlers\handlers_execution.go:28:53: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+                                                    ^
+..\..\sdk\api\handlers\handlers_execution.go:33:58: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+                                                         ^
+..\..\sdk\api\handlers\handlers_execution.go:37:53: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, allowImageModel bool) ([]byte, http.Header, *interfaces.ErrorMessage) {
+                                                    ^
+..\..\sdk\api\handlers\handlers_execution.go:41:60: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+                                                           ^
+..\..\sdk\api\handlers\handlers_execution.go:107:58: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+                                                         ^
+..\..\sdk\api\handlers\handlers_execution.go:111:58: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+                                                         ^
+..\..\sdk\api\handlers\handlers_execution.go:169:56: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryProtocol, responseProtocol, modelName, originalRequestedModel string, rawJSON []byte, alt, executorPluginID string, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+                                                       ^
+..\..\sdk\api\handlers\handlers_execution.go:203:54: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerType, modelName, originalRequestedModel string, rawJSON []byte, alt, executorPluginID string, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+                                                     ^
+..\..\sdk\api\handlers\handlers_execution.go:237:52: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) pluginExecutorRequest(ctx context.Context, entryProtocol, responseProtocol, modelName, originalRequestedModel string, rawJSON []byte, alt string, stream bool, execOptions modelExecutionOptions) (coreexecutor.Request, coreexecutor.Options) {
+                                                   ^
+..\..\sdk\api\handlers\handlers_execution.go:263:79: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) applyRequestInterceptorsAfterPluginExecutorRoute(ctx context.Context, host PluginExecutorHost, executorPluginID, entryProtocol, originalRequestedModel, requestID string, req coreexecutor.Request, opts coreexecutor.Options, skipPluginID string) (coreexecutor.Request, coreexecutor.Options, *interfaces.ErrorMessage) {
+                                                                              ^
+..\..\sdk\api\handlers\handlers_interceptors.go:18:29: inline: Type alias context.Context should be inlined (govet)
+	InterceptRequestBeforeAuth(context.Context, pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse
+	                           ^
+..\..\sdk\api\handlers\handlers_interceptors.go:19:28: inline: Type alias context.Context should be inlined (govet)
+	InterceptRequestAfterAuth(context.Context, pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse
+	                          ^
+..\..\sdk\api\handlers\handlers_interceptors.go:20:20: inline: Type alias context.Context should be inlined (govet)
+	InterceptResponse(context.Context, pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse
+	                  ^
+..\..\sdk\api\handlers\handlers_interceptors.go:21:23: inline: Type alias context.Context should be inlined (govet)
+	InterceptStreamChunk(context.Context, pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse
+	                     ^
+..\..\sdk\api\handlers\handlers_interceptors.go:25:35: inline: Type alias context.Context should be inlined (govet)
+	InterceptRequestBeforeAuthExcept(context.Context, pluginapi.RequestInterceptRequest, string) pluginapi.RequestInterceptResponse
+	                                 ^
+..\..\sdk\api\handlers\handlers_interceptors.go:26:34: inline: Type alias context.Context should be inlined (govet)
+	InterceptRequestAfterAuthExcept(context.Context, pluginapi.RequestInterceptRequest, string) pluginapi.RequestInterceptResponse
+	                                ^
+..\..\sdk\api\handlers\handlers_interceptors.go:27:26: inline: Type alias context.Context should be inlined (govet)
+	InterceptResponseExcept(context.Context, pluginapi.ResponseInterceptRequest, string) pluginapi.ResponseInterceptResponse
+	                        ^
+..\..\sdk\api\handlers\handlers_interceptors.go:28:29: inline: Type alias context.Context should be inlined (govet)
+	InterceptStreamChunkExcept(context.Context, pluginapi.StreamChunkInterceptRequest, string) pluginapi.StreamChunkInterceptResponse
+	                           ^
+..\..\sdk\api\handlers\handlers_interceptors.go:40:18: inline: Type alias context.Context should be inlined (govet)
+	CompleteRequest(context.Context, pluginapi.RequestCompletion)
+	                ^
+..\..\sdk\api\handlers\handlers_interceptors.go:44:24: inline: Type alias context.Context should be inlined (govet)
+	CompleteRequestExcept(context.Context, pluginapi.RequestCompletion, string)
+	                      ^
+..\..\sdk\api\handlers\handlers_interceptors.go:49:15: inline: Type alias context.Context should be inlined (govet)
+	ctx          context.Context
+	             ^
+..\..\sdk\api\handlers\handlers_interceptors.go:55:57: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) newRequestLifecycleTracker(ctx context.Context, sourceFormat, model, requestedModel string, stream bool, metadata map[string]any, skipPluginID string) *requestLifecycleTracker {
+                                                        ^
+..\..\sdk\api\handlers\handlers_interceptors.go:106:53: inline: Type alias context.Context should be inlined (govet)
+func (t *requestLifecycleTracker) completeError(ctx context.Context, msg *interfaces.ErrorMessage) {
+                                                    ^
+..\..\sdk\api\handlers\handlers_interceptors.go:167:26: inline: Type alias context.Context should be inlined (govet)
+func nextStreamChunk(ctx context.Context, pending *[]coreexecutor.StreamChunk, closed *bool, chunks <-chan coreexecutor.StreamChunk) (coreexecutor.StreamChunk, bool, bool) {
+                         ^
+..\..\sdk\api\handlers\handlers_interceptors.go:371:37: inline: Type alias context.Context should be inlined (govet)
+func interceptRequestBeforeAuth(ctx context.Context, host PluginInterceptorHost, req pluginapi.RequestInterceptRequest, skipPluginID string) pluginapi.RequestInterceptResponse {
+                                    ^
+..\..\sdk\api\handlers\handlers_interceptors.go:380:36: inline: Type alias context.Context should be inlined (govet)
+func interceptRequestAfterAuth(ctx context.Context, host PluginInterceptorHost, req pluginapi.RequestInterceptRequest, skipPluginID string) pluginapi.RequestInterceptResponse {
+                                   ^
+..\..\sdk\api\handlers\handlers_interceptors.go:389:28: inline: Type alias context.Context should be inlined (govet)
+func interceptResponse(ctx context.Context, host PluginInterceptorHost, req pluginapi.ResponseInterceptRequest, skipPluginID string) pluginapi.ResponseInterceptResponse {
+                           ^
+..\..\sdk\api\handlers\handlers_interceptors.go:398:31: inline: Type alias context.Context should be inlined (govet)
+func interceptStreamChunk(ctx context.Context, host PluginInterceptorHost, req pluginapi.StreamChunkInterceptRequest, skipPluginID string) pluginapi.StreamChunkInterceptResponse {
+                              ^
+..\..\sdk\api\handlers\handlers_interceptors.go:407:65: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context, handlerType, requestedModel, requestID string, req coreexecutor.Request, opts coreexecutor.Options, skipPluginID string) (coreexecutor.Request, coreexecutor.Options, *interfaces.ErrorMessage) {
+                                                                ^
+..\..\sdk\api\handlers\handlers_interceptors.go:438:18: inline: Type alias context.Context should be inlined (govet)
+	return func(ctx context.Context, req coreexecutor.RequestAfterAuthInterceptRequest) coreexecutor.RequestAfterAuthInterceptResponse {
+	                ^
+..\..\sdk\api\handlers\handlers_interceptors.go:447:64: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, req coreexecutor.RequestAfterAuthInterceptRequest, requestID, skipPluginID string) coreexecutor.RequestAfterAuthInterceptResponse {
+                                                               ^
+..\..\sdk\api\handlers\handlers_interceptors.go:475:56: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, requestID, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int, skipPluginID string) ([]byte, http.Header) {
+                                                       ^
+..\..\sdk\api\handlers\handlers_metadata_test.go:26:59: inline: Call of context.Background should be inlined (govet)
+	ctx, cancel := handler.GetContextWithCancel(nil, ginCtx, context.Background())
+	                                                         ^
+..\..\sdk\api\handlers\handlers_metadata_test.go:42:32: inline: Call of context.Background should be inlined (govet)
+	ctx := WithExecutionSessionID(context.Background(), "session-1")
+	                              ^
+..\..\sdk\api\handlers\handlers_metadata_test.go:58:9: inline: Call of context.WithValue should be inlined (govet)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	       ^
+..\..\sdk\api\handlers\handlers_metadata_test.go:80:10: inline: Call of context.WithValue should be inlined (govet)
+		ctx := context.WithValue(context.Background(), "gin", ginCtx)
+		       ^
+..\..\sdk\api\handlers\handlers_metadata_test.go:94:10: inline: Call of context.WithValue should be inlined (govet)
+		ctx := context.WithValue(context.Background(), "gin", ginCtx)
+		       ^
+..\..\sdk\api\handlers\handlers_routing.go:20:13: inline: Type alias context.Context should be inlined (govet)
+	RouteModel(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool)
+	           ^
+..\..\sdk\api\handlers\handlers_routing.go:24:19: inline: Type alias context.Context should be inlined (govet)
+	RouteModelExcept(context.Context, pluginapi.ModelRouteRequest, string) (pluginapi.ModelRouteResponse, bool)
+	                 ^
+..\..\sdk\api\handlers\handlers_routing.go:272:21: inline: Type alias context.Context should be inlined (govet)
+func routeModel(ctx context.Context, host PluginModelRouterHost, req pluginapi.ModelRouteRequest, skipPluginID string) (pluginapi.ModelRouteResponse, bool) {
+                    ^
+..\..\sdk\api\handlers\handlers_routing.go:307:47: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
+                                              ^
+..\..\sdk\api\handlers\handlers_stream.go:45:25: inline: Call of context.Background should be inlined (govet)
+	return c.CommitContext(context.Background())
+	                       ^
+..\..\sdk\api\handlers\handlers_stream.go:49:54: inline: Type alias context.Context should be inlined (govet)
+func (c *StreamBootstrapCommitter) CommitContext(ctx context.Context) http.Header {
+                                                     ^
+..\..\sdk\api\handlers\handlers_stream.go:94:59: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+                                                          ^
+..\..\sdk\api\handlers\handlers_stream.go:100:74: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteStreamWithAuthManagerBootstrapCommit(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, <-chan *interfaces.ErrorMessage, *StreamBootstrapCommitter) {
+                                                                         ^
+..\..\sdk\api\handlers\handlers_stream.go:119:64: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteImageStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+                                                               ^
+..\..\sdk\api\handlers\handlers_stream.go:123:55: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProtocol, responseProtocol, modelName, originalRequestedModel string, rawJSON []byte, alt, executorPluginID string, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+                                                      ^
+..\..\sdk\api\handlers\handlers_stream.go:336:59: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, allowImageModel bool) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+                                                          ^
+..\..\sdk\api\handlers\handlers_stream.go:340:66: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+                                                                 ^
+..\..\sdk\api\handlers\handlers_stream.go:410:29: inline: Call of context.WithCancel should be inlined (govet)
+		streamCtx, cancelStream = context.WithCancel(context.Background())
+		                          ^
+..\..\sdk\api\handlers\handlers_stream.go:681:17: inline: Call of context.Background should be inlined (govet)
+				retryBase = context.Background()
+				            ^
+..\..\sdk\api\handlers\handlers_stream.go:683:30: inline: Call of context.WithCancel should be inlined (govet)
+			streamCtx, cancelStream = context.WithCancel(retryBase)
+			                          ^
+..\..\sdk\api\handlers\model_execution.go:98:43: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteModel(ctx context.Context, req ModelExecutionRequest) (ModelExecutionResponse, *interfaces.ErrorMessage) {
+                                          ^
+..\..\sdk\api\handlers\model_execution.go:123:49: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteModelStream(ctx context.Context, req ModelExecutionRequest) (ModelExecutionStream, *interfaces.ErrorMessage) {
+                                                ^
+..\..\sdk\api\handlers\model_execution.go:146:61: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteProtocolWithAuthManager(ctx context.Context, req ProtocolExecutionRequest) (ModelExecutionResponse, *interfaces.ErrorMessage) {
+                                                            ^
+..\..\sdk\api\handlers\model_execution.go:167:67: inline: Type alias context.Context should be inlined (govet)
+func (h *BaseAPIHandler) ExecuteProtocolStreamWithAuthManager(ctx context.Context, req ProtocolExecutionRequest) (ModelExecutionStream, *interfaces.ErrorMessage) {
+                                                                  ^
+..\..\sdk\api\handlers\model_execution.go:199:32: inline: Type alias context.Context should be inlined (govet)
+func modelExecutionHeaders(ctx context.Context, headers http.Header) http.Header {
+                               ^
+..\..\sdk\api\handlers\model_execution.go:210:30: inline: Type alias context.Context should be inlined (govet)
+func modelExecutionQuery(ctx context.Context, query url.Values) url.Values {
+                             ^
+..\..\sdk\api\handlers\model_execution.go:235:38: inline: Type alias context.Context should be inlined (govet)
+func prepareModelExecutionStream(ctx context.Context, dataChan <-chan []byte, errChan <-chan *interfaces.ErrorMessage) (<-chan ModelExecutionChunk, *interfaces.ErrorMessage) {
+                                     ^
+..\..\sdk\api\handlers\model_execution.go:243:44: inline: Type alias context.Context should be inlined (govet)
+func receiveInitialModelExecutionChunk(ctx context.Context, dataChan <-chan []byte, errChan <-chan *interfaces.ErrorMessage) ([]ModelExecutionChunk, <-chan []byte, <-chan *interfaces.ErrorMessage, *interfaces.ErrorMessage) {
+                                           ^
+..\..\sdk\api\handlers\model_execution.go:273:35: inline: Type alias context.Context should be inlined (govet)
+func wrapModelExecutionChunks(ctx context.Context, dataChan <-chan []byte, errChan <-chan *interfaces.ErrorMessage, pending []ModelExecutionChunk) <-chan ModelExecutionChunk {
+                                  ^
+..\..\sdk\api\handlers\model_execution.go:328:34: inline: Type alias context.Context should be inlined (govet)
+func sendModelExecutionChunk(ctx context.Context, chunks chan<- ModelExecutionChunk, chunk ModelExecutionChunk) bool {
+                                 ^
+..\..\sdk\api\handlers\handlers_routing.go:157:2: ineffectual assignment to resolvedModelName (ineffassign)
+	resolvedModelName := modelName
+	^
+..\..\sdk\api\handlers\handlers.go:28:2: SA1019: "golang.org/x/net/context" is deprecated: Use the standard library context package instead. (staticcheck)
+	"golang.org/x/net/context"
+	^
+..\..\sdk\api\handlers\handlers_context.go:9:2: SA1019: "golang.org/x/net/context" is deprecated: Use the standard library context package instead. (staticcheck)
+	"golang.org/x/net/context"
+	^
+..\..\sdk\api\handlers\handlers_errors.go:13:2: SA1019: "golang.org/x/net/context" is deprecated: Use the standard library context package instead. (staticcheck)
+	"golang.org/x/net/context"
+	^
+..\..\sdk\api\handlers\handlers_execution.go:12:2: SA1019: "golang.org/x/net/context" is deprecated: Use the standard library context package instead. (staticcheck)
+	"golang.org/x/net/context"
+	^
+..\..\sdk\api\handlers\handlers_interceptors.go:13:2: SA1019: "golang.org/x/net/context" is deprecated: Use the standard library context package instead. (staticcheck)
+	"golang.org/x/net/context"
+	^
+..\..\sdk\api\handlers\handlers_interceptors_test.go:193:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	return context.WithValue(context.Background(), "gin", c)
+	                                               ^
+..\..\sdk\api\handlers\handlers_interceptors_test.go:208:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	return context.WithValue(context.Background(), "gin", c)
+	                                               ^
+..\..\sdk\api\handlers\handlers_metadata_test.go:13:2: SA1019: "golang.org/x/net/context" is deprecated: Use the standard library context package instead. (staticcheck)
+	"golang.org/x/net/context"
+	^
+..\..\sdk\api\handlers\handlers_model_router_test.go:33:4: SA5011: possible nil pointer dereference (staticcheck)
+	h.routeSkip = skipPluginID
+	  ^
+..\..\sdk\api\handlers\handlers_model_router_test.go:35:4: SA5011: possible nil pointer dereference (staticcheck)
+	h.lastReq = &reqCopy
+	  ^
+..\..\sdk\api\handlers\handlers_model_router_test.go:36:5: SA5011(related information): this check suggests that the pointer can be nil (staticcheck)
+	if h != nil && h.route != nil {
+	   ^
+..\..\sdk\api\handlers\handlers_model_router_test.go:828:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", c)
+	                                               ^
+..\..\sdk\api\handlers\handlers_routing.go:8:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\sdk\api\handlers\handlers_routing.go:14:2: SA1019: "golang.org/x/net/context" is deprecated: Use the standard library context package instead. (staticcheck)
+	"golang.org/x/net/context"
+	^
+..\..\sdk\api\handlers\handlers_stream.go:15:2: SA1019: "golang.org/x/net/context" is deprecated: Use the standard library context package instead. (staticcheck)
+	"golang.org/x/net/context"
+	^
+..\..\sdk\api\handlers\handlers_stream_bootstrap_test.go:1602:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\sdk\api\handlers\model_execution.go:9:2: SA1019: "golang.org/x/net/context" is deprecated: Use the standard library context package instead. (staticcheck)
+	"golang.org/x/net/context"
+	^
+115 issues:
+* govet: 97
+* ineffassign: 1
+* staticcheck: 17
+===== sdk/api/handlers/claude =====
+..\..\sdk\api\handlers\claude\code_handlers.go:22:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+1 issues:
+* staticcheck: 1
+===== sdk/api/handlers/gemini =====
+..\..\sdk\api\handlers\gemini\gemini_handlers.go:16:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\sdk\api\handlers\gemini\interactions_handlers.go:11:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+2 issues:
+* staticcheck: 2
+===== sdk/api/handlers/openai =====
+..\..\sdk\api\handlers\openai\openai_responses_handlers.go:17:1: File is not properly formatted (goimports)
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/optimize-multi-agent-v2"
+^
+..\..\sdk\api\handlers\openai\openai_images_handlers.go:1260:4: ineffectual assignment to streamStarted (ineffassign)
+			streamStarted = true
+			^
+..\..\sdk\api\handlers\openai\openai_images_handlers.go:1400:4: ineffectual assignment to streamStarted (ineffassign)
+			streamStarted = true
+			^
+..\..\sdk\api\handlers\openai\openai_handlers.go:17:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\sdk\api\handlers\openai\openai_images_handlers.go:353:3: QF1003: could use tagged switch on image.Type (staticcheck)
+		if image.Type == gjson.String {
+		^
+..\..\sdk\api\handlers\openai\openai_images_handlers.go:566:46: QF1008: could remove embedded field "BaseAPIHandler" from selector (staticcheck)
+	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
+	                                            ^
+..\..\sdk\api\handlers\openai\openai_images_handlers.go:670:46: QF1008: could remove embedded field "BaseAPIHandler" from selector (staticcheck)
+	if h != nil && h.BaseAPIHandler != nil && h.BaseAPIHandler.Cfg != nil && h.BaseAPIHandler.Cfg.DisableImageGeneration == internalconfig.DisableImageGenerationAll {
+	                                            ^
+..\..\sdk\api\handlers\openai\openai_responses_handlers.go:18:2: ST1001: should not use dot imports (staticcheck)
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	^
+..\..\sdk\api\handlers\openai\openai_responses_handlers.go:77:45: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	requestCtx = context.WithValue(requestCtx, "gin", c)
+	                                           ^
+..\..\sdk\api\handlers\openai\openai_responses_websocket.go:357:11: SA9003: empty branch (staticcheck)
+			} else {
+			       ^
+..\..\sdk\api\handlers\openai\openai_responses_websocket.go:383:61: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+		executionParent := context.WithValue(c.Request.Context(), "gin", c)
+		                                                          ^
+..\..\sdk\api\handlers\openai\openai_responses_websocket.go:478:70: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+			                                                                  ^
+..\..\sdk\api\handlers\openai\openai_responses_websocket_forward.go:64:71: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+				                                                                  ^
+..\..\sdk\api\handlers\openai\openai_responses_websocket_forward.go:109:72: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+					                                                                  ^
+..\..\sdk\api\handlers\openai\openai_responses_websocket_forward.go:153:73: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+						h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), payloadErrMsg)
+						                                                                  ^
+..\..\sdk\api\handlers\openai\openai_responses_websocket_session.go:90:37: func (*OpenAIResponsesAPIHandler).responsesWebsocketUsesCodexWebsocketPassthrough is unused (unused)
+func (h *OpenAIResponsesAPIHandler) responsesWebsocketUsesCodexWebsocketPassthrough(modelName string) bool {
+                                    ^
+..\..\sdk\api\handlers\openai\openai_responses_websocket_toolcall_repair.go:324:6: func repairResponsesWebsocketToolCalls is unused (unused)
+func repairResponsesWebsocketToolCalls(sessionKey string, payload []byte) []byte {
+     ^
+..\..\sdk\api\handlers\openai\openai_videos_handlers.go:308:28: func (*OpenAIAPIHandler).bindVideoAuthIDFromPayload is unused (unused)
+func (h *OpenAIAPIHandler) bindVideoAuthIDFromPayload(payload []byte, authID string) {
+                           ^
+18 issues:
+* goimports: 1
+* ineffassign: 2
+* staticcheck: 12
+* unused: 3
+===== sdk/auth =====
+..\..\sdk\auth\claude.go:11:1: File is not properly formatted (goimports)
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
+^
+..\..\sdk\auth\codex.go:11:1: File is not properly formatted (goimports)
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
+^
+..\..\sdk\auth\filestore.go:354:26: func (*FileTokenStore).readAuthFile is unused (unused)
+func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, error) {
+                         ^
+3 issues:
+* goimports: 2
+* unused: 1
+===== sdk/cliproxy =====
+..\..\sdk\cliproxy\service_lifecycle.go:98:4: ineffectual assignment to tokenResult (ineffassign)
+			tokenResult = &TokenClientResult{}
+			^
+..\..\sdk\cliproxy\service_lifecycle.go:106:4: ineffectual assignment to apiKeyResult (ineffassign)
+			apiKeyResult = &APIKeyClientResult{}
+			^
+..\..\sdk\cliproxy\service_config_weight_test.go:33:48: SA1012: do not pass a nil Context, even if a function permits it; pass context.TODO if you are unsure about which Context to use (staticcheck)
+	if service.applyConfigUpdateWithAuthSynthesis(nil, newCfg, true) {
+	                                              ^
+..\..\sdk\cliproxy\service_executor_registration_test.go:72:37: SA1012: do not pass a nil Context, even if a function permits it; pass context.TODO if you are unsure about which Context to use (staticcheck)
+	service.registerAvailableExecutors(nil, executorRegistrationOptions{
+	                                   ^
+..\..\sdk\cliproxy\service_home.go:401:2: S1008: should use 'return !errors.As(err, &redisErr)' instead of 'if errors.As(err, &redisErr) { return false }; return true' (staticcheck)
+	if errors.As(err, &redisErr) {
+	^
+..\..\sdk\cliproxy\home_plugins.go:117:19: func (*Service).reportHomePluginStatus is unused (unused)
+func (s *Service) reportHomePluginStatus(ctx context.Context, cfg *config.Config, report homeplugins.SyncReport) {
+                  ^
+..\..\sdk\cliproxy\home_plugins.go:121:19: func (*Service).reportHomePluginStatusWithClient is unused (unused)
+func (s *Service) reportHomePluginStatusWithClient(ctx context.Context, cfg *config.Config, report homeplugins.SyncReport, client *home.Client) {
+                  ^
+..\..\sdk\cliproxy\home_plugins.go:160:19: func (*Service).processHomePluginTasks is unused (unused)
+func (s *Service) processHomePluginTasks(ctx context.Context, cfg *config.Config) {
+                  ^
+..\..\sdk\cliproxy\home_plugins.go:164:19: func (*Service).processHomePluginTasksWithClient is unused (unused)
+func (s *Service) processHomePluginTasksWithClient(ctx context.Context, cfg *config.Config, client *home.Client) {
+                  ^
+..\..\sdk\cliproxy\pprof_server.go:174:23: func (*pprofServer).stopServer is unused (unused)
+func (p *pprofServer) stopServer(server *http.Server, addr string, reason string) {
+                      ^
+..\..\sdk\cliproxy\service_config.go:14:19: func (*Service).applyConfigUpdate is unused (unused)
+func (s *Service) applyConfigUpdate(newCfg *config.Config) {
+                  ^
+..\..\sdk\cliproxy\service_models.go:301:19: func (*Service).refreshModelRegistrationForAuth is unused (unused)
+func (s *Service) refreshModelRegistrationForAuth(current *coreauth.Auth) bool {
+                  ^
+12 issues:
+* ineffassign: 2
+* staticcheck: 3
+* unused: 7
+===== sdk/cliproxy/auth =====
+..\..\sdk\cliproxy\auth\home_websocket_reuse_test.go:183:1: File is not properly formatted (gofmt)
+		"home-auth-1": &Auth{
+^
+..\..\sdk\cliproxy\auth\response_model_rewriter_test.go:6:1: File is not properly formatted (goimports)
+	"github.com/tidwall/gjson"
+^
+..\..\sdk\cliproxy\auth\conductor_execution.go:334:41: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			                                     ^
+..\..\sdk\cliproxy\auth\conductor_execution.go:461:41: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			                                     ^
+..\..\sdk\cliproxy\auth\conductor_execution.go:643:41: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			                                     ^
+..\..\sdk\cliproxy\auth\conductor_force_mapping_test.go:187:14: QF1004: could use strings.ReplaceAll instead (staticcheck)
+		created := strings.Replace(liveCodexResponsesCreatedUpstream, "gpt-5.4", upstreamModel, -1)
+		           ^
+..\..\sdk\cliproxy\auth\conductor_force_mapping_test.go:188:16: QF1004: could use strings.ReplaceAll instead (staticcheck)
+		completed := strings.Replace(liveCodexResponsesCompletedUpstream, "gpt-5.4", upstreamModel, -1)
+		             ^
+..\..\sdk\cliproxy\auth\conductor_home.go:1102:47: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+			                                           ^
+..\..\sdk\cliproxy\auth\conductor_home.go:1158:47: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			creditsCtx = context.WithValue(creditsCtx, "cliproxy.roundtripper", rt)
+			                                           ^
+..\..\sdk\cliproxy\auth\conductor_home_execution.go:59:41: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			                                     ^
+..\..\sdk\cliproxy\auth\conductor_home_execution.go:201:26: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, func() {}, fmt.Errorf("Home dispatch selection is nil")
+		                       ^
+..\..\sdk\cliproxy\auth\conductor_stream.go:146:36: SA1019: netErr.Temporary has been deprecated since Go 1.18 because it shouldn't be used: Temporary errors are not well-defined. Most "temporary" errors are timeouts, and the few exceptions are surprising. Do not use this method. (staticcheck)
+	return errors.As(err, &netErr) && netErr.Temporary()
+	                                  ^
+..\..\sdk\cliproxy\auth\conductor_stream_recovery_test.go:765:5: SA4000: identical expressions on the left and right side of the '||' operator (staticcheck)
+	if !state.canRetry() || !state.canRetry() {
+	   ^
+..\..\sdk\cliproxy\auth\conductor_stream_recovery_test.go:777:5: SA4000: identical expressions on the left and right side of the '||' operator (staticcheck)
+	if !state.canRetry() || !state.canRetry() {
+	   ^
+..\..\sdk\cliproxy\auth\home_concurrency.go:180:45: ST1005: error strings should not be capitalized (staticcheck)
+		return homeDispatchConcurrencyEnvelope{}, errors.New("Home response is not valid UTF-8")
+		                                          ^
+..\..\sdk\cliproxy\auth\home_concurrency.go:185:45: ST1005: error strings should not be capitalized (staticcheck)
+		return homeDispatchConcurrencyEnvelope{}, errors.New("Home response is not a JSON object")
+		                                          ^
+..\..\sdk\cliproxy\auth\home_dispatch_headers_test.go:28:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\sdk\cliproxy\auth\home_dispatch_headers_test.go:46:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\sdk\cliproxy\auth\home_dispatch_headers_test.go:61:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\sdk\cliproxy\auth\home_dispatch_headers_test.go:76:49: SA1029: should not use built-in type string as key for value; define your own type to avoid collisions (staticcheck)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	                                               ^
+..\..\sdk\cliproxy\auth\home_selection.go:157:15: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, fmt.Errorf("Home dispatch selection has no execution scope")
+		            ^
+..\..\sdk\cliproxy\auth\home_selection.go:189:10: ST1005: error strings should not be capitalized (staticcheck)
+		return fmt.Errorf("Home dispatch selection has no execution resources")
+		       ^
+..\..\sdk\cliproxy\auth\home_selection.go:202:26: ST1005: error strings should not be capitalized (staticcheck)
+		return nil, func() {}, fmt.Errorf("Home dispatch selection has no attempt cancels")
+		                       ^
+..\..\sdk\cliproxy\auth\antigravity_credits.go:99:6: func antigravityCreditsAvailableForModel is unused (unused)
+func antigravityCreditsAvailableForModel(auth *Auth, model string) bool {
+     ^
+..\..\sdk\cliproxy\auth\conductor_home.go:682:19: func (*Manager).homeRuntimeAuthByID is unused (unused)
+func (m *Manager) homeRuntimeAuthByID(sessionID string, authID string) (*Auth, ProviderExecutor, string, bool) {
+                  ^
+..\..\sdk\cliproxy\auth\conductor_models.go:48:6: func isAPIKeyAuth is unused (unused)
+func isAPIKeyAuth(auth *Auth) bool {
+     ^
+..\..\sdk\cliproxy\auth\conductor_models.go:163:19: func (*Manager).executionModelCandidates is unused (unused)
+func (m *Manager) executionModelCandidates(auth *Auth, routeModel string) []string {
+                  ^
+..\..\sdk\cliproxy\auth\conductor_models.go:247:19: func (*Manager).preparedExecutionModels is unused (unused)
+func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string) ([]string, bool) {
+                  ^
+..\..\sdk\cliproxy\auth\conductor_models.go:293:19: func (*Manager).resolveExecutionAliasResult is unused (unused)
+func (m *Manager) resolveExecutionAliasResult(auth *Auth, routeModel string) OAuthModelAliasResult {
+                  ^
+..\..\sdk\cliproxy\auth\conductor_models.go:454:19: func (*Manager).prepareExecutionModels is unused (unused)
+func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string {
+                  ^
+30 issues:
+* gofmt: 1
+* goimports: 1
+* staticcheck: 21
+* unused: 7
+===== sdk/cliproxy/executionregistry =====
+0 issues.
+===== sdk/cliproxy/executor =====
+level=error msg="Running error: context loading failed: no go files to analyze: running `go mod tidy` may solve the problem"
+===== sdk/cliproxy/pipeline =====
+===== sdk/cliproxy/session =====
+===== sdk/cliproxy/usage =====
+===== sdk/config =====
+===== sdk/logging =====
+===== sdk/pluginabi =====
+===== sdk/pluginapi =====
+===== sdk/pluginhost =====
+===== sdk/pluginstore =====
+===== sdk/proxyutil =====
+===== sdk/translator =====
+===== sdk/translator/builtin =====
+===== cmd/fetch_antigravity_models =====
+===== cmd/fetch_codex_models =====
+===== cmd/server =====
+===== cmd/validate_codex_models =====
+===== test =====

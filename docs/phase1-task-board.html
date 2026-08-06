@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phase 1 任务看板</title>
+<style>
+  :root {
+    --bg:#f7f8fa; --card:#fff; --border:#e5e7eb; --text:#1a2233; --text2:#5b6472;
+    --blue:#2563eb; --blue-soft:#eff4ff; --red:#dc2626; --red-soft:#fef2f2;
+    --orange:#ea580c; --orange-soft:#fff7ed; --yellow:#b45309; --yellow-soft:#fffbeb;
+    --gray:#64748b; --gray-soft:#f1f5f9; --green:#059669; --green-soft:#ecfdf5;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);line-height:1.65;padding:28px 18px 70px}
+  .wrap{max-width:1060px;margin:0 auto}
+  .hero{background:linear-gradient(135deg,#1e3a8a,#2563eb 60%,#3b82f6);color:#fff;border-radius:14px;padding:32px 36px;margin-bottom:22px;box-shadow:0 10px 28px rgba(37,99,235,.22)}
+  .hero h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
+  .hero p{opacity:.9;font-size:14px;margin-top:6px}
+  .hero .meta{margin-top:14px;font-size:12.5px;opacity:.85;display:flex;gap:18px;flex-wrap:wrap}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:22px}
+  .stat{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;text-align:center}
+  .stat .v{font-size:26px;font-weight:800;color:var(--blue)}
+  .stat .v.warn{color:var(--orange)} .stat .v.red{color:var(--red)} .stat .v.ok{color:var(--green)}
+  .stat .l{font-size:12px;color:var(--text2);margin-top:3px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text2);margin-bottom:14px}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .board{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
+  .t{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+  .t .th{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
+  .t .id{font-family:"Cascadia Code",Consolas,monospace;font-size:12px;font-weight:700;color:var(--blue);background:var(--blue-soft);padding:2px 8px;border-radius:6px}
+  .t .p{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap}
+  .p0{background:var(--red);color:#fff} .p1{background:var(--orange);color:#fff}
+  .p2{background:var(--yellow);color:#fff} .p3{background:var(--gray);color:#fff}
+  .t h3{font-size:14.5px;font-weight:700;margin-bottom:6px}
+  .t .n{font-size:12.5px;color:var(--text2)}
+  .t .row{display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)}
+  .t .dep{font-size:11.5px;color:var(--text2);margin-top:6px}
+  .t .dep b{color:var(--yellow)}
+  .t .owner{font-size:12px;margin-top:6px}
+  .t .owner .empty{color:var(--gray);font-style:italic}
+  .status{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px}
+  .st-todo{background:var(--gray-soft);color:var(--gray)}
+  .st-done{background:var(--green-soft);color:var(--green)}
+  .note{background:var(--yellow-soft);border:1px solid #fde68a;border-radius:10px;padding:12px 16px;font-size:13px;color:#92400e;margin-top:20px}
+  .foot{text-align:center;color:var(--text2);font-size:12px;margin-top:26px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <h1>Phase 1 · 上闸门 — 任务看板</h1>
+    <p>基于 505 个存量 lint 问题拆解的 9 个任务单元 ｜ 规范文档：<code style="color:#dbeafe">docs/phase1-task-spec.md</code></p>
+    <div class="meta"><span>基线：docs/lint-baseline-20260806.txt</span><span>状态日期：2026-08-06</span><span>原则：单任务单 PR · 红转绿 · 文件零重叠并行</span></div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="v red">369</div><div class="l">生产代码问题</div></div>
+    <div class="stat"><div class="v">136</div><div class="l">测试文件问题（P3 可选）</div></div>
+    <div class="stat"><div class="v warn">82</div><div class="l">SA1029 真实 bug 类</div></div>
+    <div class="stat"><div class="v ok">2</div><div class="l">生产 errcheck（已近清零）</div></div>
+    <div class="stat"><div class="v">9</div><div class="l">任务单元</div></div>
+  </div>
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--red)"></i>P0 优先</span>
+    <span><i class="dot" style="background:var(--orange)"></i>P1</span>
+    <span><i class="dot" style="background:var(--yellow)"></i>P2</span>
+    <span><i class="dot" style="background:var(--gray)"></i>P3 可选</span>
+    <span><i class="dot" style="background:var(--green)"></i>已完成</span>
+  </div>
+
+  <div style="background:var(--blue-soft);border:1px solid #dbeafe;border-radius:10px;padding:10px 16px;font-size:13px;color:#1e40af;margin-bottom:16px">
+    <b>执行粒度（v1.1）：合并 3 大 PR</b> —— <b>PR-1 机械批</b>＝T01-T04（~178）｜ <b>PR-2 语义批</b>＝T05-T07（~212，行为级改动按 commit 逐个评审）｜ <b>PR-3 门禁上线</b>＝T08-T09。详见 <code>docs/phase1-task-spec.md §0.0</code>
+  </div>
+
+  <div class="board">
+
+    <div class="t">
+      <div class="th"><span class="id">P1-T01</span><span class="p p0">P0</span><span class="status st-todo">待执行</span></div>
+      <h3>errcheck 生产清零</h3>
+      <div class="n">wsrelay/session.go:153,155 SetReadDeadline 返回值未检查（2 处）</div>
+      <div class="row"><span>工作量：0.5h</span><span>风险：低</span></div>
+      <div class="dep">依赖：无</div>
+      <div class="owner">负责人：<span class="empty">待认领</span></div>
+    </div>
+
+    <div class="t">
+      <div class="th"><span class="id">P1-T02</span><span class="p p0">P0</span><span class="status st-todo">待执行</span></div>
+      <h3>格式批 gofmt/goimports/ineffassign</h3>
+      <div class="n">17 个 / 11 文件（含 3 个 translator 文件，需权限确认）</div>
+      <div class="row"><span>工作量：2h</span><span>风险：低</span></div>
+      <div class="dep">依赖：无</div>
+      <div class="owner">负责人：<span class="empty">待认领</span></div>
+    </div>
+
+    <div class="t">
+      <div class="th"><span class="id">P1-T03</span><span class="p p1">P1</span><span class="status st-todo">待执行</span></div>
+      <h3>unused 生产清零（4 子任务）</h3>
+      <div class="n">58 个：T03a tui(9) / T03b cliproxy(7) / T03c pluginstore+homeplugins(7) / T03d 其余(35)</div>
+      <div class="row"><span>工作量：各 2-3h</span><span>风险：中（防误删动态引用）</span></div>
+      <div class="dep">依赖：无</div>
+      <div class="owner">负责人：<span class="empty">待认领</span></div>
+    </div>
+
+    <div class="t">
+      <div class="th"><span class="id">P1-T04</span><span class="p p1">P1</span><span class="status st-todo">待执行</span></div>
+      <h3>govet 生产清零（2 子任务）</h3>
+      <div class="n">101 个：T04a sdk/api/handlers(92，可 2 人拆) / T04b pluginhost+logging(9)</div>
+      <div class="row"><span>工作量：4-6h + 1h</span><span>风险：低-中</span></div>
+      <div class="dep">依赖：无</div>
+      <div class="owner">负责人：<span class="empty">待认领</span></div>
+    </div>
+
+    <div class="t">
+      <div class="th"><span class="id">P1-T05</span><span class="p p0">P0</span><span class="status st-todo">待执行</span></div>
+      <h3>SA1029 time.Duration 修复 ⚠️真实 bug 类</h3>
+      <div class="n">82 个：T05a cliproxy/auth / T05b api/handlers/openai / T05c executor。每处人工判断单位语义，禁止机械替换</div>
+      <div class="row"><span>工作量：各 3-4h</span><span>风险：高（行为级改动）</span></div>
+      <div class="dep">依赖：无</div>
+      <div class="owner">负责人：<span class="empty">待认领</span></div>
+    </div>
+
+    <div class="t">
+      <div class="th"><span class="id">P1-T06</span><span class="p p1">P1</span><span class="status st-todo">待执行</span></div>
+      <h3>SA5011 / SA1019 / SA1008</h3>
+      <div class="n">30 个：SA5011 nil 解引用(7) 最优先 → SA1019 废弃 API(12) → SA1008(11)</div>
+      <div class="row"><span>工作量：4-6h</span><span>风险：中</span></div>
+      <div class="dep">依赖：无</div>
+      <div class="owner">负责人：<span class="empty">待认领</span></div>
+    </div>
+
+    <div class="t">
+      <div class="th"><span class="id">P1-T07</span><span class="p p2">P2</span><span class="status st-todo">待执行</span></div>
+      <h3>staticcheck 其余 SA/S 系列</h3>
+      <div class="n">~100 个：S 系列机械简化 + SA9003/SA4000 人工确认</div>
+      <div class="row"><span>工作量：1-2 天</span><span>风险：低-中</span></div>
+      <div class="dep">依赖：无</div>
+      <div class="owner">负责人：<span class="empty">待认领</span></div>
+    </div>
+
+    <div class="t">
+      <div class="th"><span class="id">P1-T08</span><span class="p p3">P3</span><span class="status st-todo">待执行</span></div>
+      <h3>测试文件 lint 清理（可选）</h3>
+      <div class="n">136 个：errcheck 24（require.NoError 化）+ unused/staticcheck。不阻塞门禁，但建议 T09 前完成</div>
+      <div class="row"><span>工作量：1-2 天</span><span>风险：低</span></div>
+      <div class="dep">依赖：无</div>
+      <div class="owner">负责人：<span class="empty">待认领</span></div>
+    </div>
+
+    <div class="t" style="border:2px solid var(--blue)">
+      <div class="th"><span class="id">P1-T09</span><span class="p p0">P0</span><span class="status st-todo">待执行</span></div>
+      <h3>门禁上线（最终闸门）</h3>
+      <div class="n">①.golangci.yml 去 new:true 全量强制 ②CI 加 lint job + errcheck 0 硬门禁 ③覆盖率 auth/store/pluginhost 40% 起步 ④（衔接）go test -race</div>
+      <div class="row"><span>工作量：1 天</span><span>风险：中（留 1 周缓冲）</span></div>
+      <div class="dep">依赖：<b>P1-T01 ~ T07 全部绿</b></div>
+      <div class="owner">负责人：<span class="empty">待认领</span></div>
+    </div>
+
+  </div>
+
+  <div class="note">⚠️ <b>T05（SA1029）是行为级改动</b>：改错 time.Duration 单位 = 超时/重试语义变化，每处必须写明「原值/新值/理由」并配测试。T03（unused）删除前必须 grep 确认无反射/动态引用（插件体系尤其注意）。T02 含 translator 文件，先按 AGENTS.md 确认仓库权限。</div>
+
+  <div class="foot">Phase 1 Task Board · CLIProxyAPI Engineering Upgrade · 配套 docs/phase1-task-spec.md（完整任务规格）</div>
+</div>
+</body>
+</html>

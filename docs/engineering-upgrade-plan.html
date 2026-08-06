@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLIProxyAPI 团队技术提升方案</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --border: #e5e7eb;
+    --text: #1a2233;
+    --text-2: #5b6472;
+    --accent: #2563eb;
+    --accent-soft: #eff4ff;
+    --crit: #dc2626;
+    --crit-bg: #fef2f2;
+    --high: #ea580c;
+    --high-bg: #fff7ed;
+    --med: #b45309;
+    --med-bg: #fffbeb;
+    --low: #64748b;
+    --low-bg: #f1f5f9;
+    --ok: #059669;
+    --ok-bg: #ecfdf5;
+    --radius: 14px;
+    --shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 32px 20px 80px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+
+  /* Hero */
+  .hero {
+    background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 55%, #3b82f6 100%);
+    color: #fff;
+    border-radius: var(--radius);
+    padding: 48px 48px 40px;
+    margin-bottom: 28px;
+    box-shadow: 0 12px 32px rgba(37,99,235,.25);
+  }
+  .hero .tag {
+    display: inline-block;
+    background: rgba(255,255,255,.16);
+    border: 1px solid rgba(255,255,255,.25);
+    padding: 4px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    letter-spacing: .05em;
+    margin-bottom: 18px;
+  }
+  .hero h1 { font-size: 30px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 12px; }
+  .hero p { opacity: .92; font-size: 15px; max-width: 640px; }
+  .hero .meta { margin-top: 22px; display: flex; gap: 24px; flex-wrap: wrap; font-size: 13px; opacity: .85; }
+  .hero .meta b { font-size: 15px; display: block; opacity: 1; }
+
+  /* Sections */
+  section { margin-bottom: 34px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px 32px;
+    box-shadow: var(--shadow);
+  }
+  h2 {
+    font-size: 21px; font-weight: 800; letter-spacing: -.01em;
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 6px;
+  }
+  h2 .num {
+    width: 30px; height: 30px; flex: 0 0 30px;
+    background: var(--accent); color: #fff;
+    border-radius: 9px; font-size: 15px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .sub { color: var(--text-2); font-size: 14px; margin-bottom: 20px; }
+  h3 { font-size: 16px; font-weight: 700; margin: 22px 0 10px; }
+
+  /* Stat grid */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+  .stat {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 16px; text-align: center;
+  }
+  .stat .v { font-size: 26px; font-weight: 800; color: var(--accent); }
+  .stat .v.ok { color: var(--ok); }
+  .stat .v.warn { color: var(--high); }
+  .stat .l { font-size: 12.5px; color: var(--text-2); margin-top: 4px; }
+
+  /* Findings */
+  .finding { border: 1px solid var(--border); border-left: 4px solid var(--low); border-radius: 10px; padding: 14px 18px; margin-bottom: 12px; background: #fff; }
+  .finding.crit { border-left-color: var(--crit); background: var(--crit-bg); }
+  .finding.high { border-left-color: var(--high); background: var(--high-bg); }
+  .finding.med { border-left-color: var(--med); background: var(--med-bg); }
+  .finding .fh { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .finding .fh b { font-size: 14.5px; }
+  .finding .loc { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; color: var(--text-2); }
+  .finding p { font-size: 13.5px; color: var(--text-2); margin-top: 4px; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 10px; border-radius: 999px; letter-spacing: .03em; }
+  .badge.crit { background: var(--crit); color: #fff; }
+  .badge.high { background: var(--high); color: #fff; }
+  .badge.med { background: var(--med); color: #fff; }
+  .badge.low { background: var(--low); color: #fff; }
+  .badge.ok { background: var(--ok); color: #fff; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 10px 0 6px; }
+  th { text-align: left; background: #f8fafc; padding: 9px 12px; font-weight: 700; border-bottom: 2px solid var(--border); white-space: nowrap; }
+  td { padding: 9px 12px; border-bottom: 1px solid #eef0f3; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.mono, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+  .bar { background: #eef0f3; border-radius: 6px; height: 8px; min-width: 60px; }
+  .bar i { display: block; height: 8px; border-radius: 6px; background: var(--accent); }
+  .bar i.warn { background: var(--high); }
+  .bar i.ok { background: var(--ok); }
+
+  /* Roadmap */
+  .phase { display: grid; grid-template-columns: 130px 1fr; gap: 20px; padding: 18px 0; border-bottom: 1px dashed var(--border); }
+  .phase:last-child { border-bottom: none; }
+  .phase .pl { font-weight: 800; font-size: 15px; }
+  .phase .pl small { display: block; color: var(--text-2); font-weight: 500; font-size: 12.5px; margin-top: 2px; }
+  .phase ul { list-style: none; }
+  .phase li { font-size: 14px; padding: 4px 0 4px 22px; position: relative; }
+  .phase li::before { content: "▸"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
+
+  /* Checklist */
+  .ck { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 6px; }
+  .ck .item { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: #fff; font-size: 13.5px; }
+  .ck .item b { color: var(--accent); font-size: 12px; letter-spacing: .04em; display: block; margin-bottom: 3px; }
+
+  /* Milestones */
+  .ms { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-top: 8px; }
+  .ms .m { border: 1px solid var(--border); border-radius: 12px; padding: 18px; background: #fff; }
+  .ms .m .kv { font-size: 26px; font-weight: 800; color: var(--accent); }
+  .ms .m .kt { font-size: 13px; color: var(--text-2); margin-top: 2px; }
+  .ms .m .kd { font-size: 12.5px; margin-top: 8px; color: var(--text-2); }
+
+  code { font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; background: #f1f5f9; padding: 1px 6px; border-radius: 5px; color: #0f172a; }
+  .note { background: var(--accent-soft); border: 1px solid #dbeafe; border-radius: 10px; padding: 12px 16px; font-size: 13.5px; color: #1e40af; margin-top: 12px; }
+  .foot { text-align: center; color: var(--text-2); font-size: 12.5px; margin-top: 40px; }
+  @media (max-width: 720px) {
+    .hero { padding: 32px 24px; }
+    .card { padding: 20px 18px; }
+    .phase { grid-template-columns: 1fr; gap: 8px; }
+    body { padding: 16px 10px 60px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HERO -->
+  <div class="hero">
+    <span class="tag">SENIOR DEVELOPER · 团队工程能力诊断与提升方案</span>
+    <h1>CLIProxyAPI 团队技术提升方案</h1>
+    <p>基于对代码库 1,077 个 Go 文件的全面审计（599 个源文件 + 478 个测试文件），结合 CI / lint / 测试工程化现状，输出可落地的三阶段提升路线图、Code Review 规范与团队培养计划。</p>
+    <div class="meta">
+      <div><b>审计范围</b>全部源码（排除 examples/）</div>
+      <div><b>审计方式</b>静态扫描 + 逐条人工核实</div>
+      <div><b>报告日期</b>2026-08-06</div>
+      <div><b>定位</b>诊断 → 止血 → 加固 → 沉淀</div>
+    </div>
+  </div>
+
+  <!-- 1. 现状诊断 -->
+  <section>
+    <div class="card">
+      <h2><span class="num">1</span>现状诊断：数据说话</h2>
+      <p class="sub">先把「团队水平如何」变成一个可量化的事实，而不是感觉。</p>
+      <div class="stats">
+        <div class="stat"><div class="v">599</div><div class="l">生产源文件</div></div>
+        <div class="stat"><div class="v ok">478</div><div class="l">测试文件（源:测 ≈ 1:0.8）</div></div>
+        <div class="stat"><div class="v warn">0</div><div class="l">CI 中运行的测试（只跑构建）</div></div>
+        <div class="stat"><div class="v warn">存量未清</div><div class="l">lint 仅查新增（new: true）</div></div>
+        <div class="stat"><div class="v ok">0</div><div class="l">log.Fatal / panic 越权 / TODO 残留</div></div>
+      </div>
+      <h3>必须直面的三个工程化断层</h3>
+      <table>
+        <tr><th style="width:160px">断层</th><th>现状</th><th>后果</th></tr>
+        <tr>
+          <td><b>CI 不跑测试</b></td>
+          <td class="mono">.github/workflows/pr-test-build.yml 只执行 <code>go build</code></td>
+          <td>回归只能靠人肉；478 个测试文件形同「离线资产」</td>
+        </tr>
+        <tr>
+          <td><b>lint 只查新增</b></td>
+          <td class="mono">.golangci.yml 中 <code>new: true</code>，存量问题永远不进门禁</td>
+          <td>技术债「合法化」——旧代码永不修复</td>
+        </tr>
+        <tr>
+          <td><b>关键包测试失衡</b></td>
+          <td>auth 包测试/源码比 0.35；store 包 0.50；objectstore.go / postgresstore.go 零测试</td>
+          <td>最危险的模块（凭证、持久化）恰恰最缺保障</td>
+        </tr>
+      </table>
+      <div class="note">💡 结论：这是一支「写码纪律很好、但工程防线没有闭环」的团队——代码本身干净（下面会展示证据），但 CI、lint、覆盖率的「三道闸门」形同虚设。提升空间不在「会不会写」，而在「质量如何被强制」。这就是本方案的主攻方向。</div>
+    </div>
+  </section>
+
+  <!-- 2. 关键发现 -->
+  <section>
+    <div class="card">
+      <h2><span class="num">2</span>审计关键发现（已逐条人工核实）</h2>
+      <p class="sub">所有结论均附文件路径与行号，可直接转 issue 追踪器。</p>
+
+      <h3 style="margin-top:8px">🔴 Critical —— 数据完整性风险（优先修复）</h3>
+      <div class="finding crit">
+        <div class="fh"><b>C1/C2 · OAuth 凭证持久化失败被静默吞掉</b><span class="badge crit">CRITICAL</span></div>
+        <div class="loc">sdk/cliproxy/auth/conductor_lifecycle.go:98 / :151 · conductor_cooldown.go:910 / :976</div>
+        <p><code>_ = m.persist(ctx, auth)</code> 忽略返回值（persist 签名明确返回 error）。新注册/更新的凭证若落盘失败，进程照常对外宣告成功——API key / refresh token 可能丢失且零日志。代理重启后 cooldown 状态同样可能丢失，冷却限制被绕过。</p>
+      </div>
+
+      <h3>🟠 High —— 日志安全与审计完整性</h3>
+      <div class="finding high">
+        <div class="fh"><b>H4 · 上游错误体原样进入日志</b><span class="badge high">HIGH</span></div>
+        <div class="loc">internal/runtime/executor/helps/logging_helpers.go:729</div>
+        <p><code>SummarizeErrorBody</code> 在非 HTML / 非 JSON-error 分支 <code>return string(body)</code> 原样返回整个错误体，调用点以 <code>Debugf(... body: %s ...)</code> 写入日志——上游错误体可能回显请求内容（含用户 prompt）。应限长 + 清洗。</p>
+      </div>
+      <div class="finding high">
+        <div class="fh"><b>H2/H3 · 流式审计日志写入吞错</b><span class="badge high">HIGH</span></div>
+        <div class="loc">internal/api/middleware/response_writer.go:347-356 / :371-374 / :211</div>
+        <p>API 请求/响应审计日志的 <code>WriteAPIRequest/WriteAPIResponse/WriteStatus</code> 全部 <code>_ =</code> 吞错——审计数据可能静默丢失，且日志与真实响应状态不一致。</p>
+      </div>
+      <div class="finding high">
+        <div class="fh"><b>H1 · 管理密钥哈希写回吞错</b><span class="badge high">HIGH</span></div>
+        <div class="loc">internal/config/config_load.go:113</div>
+        <p><code>_ = SaveConfigPreserveCommentsUpdateNestedScalar(...)</code> 写回失败无日志，下次启动会重复哈希（可自愈但不可观测）。</p>
+      </div>
+
+      <h3>🟡 Medium —— 可靠性隐患</h3>
+      <div class="finding med">
+        <div class="fh"><b>M4 · 请求/响应 body 明文落盘未脱敏</b><span class="badge med">MEDIUM</span></div>
+        <div class="loc">internal/logging/request_logger_writer.go:231-241</div>
+        <p>原始 body 写入 <code>request-body-*.tmp / response-body-*.tmp</code>，header/query 已脱敏但 body 明文未脱敏（含用户 prompt 与部分 provider 的 api_key body 字段），无权限收紧说明。</p>
+      </div>
+      <div class="finding med">
+        <div class="fh"><b>M1/M2/M3 · 解析与配置类吞错</b><span class="badge med">MEDIUM</span></div>
+        <div class="loc">internal/api/server_routes.go:280 · internal/watcher/config_reload.go:113 · sdk/cliproxy/service_auth.go:367</div>
+        <p>路由解析、热重载配置解析、cooldown 状态仓库配置失败的返回值均被 <code>_ =</code> 丢弃，行为隐式降级且不可观测。</p>
+      </div>
+      <div class="finding med">
+        <div class="fh"><b>M5-M8 · 代码卫生</b><span class="badge med">MEDIUM</span></div>
+        <div class="loc">internal/auth/codex/openai_auth.go:150 等（注释掉的调试日志）· internal/pluginhost/host_callbacks.go:181 · internal/thinking/apply.go:342（中文注释）</div>
+        <p>含 token 调试日志的注释残留属于死代码（且有泄露暗示）；生产代码中文注释违反 AGENTS.md「English only」。顺手清理即可。</p>
+      </div>
+
+      <h3>⚪ Low</h3>
+      <div class="finding">
+        <div class="fh"><b>L1-L5 · 死参数 / 资源清理吞错</b><span class="badge low">LOW</span></div>
+        <div class="loc">internal/access/reconcile.go:20 · internal/store/gitstore.go:1802 · internal/api/handlers/management/auth_files_fields.go:97 · internal/client/codex/live/media.go:325-399</div>
+        <p>未使用的 <code>oldCfg</code> 参数、git repack / token 删除 / 多处 <code>session.Close()</code> 吞错——多为资源清理场景，可接受但建议记录 Debug 日志。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 团队亮点 -->
+  <section>
+    <div class="card">
+      <h2><span class="num">3</span>团队做得好的地方（请保持并写进培训教材）</h2>
+      <p class="sub">这批审计结果在真实项目里非常罕见，值得作为团队的「工程名片」。</p>
+      <table>
+        <tr><th style="width:200px">维度</th><th>证据</th></tr>
+        <tr><td><b>错误命名规范</b></td><td>全库一致使用 <code>errPick / errRead / errMarshal / errStart</code> 方法后缀区分嵌套错误，AGENTS.md 规则落地典范，未发现经典变量遮蔽 bug</td></tr>
+        <tr><td><b>并发设计成熟</b></td><td>RoundRobinSelector / WeightedRoundRobinSelector 均以 <code>sync.Mutex</code> 保护，注释明确「Must be called with s.mu held」；心跳/监听 goroutine 均有 closed/error channel 生命周期协调；主动规避 scheduler.mu 与 m.mu 竞态别名</td></tr>
+        <tr><td><b>敏感信息防护意识</b></td><td>query/header 专门脱敏（MaskSensitiveQuery / MaskSensitiveHeaderValue）；请求体捕获有 1 MiB 上限 + 解压炸弹防护；含 token 的调试日志全部被注释而非直接删除——团队知晓风险</td></tr>
+        <tr><td><b>工程纪律</b></td><td>全仓库 <code>log.Fatal/Fatalf</code> 为零、TODO/FIXME 为零、<code>//nolint</code> 仅 2 处且均带理由；lint 样本包 internal/cache 实测 0 issues</td></tr>
+        <tr><td><b>测试质量整体高</b></td><td>478 个测试文件，t.Skip 全部带理由，测试全部使用本地 httptest 无外网依赖；internal/api、internal/cache、sdk/cliproxy 测试密度超过源码</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- 4. 路线图 -->
+  <section>
+    <div class="card">
+      <h2><span class="num">4</span>三阶段提升路线图</h2>
+      <p class="sub">按「先止血 → 再上闸门 → 后补结构」推进，每阶段都有可验收的完成标准。</p>
+
+      <div class="phase">
+        <div class="pl">Phase 0<small>本周 · 止血 ✅已执行</small></div>
+        <ul>
+          <li>C1/C2：<code>m.persist()</code> 4 处吞错改为 <code>log.WithError(err).Error(...)</code> + 保留内存态（conductor_lifecycle / conductor_cooldown）</li>
+          <li>H4：<code>SummarizeErrorBody</code> 新增 <code>sanitizeBodySummary</code>（剥离控制字符 + UTF-8 修复 + 512B 限长），27 调用点零改动，补 5 个测试</li>
+          <li>H2/H3：response_writer.go 7 处流式审计日志吞错降级 Debug</li>
+          <li>H1：config_load.go 管理密钥写回吞错 → Warn 日志</li>
+          <li><b>CI 接入测试</b>：pr-test-build.yml 新增 <code>go test ./...</code> job</li>
+          <li>✅ 验证：gofmt / build / 4 包测试全绿 / 7 文件 +143/-15；全量测试 2 个失败均为既有慢测试（非回归）</li>
+        </ul>
+      </div>
+
+      <div class="phase">
+        <div class="pl">Phase 1<small>第 2-4 周 · 上闸门<br>摸底✅ 待执行</small></div>
+        <ul>
+          <li><b>存量摸底完成</b>：505 个问题（生产 369 / 测试 136）——staticcheck 295（含 SA1029 time.Duration 误用 82、SA5011 nil 风险 7）、govet 108、unused 59、errcheck 26（生产仅 2：wsrelay SetReadDeadline）、格式类 17</li>
+          <li>集中包：sdk/api/handlers 115、internal/runtime/executor 100、sdk/cliproxy/auth 30；原始数据 <code>docs/lint-baseline-20260806.txt</code></li>
+          <li>批 1 机械修复（gofmt/goimports/ineffassign + 生产 errcheck）→ 改 <code>.golangci.yml</code> 全量强制</li>
+          <li>批 2 静态分析（unused 59 + govet 101，删死代码/修格式）</li>
+          <li>批 3 语义修复（staticcheck 295，先修 SA1029 与 SA5011 真实 bug 类）</li>
+          <li>吞错扫描进 CI（errcheck 全量 0 门禁）；覆盖率门禁 auth/store/pluginhost 40% 起步</li>
+        </ul>
+      </div>
+
+      <div class="phase">
+        <div class="pl">Phase 2<small>第 2 个月 · 补测试</small></div>
+        <ul>
+          <li>为 <code>internal/store/objectstore.go、postgresstore.go</code> 补齐存储后端测试（当前零测试，运维事故高危区）</li>
+          <li>提升 <code>internal/auth</code>（0.35）与 <code>internal/pluginhost</code>（0.58）测试密度至 ≥ 0.8</li>
+          <li>巨型文件拆分：54 个超 800 行文件（最大 antigravity_reasoning_replay.go 2043 行）按职责拆分为 200-400 行模块</li>
+          <li>验收标准：关键包覆盖率 ≥ 60%；auth/store/pluginhost 测试比例 ≥ 0.8</li>
+        </ul>
+      </div>
+
+      <div class="phase">
+        <div class="pl">Phase 3<small>第 3 个月 · 沉淀</small></div>
+        <ul>
+          <li>固化 Code Review 规范（见第 5 节）为团队强制 checklist，评审人必须逐项勾选</li>
+          <li>建立「代码博物馆」：把本次审计的 bad→good 对照沉淀为培训材料</li>
+          <li>知识分享体系上线（见第 7 节工作坊），新人 onboarding 走同一套材料</li>
+          <li>验收标准：评审规范执行率 100%；连续一个月无新增 Critical/High 级吞错</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Code Review 规范 -->
+  <section>
+    <div class="card">
+      <h2><span class="num">5</span>Code Review 强制 Checklist（评审人逐项勾选）</h2>
+      <p class="sub">全部来自本次审计发现的真实模式。评审时对照此表，可拦截 90% 以上的同类问题。</p>
+      <div class="ck">
+        <div class="item"><b>❌ ERROR SWALLOWING</b>凡是返回 error 的调用，禁止 <code>_ = f()</code>。至少记录日志；关键路径必须传播 + 包装上下文（<code>fmt.Errorf("...: %w", err)</code>）</div>
+        <div class="item"><b>❌ LOG SECRETS</b>日志中禁止出现 token / apiKey / Authorization / 原始 body；调试日志禁止打印响应原文，用「脱敏 + 限长」替代</div>
+        <div class="item"><b>❌ BARE RETURN</b>跨 3 层以上调用链的 <code>return err</code> 必须带上下文；错误信息应能独立定位（谁、做什么、为什么失败）</div>
+        <div class="item"><b>❌ RACE</b>包级 var map/slice 禁止运行时并发写；共享状态必须 Mutex / atomic；注释标注锁顺序避免死锁</div>
+        <div class="item"><b>❌ PANIC</b>库代码禁止 panic（仅允许 HTTP handler 边界拦截恢复）；禁止 log.Fatal（进程自杀）</div>
+        <div class="item"><b>❌ GOROUTINE LEAK</b>每个 <code>go func()</code> 必须回答：谁来停它？context 取消 / closed channel / WaitGroup 三选一</div>
+        <div class="item"><b>❌ NAKED RETRY</b>重试必须有退避（backoff）+ 上限 + 幂等性论证；禁止无界重试</div>
+        <div class="item"><b>❌ TEST WITHOUT ASSERTION</b>测试必须有断言；禁止 t.Sleep 等时间依赖（用 fake clock / eventual 断言）；禁止测试命中真实网络</div>
+        <div class="item"><b>❌ DEAD CODE</b>注释掉的调试日志、未使用参数（<code>_ = param</code>）、中文注释残留——合并前必须清理</div>
+        <div class="item"><b>❌ MEGA FILE</b>单文件超 800 行打回重构；超 2000 行必须拆分（拆模块或拆包）</div>
+        <div class="item"><b>❌ TIMEOUT MISUSE</b>代理上游连接建立后禁止设置网络超时（见 AGENTS.md 时间线规则）；仅凭证获取阶段允许超时</div>
+        <div class="item"><b>❌ COVERAGE GAP</b>新增逻辑必须带测试；改动文件所属包测试比例 < 0.5 的，PR 内必须补</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. CI 门禁设计 -->
+  <section>
+    <div class="card">
+      <h2><span class="num">6</span>CI 门禁推荐设计（从「构建检查」升级为「质量防线」）</h2>
+      <p class="sub">目标：让「不可靠的代码」在合并前被机器拦下，而不是靠人肉 review。</p>
+      <table>
+        <tr><th style="width:200px">门禁</th><th>当前状态</th><th>目标状态</th></tr>
+        <tr><td>构建</td><td class="mono">✅ go build ./cmd/server</td><td class="mono">✅ 不变</td></tr>
+        <tr><td>测试</td><td class="mono">❌ 未运行</td><td class="mono">✅ go test ./...（分片并行，超 5 分钟拆 jobs）</td></tr>
+        <tr><td>静态检查</td><td class="mono">⚠️ 仅本地、仅新增</td><td class="mono">✅ golangci-lint 全树，0 issue 强制</td></tr>
+        <tr><td>覆盖率</td><td class="mono">❌ 无</td><td class="mono">✅ PR 评论 diff 覆盖率；关键包阈值逐周上调</td></tr>
+        <tr><td>吞错扫描</td><td class="mono">❌ 无</td><td class="mono">✅ errcheck + 自定义规则，关键路径吞错 = 构建失败</td></tr>
+        <tr><td>竞态检测</td><td class="mono">❌ 无</td><td class="mono">✅ go test -race 在 CI 常驻（Go 官方推荐标配）</td></tr>
+      </table>
+      <div class="note">💡 推荐渐进式：Phase 0 先加 <code>go test ./...</code>（立竿见影）；Phase 1 加 lint 全树 + errcheck；Phase 2 加 coverage 阈值与 <code>-race</code>。每步都以「红转绿」为完成标志，避免一次性改动过大导致 CI 长期红。</div>
+    </div>
+  </section>
+
+  <!-- 7. 团队培养计划 -->
+  <section>
+    <div class="card">
+      <h2><span class="num">7</span>团队培养计划（能力从哪里长出来）</h2>
+      <p class="sub">技术提升不能只靠「规定」，要靠「共同学习 + 反复练习 + 及时反馈」的循环。</p>
+      <h3>主题工作坊（每两周一期，45-60 分钟，代码评审会形式）</h3>
+      <table>
+        <tr><th style="width:180px">期次</th><th>主题</th><th>核心内容</th></tr>
+        <tr><td>第 1 期</td><td><b>Go 错误处理哲学</b></td><td>吞错的代价、错误包装链（%w）、哨兵错误 vs 类型错误、errXxx 命名惯例实战</td></tr>
+        <tr><td>第 2 期</td><td><b>并发模式与竞态</b></td><td>Mutex/atomic/context 生命周期、本库 RoundRobinSelector 解剖、-race 实战演示</td></tr>
+        <tr><td>第 3 期</td><td><b>安全日志与脱敏</b></td><td>token 泄露事故案例复盘、脱敏函数库、body 落盘策略、日志分级</td></tr>
+        <tr><td>第 4 期</td><td><b>测试金字塔与表驱动</b></td><td>本库 478 个测试文件复盘、fake clock 替代 t.Sleep、覆盖率盲区（store 包）攻坚</td></tr>
+      </table>
+      <h3>日常机制</h3>
+      <div class="ck">
+        <div class="item"><b>评审轮换</b>每 PR 至少 1 名非作者评审；每两周轮换「评审主理人」，强制全员参与而非只看组长</div>
+        <div class="item"><b>结对攻坚</b>Phase 2 的存储后端补测、巨型文件拆分，全部 2 人结对认领，老带新</div>
+        <div class="item"><b>代码博物馆</b>把本次审计的 8 类 bad smell 做成 before/after 对照卡片，新人 onboarding 必学</div>
+        <div class="item"><b>月度复盘</b>每月 30 分钟：CI 红绿率、吞错新增数、覆盖率趋势，用数据替代感觉</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8. 度量 -->
+  <section>
+    <div class="card">
+      <h2><span class="num">8</span>度量指标（用数据验收提升成果）</h2>
+      <p class="sub">建议每项设一名 owner，月度复盘对照。</p>
+      <div class="ms">
+        <div class="m"><div class="kv">0</div><div class="kt">吞错点（error 返回被 _ = 丢弃）</div><div class="kd">Phase 0 清零；此后新增 = 评审事故，月度审计回归</div></div>
+        <div class="m"><div class="kv">100%</div><div class="kt">CI 测试全绿率</div><div class="kd">Phase 0 接入后常驻；红一次即当晚修复</div></div>
+        <div class="m"><div class="kv">≥60%</div><div class="kt">关键包覆盖率</div><div class="kd">auth / store / pluginhost，Phase 2 达成，逐月 +5%</div></div>
+        <div class="m"><div class="kv">0</div><div class="kt">lint 全树 issue</div><div class="kd">Phase 1 达成后永久全量强制</div></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">CLIProxyAPI Engineering Upgrade Plan · Prepared by Senior Developer · 2026-08-06 · 所有发现均附文件:行号，可转 issue 追踪</div>
+</div>
+</body>
+</html>
