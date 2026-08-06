@@ -113,7 +113,6 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if m.acquireStreamRecovery(opts.StreamRecovery.MaxConcurrent) {
 			state := &streamRecoveryState{
 				policy:    opts.StreamRecovery,
-				started:   time.Now(),
 				remaining: opts.StreamRecovery.Attempts,
 				release: func() {
 					m.recoveryInFlight.Add(-1)
@@ -162,7 +161,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			if firstBootstrapErr == nil {
 				firstBootstrapErr = bootstrapErr
 			}
-			if attempt < legacyBootstrapRetries {
+			if attempt < legacyBootstrapRetries && legacyBootstrapEligible(bootstrapErr.cause) {
 				continue
 			}
 		}
@@ -205,6 +204,22 @@ type requestToFormatResolver interface {
 func isRequestTerminatedError(err error) bool {
 	var terminated *cliproxyexecutor.RequestTerminatedError
 	return errors.As(err, &terminated) && terminated != nil
+}
+
+// legacyBootstrapEligible mirrors the pre-recovery handler-side bootstrap retry
+// filter: retry auth/limit/transient statuses and 5xx, never deterministic 4xx.
+func legacyBootstrapEligible(err error) bool {
+	status := statusCodeFromError(err)
+	if status == 0 {
+		return true
+	}
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusPaymentRequired,
+		http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	default:
+		return status >= http.StatusInternalServerError
+	}
 }
 
 func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {

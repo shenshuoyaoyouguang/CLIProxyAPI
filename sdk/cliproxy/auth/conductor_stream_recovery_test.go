@@ -657,6 +657,46 @@ func TestRecoveryCancellationDuringBufferingDoesNotCooldown(t *testing.T) {
 	}
 }
 
+func TestRecoveryCancellationDuringDrainDoesNotRecordSuccess(t *testing.T) {
+	executor := &recoverySequenceExecutor{attempts: [][]cliproxyexecutor.StreamChunk{
+		{
+			{Payload: []byte("term"), Commitment: cliproxyexecutor.StreamCommitmentTerminal},
+			{Payload: []byte("payload"), Commitment: cliproxyexecutor.StreamCommitmentSemantic},
+		},
+	}}
+	manager := NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &Auth{ID: "cancel-drain-auth", Provider: "codex", Status: StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "cancel-drain-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	manager.RefreshSchedulerEntry(auth.ID)
+	ctx, cancel := context.WithCancel(context.Background())
+	result, err := manager.ExecuteStream(ctx, []string{"codex"}, cliproxyexecutor.Request{Model: "cancel-drain-model"}, cliproxyexecutor.Options{Stream: true, StreamRecovery: cliproxyexecutor.StreamRecoveryPolicy{
+		Attempts: 1, MaxBufferBytes: 1024, MaxRetryWindow: time.Second, MaxConcurrent: 1, InitialBackoff: time.Nanosecond, MaxBackoff: time.Nanosecond,
+	}})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	cancel()
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected error chunk: %v", chunk.Err)
+		}
+	}
+	if got := manager.recoveryInFlight.Load(); got != 0 {
+		t.Fatalf("recovery slots = %d after drain, want 0", got)
+	}
+	manager.mu.RLock()
+	updated := manager.auths[auth.ID].Clone()
+	manager.mu.RUnlock()
+	if updated.Success != 0 || updated.Failed != 0 {
+		t.Fatalf("cancelled stream was accounted: success=%d failed=%d", updated.Success, updated.Failed)
+	}
+}
+
 func TestRecoveryCancellationDuringBackoffDoesNotRetryOrCooldown(t *testing.T) {
 	executor := &recoverySequenceExecutor{notify: make(chan int, 2), attempts: [][]cliproxyexecutor.StreamChunk{
 		{{Err: &Error{HTTPStatus: http.StatusBadGateway, Message: "temporary"}}},
@@ -722,7 +762,11 @@ func TestCollectRecoveryAttemptOverflowPreservesLaterError(t *testing.T) {
 
 func TestStreamRecoveryBudgetAndWindow(t *testing.T) {
 	state := &streamRecoveryState{policy: cliproxyexecutor.StreamRecoveryPolicy{Attempts: 1, MaxRetryWindow: time.Second}, started: time.Now(), remaining: 1}
-	if !state.canRetry() || state.canRetry() {
+	if !state.canRetry() || !state.canRetry() {
+		t.Fatal("canRetry must be a pure check that does not consume the attempt budget")
+	}
+	state.remaining = 0
+	if state.canRetry() {
 		t.Fatal("attempt budget was not enforced exactly")
 	}
 	state = &streamRecoveryState{policy: cliproxyexecutor.StreamRecoveryPolicy{Attempts: 1, MaxRetryWindow: time.Nanosecond}, started: time.Now().Add(-time.Second), remaining: 1}

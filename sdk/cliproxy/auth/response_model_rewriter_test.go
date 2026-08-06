@@ -305,3 +305,29 @@ func TestRewriteForceMappedStreamChunk_CodexDataLinesWithoutNewlines_FinishParse
 		t.Fatalf("missing response.completed; types=%v", types)
 	}
 }
+
+func TestStreamRewriter_NewDataLineAfterPartialFragmentKeepsNewline(t *testing.T) {
+	rewriter := NewStreamRewriter(StreamRewriteOptions{RewriteModel: "target-model"})
+	if got := rewriter.RewriteChunk([]byte(`data: {"model":"ol`)); len(got) != 0 {
+		t.Fatalf("partial fragment must stay pending, got %q", got)
+	}
+	got := string(rewriter.RewriteChunk([]byte(`data: {"model":"old","n":1}`)))
+	if !strings.Contains(got, `"model":"target-model"`) {
+		t.Fatalf("complete data line was not rewritten: %q", got)
+	}
+	if strings.Contains(got, `data: {"model":"ol`) {
+		t.Fatalf("partial fragment glued into the rewritten line: %q", got)
+	}
+}
+
+func TestStreamRewriter_SplitDataLineContinuationStillGlues(t *testing.T) {
+	rewriter := NewStreamRewriter(StreamRewriteOptions{RewriteModel: "target-model"})
+	rewriter.RewriteChunk([]byte(`data: {"model":"ol`))
+	got := string(rewriter.RewriteChunk([]byte(`d","n":1}`)))
+	if !strings.Contains(got, `"model":"target-model"`) {
+		t.Fatalf("continued data line was not rewritten: %q", got)
+	}
+	if strings.Contains(got, `data: {"model":"ol`) {
+		t.Fatalf("continuation was not glued: %q", got)
+	}
+}

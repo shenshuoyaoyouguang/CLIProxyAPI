@@ -545,6 +545,36 @@ func TestExecuteStreamWithAuthManager_BootstrapRetriesAfterProvisionalFailure(t 
 	}
 }
 
+func TestExecuteStreamWithAuthManager_BootstrapRetriesSkipDeterministic4xx(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, call int) (*coreexecutor.StreamResult, error) {
+		chunks := make(chan coreexecutor.StreamChunk, 1)
+		chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusNotFound, Message: "model not found"}}
+		close(chunks)
+		return &coreexecutor.StreamResult{Headers: http.Header{"X-Upstream-Attempt": {strconv.Itoa(call)}}, Chunks: chunks}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+	var gotErr *interfaces.ErrorMessage
+	for msg := range errChan {
+		if msg != nil {
+			gotErr = msg
+		}
+	}
+	if len(got) != 0 {
+		t.Fatalf("stream payload = %q, want empty", got)
+	}
+	if gotErr == nil || gotErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("stream error = %+v, want 404", gotErr)
+	}
+	if executor.Calls() != 2 {
+		t.Fatalf("stream attempts = %d, want 2 (one per auth, no bootstrap retry for deterministic 4xx)", executor.Calls())
+	}
+}
+
 func TestExecuteStreamWithAuthManager_DoesNotRetryAfterDroppedCommittedPayload(t *testing.T) {
 	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, call int) (*coreexecutor.StreamResult, error) {
 		chunks := make(chan coreexecutor.StreamChunk, 2)

@@ -63,6 +63,10 @@ func streamRecoveryEnabled(policy cliproxyexecutor.StreamRecoveryPolicy) bool {
 	return policy.Attempts > 0 || (policy.Enabled && policy.MaxRetryWindow > 0)
 }
 
+// canRetry reports whether another full-stream attempt may begin. It is a pure
+// check: the attempt budget is consumed only when a retry actually proceeds
+// (see executeStreamWithRecovery), so a retry aborted by cancellation or by the
+// retry-start deadline does not waste the budget.
 func (s *streamRecoveryState) canRetry() bool {
 	if s == nil || !streamRecoveryEnabled(s.policy) {
 		return false
@@ -70,11 +74,8 @@ func (s *streamRecoveryState) canRetry() bool {
 	if s.policy.MaxRetryWindow > 0 && time.Since(s.started) >= s.policy.MaxRetryWindow {
 		return false
 	}
-	if s.policy.Attempts > 0 {
-		if s.remaining <= 0 {
-			return false
-		}
-		s.remaining--
+	if s.policy.Attempts > 0 && s.remaining <= 0 {
+		return false
 	}
 	return true
 }
@@ -333,6 +334,11 @@ func (m *Manager) executeStreamWithRecovery(ctx context.Context, executor Provid
 	if state == nil {
 		return nil, nil, nil, nil
 	}
+	// The retry-start deadline counts from the first actual stream attempt, so
+	// auth selection, preparation, and interceptor time do not eat the window.
+	if state.started.IsZero() {
+		state.started = time.Now()
+	}
 	attempt := 0
 	log.WithFields(log.Fields{"provider": provider, "model": model, "reason": "enabled", "buffered_bytes": 0, "elapsed": time.Duration(0), "max_attempts": state.policy.Attempts + 1, "max_buffer_bytes": state.policy.MaxBufferBytes}).Debug("stream recovery started")
 	for {
@@ -372,6 +378,10 @@ func (m *Manager) executeStreamWithRecovery(ctx context.Context, executor Provid
 		if state.policy.MaxRetryWindow > 0 && time.Since(state.started) >= state.policy.MaxRetryWindow {
 			log.WithFields(log.Fields{"provider": provider, "model": model, "attempt": attempt, "reason": "retry_window_exhausted", "status": statusCodeFromError(errStream), "buffered_bytes": 0, "elapsed": time.Since(state.started)}).Debug("stream recovery exhausted")
 			return streamResult, nil, nil, errStream
+		}
+		// Consume the attempt budget only for a retry that actually proceeds.
+		if state.policy.Attempts > 0 {
+			state.remaining--
 		}
 	}
 }
@@ -515,10 +525,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				lastErr = errRecovery
 				continue
 			}
-			if recoveryState.holdUntilDrain {
-				return m.wrapStreamResultWithDone(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, aliasResult, ephemeralResult, recoveryState.releaseSlot, recoveryState.releaseAfterFirstRemaining), nil
-			}
-			return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, aliasResult, ephemeralResult), nil
+			// Every recovery success path holds the slot until the buffered result
+			// is drained or cancelled, so the done hook always releases it.
+			return m.wrapStreamResultWithDone(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining, aliasResult, ephemeralResult, recoveryState.releaseSlot, recoveryState.releaseAfterFirstRemaining), nil
 		}
 		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 		if errStream != nil {

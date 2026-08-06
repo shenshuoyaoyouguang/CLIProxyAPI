@@ -75,7 +75,11 @@ func (r *StreamRewriter) RewriteChunk(chunk []byte) []byte {
 	if len(r.pendingBuf) > 0 {
 		combined := make([]byte, 0, len(r.pendingBuf)+1+len(chunk))
 		combined = append(combined, r.pendingBuf...)
-		if combined[len(combined)-1] != '\n' && bytes.HasPrefix(bytes.TrimSpace(r.pendingBuf), []byte("event:")) && bytes.HasPrefix(bytes.TrimSpace(chunk), []byte("data:")) {
+		// A chunk continuing a split data line must glue without a separator, but
+		// a new "data:" line after a fragment whose JSON is not yet complete
+		// cannot be split by the framer and needs an explicit newline.
+		if combined[len(combined)-1] != '\n' && bytes.HasPrefix(bytes.TrimSpace(chunk), []byte("data:")) &&
+			(bytes.HasPrefix(bytes.TrimSpace(r.pendingBuf), []byte("event:")) || !gjson.ValidBytes(extractLastDataPayload(r.pendingBuf))) {
 			combined = append(combined, '\n')
 		}
 		combined = append(combined, chunk...)
