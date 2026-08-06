@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -121,6 +122,25 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	req, opts = cliproxysession.Enrich(req, opts)
+	if streamRecoveryEnabled(opts.StreamRecovery) && !m.HomeEnabled() {
+		if m.acquireStreamRecovery(opts.StreamRecovery.MaxConcurrent) {
+			state := &streamRecoveryState{
+				policy:    opts.StreamRecovery,
+				remaining: opts.StreamRecovery.Attempts,
+				release: func() {
+					m.recoveryInFlight.Add(-1)
+				},
+			}
+			defer func() {
+				if !state.holdUntilDrain {
+					state.releaseSlot()
+				}
+			}()
+			ctx = context.WithValue(ctx, streamRecoveryContextKey{}, state)
+		} else {
+			logEntryWithRequestID(ctx).WithFields(log.Fields{"provider": strings.Join(providers, ","), "model": req.Model, "reason": "saturated", "buffered_bytes": 0, "elapsed": time.Duration(0), "max_concurrent": opts.StreamRecovery.MaxConcurrent}).Debug("stream recovery saturated; using ordinary streaming")
+		}
+	}
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
 			defer unlockSession()

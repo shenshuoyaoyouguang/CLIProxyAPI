@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -386,6 +387,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		Headers:                     modelExecutionHeaders(ctx, execOptions.Headers),
 		Query:                       modelExecutionQuery(ctx, execOptions.Query),
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
+		StreamRecovery:              StreamRecoveryPolicy(h.Cfg),
 	}
 	opts.Metadata = reqMeta
 	var interceptErr *interfaces.ErrorMessage
@@ -650,6 +652,13 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		for !streamCanceledBeforeRead {
 			readInitialStreamChunks(blockAfterPrefix)
 			if bootstrapPaused || streamCanceledBeforeRead || bootstrapErr != nil || bootstrapStreamErr == nil {
+				return
+			}
+			if coreauth.StreamRecoveryEnabled(opts.StreamRecovery) {
+				// Full-stream recovery at the conductor supersedes handler-side
+				// bootstrap retries: surface the bootstrap error directly.
+				bootstrapStreamErr = enrichAuthSelectionError(bootstrapStreamErr, providers, normalizedModel)
+				bootstrapErr = executionErrorMessage(bootstrapStreamErr)
 				return
 			}
 			if bootstrapRetries >= maxBootstrapRetries || !bootstrapEligible(bootstrapStreamErr) {
