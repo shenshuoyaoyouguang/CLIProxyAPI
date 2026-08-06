@@ -21,12 +21,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// asyncReloadTimeout is intentionally generous: these tests run t.Parallel and
+// under full-suite parallelism a 1s wall-clock budget flakes on loaded machines.
+const asyncReloadTimeout = 10 * time.Second
+
 func waitForAsyncReload(t *testing.T, reloads <-chan *config.Config) *config.Config {
 	t.Helper()
 	select {
 	case cfg := <-reloads:
 		return cfg
-	case <-time.After(time.Second):
+	case <-time.After(asyncReloadTimeout):
 		t.Fatal("timed out waiting for async config reload")
 		return nil
 	}
@@ -36,7 +40,7 @@ func waitForReloadDone(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(asyncReloadTimeout):
 		t.Fatal("timed out waiting for config reload hook to finish")
 	}
 }
@@ -623,7 +627,7 @@ func TestDeletePluginRemovesDiscoveredFileAndConfig(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(asyncReloadTimeout):
 		t.Fatal("DeletePlugin blocked waiting for config reload")
 	}
 
