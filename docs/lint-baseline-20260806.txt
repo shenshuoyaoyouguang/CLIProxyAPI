@@ -3,10 +3,6 @@
 ===== internal/access/config_access =====
 0 issues.
 ===== internal/api =====
-level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key ctrlflow/facts for package locales: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\e8\\e8008863c06c5d44c480ca2231097ed9302d9a715ffa5f66936a8afad0fcae4f-a: Access is denied."
-level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key ctrlflow/facts for package taskloop: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\fa\\fa76ed440f8fe142c28011496d02e2239a5c108d239023780aee824f83f6a2cb-a: Access is denied."
-level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key typedness/facts for package sha3: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\ae\\ae609b9c26066b6aaee7ab74a0619836364b8ef003c98841a216d2b34bdf163e-a: Access is denied."
-level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key ctrlflow/facts for package chat_completions: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\f2\\f24a23b6759191751aa82545c769014c27e3e51c603d7f02e31ce64f091f074e-a: Access is denied."
 ..\..\internal\api\server_test.go:1872:1: File is not properly formatted (gofmt)
 		map[string][]string{"Content-Type": []string{"application/json"}},
 ^
@@ -333,7 +329,6 @@ func httpResponseFromPlugin(resp pluginapi.ExecutorHTTPResponse, req *http.Reque
 * staticcheck: 2
 * unused: 3
 ===== internal/pluginstore =====
-level=warning msg="[runner/nolint_filter] Found unknown linters in //nolint directives: gosec -- test servers use ephemeral certificates."
 ..\..\internal\pluginstore\auth_test.go:206:10: SA6006: use io.Writer.Write instead of converting from []byte to string to use io.WriteString (staticcheck)
 		_, _ = io.WriteString(w, string(artifactData))
 		       ^
@@ -810,7 +805,6 @@ func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byt
 ===== internal/sse =====
 0 issues.
 ===== internal/store =====
-level=warning msg="[linters_context/goanalysis] Failed to persist facts to cache: failed to save data to low-level cache by key typedness/facts for package filesystem: open C:\\Users\\76578\\AppData\\Local\\golangci-lint\\4d\\4d2384bd8315f5fc2ed33af5017a149c0f260a390992f109504da115e00e6d54-a: Access is denied."
 0 issues.
 ===== internal/thinking =====
 0 issues.
@@ -1817,7 +1811,7 @@ func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string
 ===== sdk/cliproxy/executionregistry =====
 0 issues.
 ===== sdk/cliproxy/executor =====
-level=error msg="Running error: context loading failed: no go files to analyze: running `go mod tidy` may solve the problem"
+0 issues.
 ===== sdk/cliproxy/pipeline =====
 ===== sdk/cliproxy/session =====
 ===== sdk/cliproxy/usage =====

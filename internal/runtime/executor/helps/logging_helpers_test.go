@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -57,21 +58,36 @@ func TestRecordAPIResponseMetadataStoresHeadersWhenRequestLogDisabled(t *testing
 func TestSummarizeErrorBodyTruncatesOversizedBodies(t *testing.T) {
 	long := strings.Repeat("x", maxErrorBodySummaryLen*2)
 	got := SummarizeErrorBody("text/plain", []byte(long))
-	if len(got) > maxErrorBodySummaryLen+len("...(truncated)") {
-		t.Fatalf("summary length = %d, want capped at ~%d", len(got), maxErrorBodySummaryLen)
-	}
-	if !strings.HasSuffix(got, "...(truncated)") {
-		t.Fatalf("summary = %q, want truncation suffix", got)
+	want := strings.Repeat("x", maxErrorBodySummaryLen) + "...(truncated)"
+	if got != want {
+		t.Fatalf("summary = %q, want exact truncation (%d runes + marker)", got, maxErrorBodySummaryLen)
 	}
 }
 
 func TestSummarizeErrorBodyStripsControlCharacters(t *testing.T) {
-	got := SummarizeErrorBody("text/plain", []byte("line1\x00\x01\x02\r\nline2\x1b"))
-	if strings.ContainsAny(got, "\x00\x01\x02\x1b") {
-		t.Fatalf("summary contains control characters: %q", got)
+	// C0 (NUL..US), CR, ESC, DEL (0x7F) and a C1 control (0x85 NEL).
+	input := "line1\x00\x01\x02\r\nline2\x1b\x7f\x85"
+	got := SummarizeErrorBody("text/plain", []byte(input))
+	// No control runes other than the permitted newline and tab.
+	for _, r := range got {
+		if r != '\n' && r != '\t' && unicode.IsControl(r) {
+			t.Fatalf("summary contains control rune %q: %q", r, got)
+		}
 	}
 	if !strings.Contains(got, "\n") {
 		t.Fatalf("summary should keep newlines for readability: %q", got)
+	}
+	if !strings.Contains(got, "line1") || !strings.Contains(got, "line2") {
+		t.Fatalf("summary lost printable content: %q", got)
+	}
+}
+
+func TestSummarizeErrorBodyTruncatesToExactRuneCount(t *testing.T) {
+	long := strings.Repeat("x", maxErrorBodySummaryLen+50)
+	got := SummarizeErrorBody("text/plain", []byte(long))
+	want := strings.Repeat("x", maxErrorBodySummaryLen) + "...(truncated)"
+	if got != want {
+		t.Fatalf("summary = %d runes, want exactly %d (%d + marker)", len([]rune(got)), len([]rune(want)), maxErrorBodySummaryLen)
 	}
 }
 
@@ -89,8 +105,9 @@ func TestSummarizeErrorBodyJSONMessageAlsoCapped(t *testing.T) {
 	longMsg := strings.Repeat("m", maxErrorBodySummaryLen+100)
 	body := []byte(`{"error":{"message":"` + longMsg + `"}}`)
 	got := SummarizeErrorBody("application/json", body)
-	if len(got) > maxErrorBodySummaryLen+len("...(truncated)") {
-		t.Fatalf("JSON message summary length = %d, want capped", len(got))
+	want := strings.Repeat("m", maxErrorBodySummaryLen) + "...(truncated)"
+	if got != want {
+		t.Fatalf("JSON summary = %q, want exact truncation (%d runes + marker)", got, maxErrorBodySummaryLen)
 	}
 }
 

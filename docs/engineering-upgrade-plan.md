@@ -92,12 +92,12 @@
 | 问题最集中包 | sdk/api/handlers 115、internal/runtime/executor 100、sdk/cliproxy/auth 30 |
 
 **执行计划（分 3 批，每批独立 PR，红转绿为完成标志）**：
-1. **批 1（机械修复）**：gofmt + goimports + ineffassign（17 个）+ errcheck 生产 2 个（wsrelay）→ 改 `.golangci.yml` 全量强制。
+1. **批 1（机械修复）**：gofmt + goimports + ineffassign（17 个）+ errcheck 生产 2 个（wsrelay）→ 改 `.golangci.yml` 全量强制（**测试文件豁免**：门禁用 `--tests=false`，测试问题由 T08 独立跟踪）。
 2. **批 2（静态分析）**：unused 59 个（删死代码）+ govet 101 个（多为 printf 格式/结构体标签，机械）。
 3. **批 3（语义修复，需人工）**：staticcheck 295 个——先修 **SA1029 82 个（time.Duration 单位错误，可能是真实超时/sleep bug）** 与 SA5011 7 个（nil 解引用风险），再批量处理 SA 系列。
 4. **吞错扫描进 CI**：errcheck 已接近清零，直接以全量 errcheck 0 issue 为门禁。
 5. **覆盖率门禁**：auth/store/pluginhost 先设 40% 阈值，逐周上调。
-- ✅ 验收：lint 全树 0 issue；吞错扫描进 CI；覆盖率进 PR 评论。
+- ✅ 验收：生产代码 lint 0 issue（**测试文件豁免**，T08 独立跟踪）；吞错扫描进 CI；覆盖率进 PR 评论。
 
 ### Phase 2（第 2 个月）· 补测试
 - 为 `objectstore.go`、`postgresstore.go` 补存储后端测试（当前零测试，运维高危区）。

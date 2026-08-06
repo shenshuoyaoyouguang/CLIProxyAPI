@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -734,16 +735,28 @@ func SummarizeErrorBody(contentType string, body []byte) string {
 	return sanitizeBodySummary(string(body))
 }
 
+// preSanitizeBodyBound bounds the raw input before expensive processing:
+// control-char stripping can only shrink the string, and the exact rune
+// truncation below re-applies maxErrorBodySummaryLen, so the output contract
+// (limit + truncation marker) is preserved while oversized bodies are not
+// fully repaired/copied. The byte cut may split a UTF-8 rune; ToValidUTF8
+// below repairs it.
+const preSanitizeBodyBound = maxErrorBodySummaryLen * 8
+
 // sanitizeBodySummary trims whitespace, strips control characters, repairs
 // invalid UTF-8 and caps the length of a string destined for the log output.
 func sanitizeBodySummary(s string) string {
+	if len(s) > preSanitizeBodyBound {
+		s = s[:preSanitizeBodyBound]
+	}
 	s = strings.TrimSpace(s)
 	s = strings.ToValidUTF8(s, "\uFFFD")
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if r < 0x20 && r != '\n' && r != '\t' {
-			continue // strip control characters, keep newline/tab for readability
+		// Strip all control runes (C0, DEL, C1, ...) except newline/tab.
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			continue
 		}
 		b.WriteRune(r)
 	}

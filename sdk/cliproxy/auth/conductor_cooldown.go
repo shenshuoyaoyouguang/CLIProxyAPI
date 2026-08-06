@@ -33,6 +33,27 @@ func SetTransientErrorCooldownSeconds(seconds int) {
 	transientErrorCooldownSeconds.Store(int64(seconds))
 }
 
+// persistFailLogInterval bounds Error-log volume when the auth store is down:
+// at most one Error per interval, sampled across all auths. Failures remain
+// observable via Debug logs in between.
+const persistFailLogInterval = 10 * time.Second
+
+var lastPersistFailLog atomic.Int64 // unixnano of the last emitted Error
+
+func logPersistFailureSampled(err error, auth *Auth, what string) {
+	now := time.Now().UnixNano()
+	last := lastPersistFailLog.Load()
+	if now-last < int64(persistFailLogInterval) {
+		log.WithError(err).WithFields(log.Fields{"provider": auth.Provider, "auth_id": auth.ID}).
+			Debugf("%s (rate-limited)", what)
+		return
+	}
+	if lastPersistFailLog.CompareAndSwap(last, now) {
+		log.WithError(err).WithFields(log.Fields{"provider": auth.Provider, "auth_id": auth.ID}).
+			Error(what)
+	}
+}
+
 func quotaCooldownDisabledForAuth(auth *Auth) bool {
 	return quotaCooldownDisabledForAuthWithConfig(auth, nil)
 }
@@ -909,10 +930,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if authSnapshot != nil {
 		// Persist outside the global lock: store.Save can be Postgres network I/O.
 		if errPersist := m.persist(ctx, authSnapshot); errPersist != nil {
-			// In-memory cooldown state stays live; surface the failure because a
-			// lost persist means cooldown limits can be bypassed after a restart.
-			log.WithError(errPersist).WithFields(log.Fields{"provider": authSnapshot.Provider, "auth_id": authSnapshot.ID}).
-				Error("failed to persist auth state after result; cooldown state may not survive restart")
+			// In-memory cooldown state stays live; surface the failure (sampled)
+			// because a lost persist means cooldown limits can be bypassed after a restart.
+			logPersistFailureSampled(errPersist, authSnapshot,
+				"failed to persist auth state after result; cooldown state may not survive restart")
 		}
 	}
 	if m.scheduler != nil && authSnapshot != nil {
@@ -980,8 +1001,8 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 	if authSnapshot != nil {
 		// Persist outside the global lock: store.Save can be Postgres network I/O.
 		if errPersist := m.persist(ctx, authSnapshot); errPersist != nil {
-			log.WithError(errPersist).WithFields(log.Fields{"provider": authSnapshot.Provider, "auth_id": authSnapshot.ID}).
-				Error("failed to persist auth state after neutral result; changes will be lost on restart")
+			logPersistFailureSampled(errPersist, authSnapshot,
+				"failed to persist auth state after neutral result; changes will be lost on restart")
 		}
 	}
 

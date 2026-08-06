@@ -219,6 +219,15 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
+// requestID returns the request identifier for log correlation, or "" when
+// requestInfo is not yet populated (nil-safe).
+func (w *ResponseWriterWrapper) requestID() string {
+	if w.requestInfo != nil {
+		return w.requestInfo.RequestID
+	}
+	return ""
+}
+
 // ensureHeadersCaptured is a helper function to make sure response headers are captured.
 // It is safe to call this method multiple times; it will always refresh the headers
 // with the latest state from the underlying ResponseWriter.
@@ -348,22 +357,26 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 		}); ok {
 			if len(apiRequest) > 0 {
 				if errWrite := w.streamWriter.WriteAPIRequest(apiRequest); errWrite != nil {
-					log.WithError(errWrite).Debug("streaming log: failed to write API request")
+					log.WithError(errWrite).WithField("request_id", w.requestID()).
+						Debug("streaming log: failed to write API request")
 				}
 			}
 			if apiRequestSource != nil && apiRequestSource.HasPayload() {
 				if errWrite := sourceWriter.WriteAPIRequestSource(apiRequestSource); errWrite != nil {
-					log.WithError(errWrite).Debug("streaming log: failed to write API request source")
+					log.WithError(errWrite).WithField("request_id", w.requestID()).
+						Debug("streaming log: failed to write API request source")
 				}
 			}
 			if len(apiResponse) > 0 {
 				if errWrite := w.streamWriter.WriteAPIResponse(apiResponse); errWrite != nil {
-					log.WithError(errWrite).Debug("streaming log: failed to write API response")
+					log.WithError(errWrite).WithField("request_id", w.requestID()).
+						Debug("streaming log: failed to write API response")
 				}
 			}
 			if apiResponseSource != nil && apiResponseSource.HasPayload() {
 				if errWrite := sourceWriter.WriteAPIResponseSource(apiResponseSource); errWrite != nil {
-					log.WithError(errWrite).Debug("streaming log: failed to write API response source")
+					log.WithError(errWrite).WithField("request_id", w.requestID()).
+						Debug("streaming log: failed to write API response source")
 				}
 			}
 		} else {
@@ -380,12 +393,14 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 			}
 			if len(apiRequest) > 0 {
 				if errWrite := w.streamWriter.WriteAPIRequest(apiRequest); errWrite != nil {
-					log.WithError(errWrite).Debug("streaming log: failed to write merged API request")
+					log.WithError(errWrite).WithField("request_id", w.requestID()).
+						Debug("streaming log: failed to write merged API request")
 				}
 			}
 			if len(apiResponse) > 0 {
 				if errWrite := w.streamWriter.WriteAPIResponse(apiResponse); errWrite != nil {
-					log.WithError(errWrite).Debug("streaming log: failed to write merged API response")
+					log.WithError(errWrite).WithField("request_id", w.requestID()).
+						Debug("streaming log: failed to write merged API response")
 				}
 			}
 		}

@@ -27,11 +27,11 @@
 1. 生产代码存量 lint 问题清零（369 个），达成 lint 全树 0 issue。
 2. 吞错门禁上线：errcheck 全量 0 issue 作为 CI 强制门禁。
 3. 覆盖率门禁上线：auth / store / pluginhost 阈值 40% 起步，逐周上调。
-4. 测试文件问题（136 个）作为低优先级清理项，不阻塞门禁。
+4. 测试文件问题（136 个）作为低优先级清理项，**门禁豁免测试文件**（lint 命令 `--tests=false`），由 T08 独立跟踪、不阻塞门禁。
 
 ### 0.2 执行原则
-- **单任务单 PR**：每个任务独立 PR，标题前缀 `lint/`，如 `lint: fix errcheck in wsrelay`。
-- **红转绿**：每任务以「目标包 lint 0 issue + go build + go test 通过」为完成标志，禁止一次性大 PR。
+- **任务 = 所有权与提交单元**：任务不是 PR 单元——PR 分组按 §0.0 的 3 个合并 PR 模型（PR-1 机械批 / PR-2 语义批 / PR-3 门禁），一次可承载多个任务的提交；大 PR 是被接受的执行形态，配合 commit 级拆分评审。
+- **红转绿**：每任务以「目标包 lint 0 issue + go build + go test 通过」为完成标志。
 - **只改目标问题**：任务范围内不夹带重构/功能改动，保持 diff 最小。
 - **改动文件边界**：任务范围按文件划分，**同一文件最多属于一个进行中任务**，避免合并冲突。
 - **translator 目录约束**：`internal/translator/` 受 AGENTS.md 规则约束（PR 被 pr-path-guard 拦截）——含 translator 文件的任务需先确认仓库 WRITE 权限，或将 translator 改动随批合并说明。
@@ -143,10 +143,10 @@ go test ./<受影响包>/...                # 受影响包回归
 ### P1-T09 · 门禁上线 🔴 P0（依赖 T01-T07 全部绿）
 - **动作**：
   1. `.golangci.yml`：删除 `new: true`（或改为 `new: false`），全树强制；确认 `issues.exclusions` 保留（generated/examples）。
-  2. `pr-test-build.yml`：新增 `lint` job——逐叶子包扫描（Windows 经验）或 CI 上直接 `golangci-lint run ./...`（Linux 无 Windows bug，可直接全量）；`errcheck` 0 issue 硬门禁。
+  2. `pr-test-build.yml`：新增 `lint` job——逐叶子包扫描（Windows 经验）或 CI 上直接 `golangci-lint run --tests=false ./...`（Linux 无 Windows bug，可直接全量；**`--tests=false` 豁免测试文件**，测试问题由 T08 跟踪）；`errcheck` 0 issue 硬门禁。
   3. 覆盖率门禁：`go test -coverprofile`，对 `internal/auth`、`internal/store`、`internal/pluginhost` 设 40% 阈值（先 `P1-T09a` 出基线报告，再 `P1-T09b` 加阈值 gate）。
   4. 可加 `go test -race ./internal/... ./sdk/...`（与 Phase 2 衔接）。
-- **验收**：新 PR 上 CI 全绿（build + test + lint + race）；吞错扫描 = 构建失败。
+- **验收**：新 PR 上 CI 全绿（build + test + lint + race；lint 覆盖**生产代码**，测试文件豁免）；吞错扫描 = 构建失败。
 - **工作量**：1 天 ｜ **风险**：中（门禁过严会阻塞团队，建议 T09 上线后给 1 周缓冲期）
 
 ---
