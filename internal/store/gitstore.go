@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -217,6 +218,8 @@ func (s *GitTokenStore) ensureRepositoryLocked() error {
 				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: verify repository before pull: %w", errVerify)
 			}
+			// Release the .git handles before recovery moves the directory.
+			closeRepository(repo)
 			if errRecover := s.recoverRepositoryLocked(repoDir, authMethod, nil, nil); errRecover != nil {
 				s.dirLock.Unlock()
 				return fmt.Errorf("git token store: verify repository before pull: %w; recovery failed: %v", errVerify, errRecover)
@@ -1161,6 +1164,8 @@ func (s *GitTokenStore) recoverRepositoryLocked(repoDir string, authMethod []cli
 	if errApply := applyRecoveryLocalChanges(repoDir, cloneDir, preservedPaths); errApply != nil {
 		return fmt.Errorf("preserve local worktree changes: %w", errApply)
 	}
+	// Release the cloned .git handles before install moves the directory.
+	closeRepository(clonedRepo)
 
 	backupWorktreeDir := filepath.Join(recoveryRoot, "worktree")
 	if errBackup := moveWorktreeEntries(repoDir, backupWorktreeDir); errBackup != nil {
@@ -1208,6 +1213,7 @@ func inspectRecoveryBaseline(repoDir string) (*object.Tree, map[string]struct{},
 	if errOpen != nil {
 		return nil, nil, fmt.Errorf("open repository: %w", errOpen)
 	}
+	defer closeRepository(repo)
 	worktree, errWorktree := repo.Worktree()
 	if errWorktree != nil {
 		return nil, nil, fmt.Errorf("open worktree: %w", errWorktree)
@@ -1383,6 +1389,20 @@ func rollbackRecoveredGitDirectory(gitDir, backupGitDir string) error {
 
 func isRepositoryCorruptionError(err error) bool {
 	return errors.Is(err, dotgit.ErrPackfileNotFound) || errors.Is(err, plumbing.ErrObjectNotFound)
+}
+
+// closeRepository releases file handles held by a repository's storage.
+// go-git's LazyIndex keeps .idx/.rev descriptors open for the lifetime of the
+// storage; on Windows those handles block renaming or removing the .git
+// directory, so every repository opened on a directory that recovery is about
+// to move must be closed first.
+func closeRepository(repo *git.Repository) {
+	if repo == nil {
+		return
+	}
+	if closer, ok := repo.Storer.(io.Closer); ok {
+		_ = closer.Close()
+	}
 }
 
 func verifyRepositoryHead(repo *git.Repository) error {

@@ -1403,6 +1403,9 @@ func removeHeadFileObject(t *testing.T, repoDir, path string) {
 	if errOpen != nil {
 		t.Fatalf("open repository before object removal: %v", errOpen)
 	}
+	// Reading objects keeps .idx handles open; on Windows they block the
+	// recovery rename of the .git directory, so release them here.
+	defer closeRepository(repo)
 	worktree, errWorktree := repo.Worktree()
 	if errWorktree != nil {
 		t.Fatalf("open worktree before object removal: %v", errWorktree)
