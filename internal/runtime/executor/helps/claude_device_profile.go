@@ -625,10 +625,29 @@ func ApplyClaudeLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg
 	}
 
 	// Unconfirmed clients must not leak a copied or third-party software profile
-	// into the upstream Claude Code SDK fingerprint.
+	// into the upstream Claude Code SDK fingerprint. The macOS/arm64 defaults are
+	// the empty-config placeholder, so both a missing value and an explicit
+	// placeholder resolve to the runtime platform; a configured non-placeholder
+	// platform is intentional and kept verbatim. Confirmed clients keep any
+	// configured platform, and only fall back to the runtime platform when none
+	// is configured.
+	var hd config.ClaudeHeaderDefaults
+	if cfg != nil {
+		hd = cfg.ClaudeHeaderDefaults
+	}
+	osValue := strings.TrimSpace(hd.OS)
+	archValue := strings.TrimSpace(hd.Arch)
+	legacyPlatform := func(configured, placeholder, runtime string) string {
+		if configured != "" {
+			if confirmedClaudeCode || configured != placeholder {
+				return configured
+			}
+		}
+		return runtime
+	}
 	r.Header.Set("X-Stainless-Runtime-Version", profile.RuntimeVersion)
 	r.Header.Set("X-Stainless-Package-Version", profile.PackageVersion)
-	r.Header.Set("X-Stainless-Os", profile.OS)
-	r.Header.Set("X-Stainless-Arch", profile.Arch)
+	r.Header.Set("X-Stainless-Os", legacyPlatform(osValue, defaultClaudeFingerprintOS, mapStainlessOS()))
+	r.Header.Set("X-Stainless-Arch", legacyPlatform(archValue, defaultClaudeFingerprintArch, mapStainlessArch()))
 	r.Header.Set("User-Agent", profile.UserAgent)
 }
