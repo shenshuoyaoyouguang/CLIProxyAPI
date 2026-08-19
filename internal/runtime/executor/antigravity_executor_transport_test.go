@@ -224,10 +224,14 @@ func TestAntigravityConcurrentRequestsReusePooledConnections(t *testing.T) {
 	mu.Unlock()
 	// The first wave legitimately opens perWave connections. Later waves must reuse
 	// them; with MaxIdleConnsPerHost=2 only two survive each wave and distinct grows
-	// towards totalConns instead.
-	if distinct > perWave {
+	// towards totalConns instead. A pooled idle connection can still die between waves
+	// (e.g. the OS or server closes it); the transport then transparently retries an
+	// idempotent GET on a fresh connection, so tolerate at most one replacement per
+	// wave while still failing loudly on the unpooled worst case.
+	tolerated := perWave + waves - 1
+	if distinct > tolerated {
 		t.Fatalf("%d waves of %d concurrent requests opened %d connections, want at most %d (unpooled worst case is %d)",
-			waves, perWave, distinct, perWave, totalConns)
+			waves, perWave, distinct, tolerated, totalConns)
 	}
 }
 

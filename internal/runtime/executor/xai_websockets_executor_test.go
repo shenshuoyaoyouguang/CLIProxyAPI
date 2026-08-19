@@ -208,6 +208,10 @@ func TestXAIWebsocketsExecuteStreamMapsMessageTooBigClose(t *testing.T) {
 }
 
 func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *testing.T) {
+	// Unique per run: websocket sessions and transcript state live in process-global
+	// stores keyed by the execution session ID, so a repeated run with a fixed ID
+	// would inherit the previous run's session state.
+	sessionID := fmt.Sprintf("execution-session-%d", time.Now().UnixNano())
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	capturedPayload := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -217,8 +221,8 @@ func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *
 		if got := r.Header.Get("Authorization"); got != "Bearer xai-token" {
 			t.Errorf("Authorization = %q, want Bearer xai-token", got)
 		}
-		if got := r.Header.Get("x-grok-conv-id"); got != "execution-session-1" {
-			t.Errorf("x-grok-conv-id = %q, want execution-session-1", got)
+		if got := r.Header.Get("x-grok-conv-id"); got != sessionID {
+			t.Errorf("x-grok-conv-id = %q, want %s", got, sessionID)
 		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -258,7 +262,7 @@ func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *
 		SourceFormat:   sdktranslator.FormatOpenAIResponse,
 		ResponseFormat: sdktranslator.FormatOpenAIResponse,
 		Metadata: map[string]any{
-			cliproxyexecutor.ExecutionSessionMetadataKey: "execution-session-1",
+			cliproxyexecutor.ExecutionSessionMetadataKey: sessionID,
 		},
 	}
 	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
@@ -282,8 +286,8 @@ func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *
 		if gjson.GetBytes(payload, "instructions").Exists() {
 			t.Fatalf("instructions must be omitted when previous_response_id is set: %s", payload)
 		}
-		if got := gjson.GetBytes(payload, "prompt_cache_key").String(); got != "execution-session-1" {
-			t.Fatalf("prompt_cache_key = %q, want execution-session-1; payload=%s", got, payload)
+		if got := gjson.GetBytes(payload, "prompt_cache_key").String(); got != sessionID {
+			t.Fatalf("prompt_cache_key = %q, want %s; payload=%s", got, sessionID, payload)
 		}
 		if got := gjson.GetBytes(payload, "store").Bool(); !got {
 			t.Fatalf("store = false, want true; payload=%s", payload)

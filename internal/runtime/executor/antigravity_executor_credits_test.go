@@ -512,7 +512,9 @@ func TestAntigravityAuthHasCredits(t *testing.T) {
 func TestAntigravityAuthHasCreditsRequiredHomeBalanceUsesKV(t *testing.T) {
 	resetAntigravityCreditsRetryState()
 	t.Cleanup(resetAntigravityCreditsRetryState)
-	const authID = "home-balance-auth"
+	// Unique per run: the SDK caches credits hints in a process-global map, and a
+	// repeated run would hit the cached hint and skip the KVGet under test.
+	authID := fmt.Sprintf("home-balance-auth-%d", time.Now().UnixNano())
 	client := newFakeAntigravityKVClient()
 	client.values[antigravityCreditsBalanceKey(authID)] = mustAntigravityJSON(t, antigravityCreditsBalance{
 		CreditAmount:    10,
@@ -624,7 +626,9 @@ func TestMaybeRefreshAntigravityCreditsHintHomeRefreshThrottleUsesSetNX(t *testi
 	exec := NewAntigravityExecutor(&config.Config{
 		QuotaExceeded: config.QuotaExceeded{AntigravityCredits: true},
 	})
-	auth := &cliproxyauth.Auth{ID: "home-refresh-throttle-auth"}
+	// Unique per run: the SDK caches credits hints in a process-global map, and a
+	// repeated run would hit the cached hint and skip the KVSetNX under test.
+	auth := &cliproxyauth.Auth{ID: fmt.Sprintf("home-refresh-throttle-auth-%d", time.Now().UnixNano())}
 	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		t.Fatalf("refresh request should not run when Home KV throttle lock is not acquired")
 		return nil, nil

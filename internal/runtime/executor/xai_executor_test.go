@@ -2625,6 +2625,9 @@ func TestXAIExecutorExecuteNormalizesReasoningOutputForNonStreamTranslation(t *t
 
 func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.T) {
 	const requestedModel = "grok-imagine-image-quality"
+	// Guarantee a measurable TTFT: on Windows the monotonic clock granularity can
+	// be coarse enough that a local loopback response lands in the same tick.
+	const responseDelay = 20 * time.Millisecond
 
 	var gotPath string
 	var gotAuth string
@@ -2643,6 +2646,7 @@ func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.
 		if errRead != nil {
 			t.Fatalf("read body: %v", errRead)
 		}
+		time.Sleep(responseDelay)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"created":123,"data":[{"b64_json":"AA=="}],"usage":{"cost_in_usd_ticks":250000}}`))
 	}))
@@ -2708,8 +2712,8 @@ func TestXAIExecutorExecuteImagesUsesImagesEndpointAndPublishesUsage(t *testing.
 	if record.Detail != (usage.Detail{}) {
 		t.Fatalf("detail = %+v, want zero token usage", record.Detail)
 	}
-	if record.TTFT <= 0 {
-		t.Fatalf("ttft = %v, want positive duration", record.TTFT)
+	if record.TTFT < responseDelay {
+		t.Fatalf("ttft = %v, want >= %v", record.TTFT, responseDelay)
 	}
 	assertNoAdditionalXAIUsageRecord(t, plugin.records)
 }
@@ -3000,6 +3004,9 @@ func TestXAIExecutorExecuteImagesRewritesImageURLToURL(t *testing.T) {
 
 func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 	const requestedModel = "grok-imagine-video"
+	// Guarantee a measurable TTFT: on Windows the monotonic clock granularity can
+	// be coarse enough that a local loopback response lands in the same tick.
+	const responseDelay = 20 * time.Millisecond
 
 	var gotPath string
 	var gotMethod string
@@ -3016,6 +3023,7 @@ func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 		if errRead != nil {
 			t.Fatalf("read body: %v", errRead)
 		}
+		time.Sleep(responseDelay)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"request_id":"vid_123"}`))
 	}))
@@ -3076,8 +3084,8 @@ func TestXAIExecutorExecuteVideosCreate(t *testing.T) {
 	if record.Detail != (usage.Detail{}) {
 		t.Fatalf("detail = %+v, want zero token usage", record.Detail)
 	}
-	if record.TTFT <= 0 {
-		t.Fatalf("ttft = %v, want positive duration", record.TTFT)
+	if record.TTFT < responseDelay {
+		t.Fatalf("ttft = %v, want >= %v", record.TTFT, responseDelay)
 	}
 	assertNoAdditionalXAIUsageRecord(t, plugin.records)
 }
