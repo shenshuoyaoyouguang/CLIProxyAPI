@@ -1,6 +1,10 @@
 # Binaries
 cli-proxy-api
 *.exe
+*.sha256
+
+# Local build scripts
+build-optimized.ps1
 
 # Configuration
 config.yaml
@@ -55,6 +59,7 @@ _bmad/*
 _bmad-output/*
 .gocache/
 .gitnexus/
+.omo/
 
 # macOS
 .DS_Store
