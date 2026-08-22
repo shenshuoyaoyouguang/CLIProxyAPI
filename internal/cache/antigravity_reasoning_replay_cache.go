@@ -627,13 +627,22 @@ func evictOldestAntigravityReasoningReplayEntries(count int) {
 	type candidate struct {
 		key       string
 		timestamp time.Time
+		revision  uint64
 	}
 	candidates := make([]candidate, 0, len(antigravityReasoningReplayEntries))
 	for key, entry := range antigravityReasoningReplayEntries {
-		candidates = append(candidates, candidate{key: key, timestamp: entry.Timestamp})
+		candidates = append(candidates, candidate{key: key, timestamp: entry.Timestamp, revision: entry.Revision})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].timestamp.Before(candidates[j].timestamp)
+		if !candidates[i].timestamp.Equal(candidates[j].timestamp) {
+			return candidates[i].timestamp.Before(candidates[j].timestamp)
+		}
+		// Timestamps can tie on platforms with coarse clock granularity
+		// (e.g. Windows). Revisions are monotonic, so they order same-tick
+		// entries by true write order and keep victim selection deterministic;
+		// a random tie-break could evict an absent-snapshot tombstone and
+		// invalidate its fencing guarantee.
+		return candidates[i].revision < candidates[j].revision
 	})
 	if count > len(candidates) {
 		count = len(candidates)

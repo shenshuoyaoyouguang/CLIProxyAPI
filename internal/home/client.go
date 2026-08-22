@@ -1618,9 +1618,12 @@ func newPluginSyncCancelableConn(ctx context.Context, conn net.Conn) net.Conn {
 	go func() {
 		select {
 		case <-ctx.Done():
-			if errDeadline := conn.SetDeadline(time.Now()); errDeadline != nil {
-				_ = conn.Close()
-			}
+			// Close rather than set an expired deadline: go-redis sets its own
+			// per-operation read deadline afterwards, which overwrites a past
+			// deadline and leaves the read blocked until the operation timeout.
+			// Closing interrupts in-flight reads regardless of ordering; safe
+			// because this dedicated client runs a single command.
+			_ = conn.Close()
 		case <-wrapped.done:
 		}
 	}()
