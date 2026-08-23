@@ -55,11 +55,6 @@ type FileCooldownStateStore struct {
 	authDir string
 }
 
-// NewFileCooldownStateStore creates a file-backed cooldown state store rooted at dir.
-func NewFileCooldownStateStore(dir string) *FileCooldownStateStore {
-	return NewFileCooldownStateStoreWithAuthDir(dir, "")
-}
-
 // NewFileCooldownStateStoreWithAuthDir creates a store and derives per-auth .cds
 // paths from auth files relative to authDir when possible.
 func NewFileCooldownStateStoreWithAuthDir(dir, authDir string) *FileCooldownStateStore {
