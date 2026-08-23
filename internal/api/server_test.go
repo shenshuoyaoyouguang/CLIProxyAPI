@@ -1998,7 +1998,8 @@ func codexClientTestMaxTemplatePriority(t *testing.T) int {
 	var payload struct {
 		Models []map[string]any `json:"models"`
 	}
-	if err := json.Unmarshal(registry.GetCodexClientModelsJSON(), &payload); err != nil {
+	raw, _ := registry.GetCodexClientModelsSnapshot()
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("parse Codex client model templates: %v", err)
 	}
 	maxPriority := 0

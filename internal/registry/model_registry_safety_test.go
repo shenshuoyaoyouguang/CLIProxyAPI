@@ -2,7 +2,6 @@ package registry
 
 import (
 	"testing"
-	"time"
 )
 
 func TestGetModelInfoReturnsClone(t *testing.T) {
@@ -80,33 +79,6 @@ func TestGetAvailableModelsByProviderReturnsClones(t *testing.T) {
 	}
 	if second[0].Thinking == nil || len(second[0].Thinking.Levels) == 0 || second[0].Thinking.Levels[0] != "low" {
 		t.Fatalf("expected cloned thinking levels, got %+v", second[0].Thinking)
-	}
-}
-
-func TestCleanupExpiredQuotasInvalidatesAvailableModelsCache(t *testing.T) {
-	r := newTestModelRegistry()
-	r.RegisterClient("client-1", "openai", []*ModelInfo{{ID: "m1", Created: 1}})
-	r.SetModelQuotaExceeded("client-1", "m1")
-	if models := r.GetAvailableModels("openai"); len(models) != 1 {
-		t.Fatalf("expected cooldown model to remain listed before cleanup, got %d", len(models))
-	}
-
-	r.mutex.Lock()
-	quotaTime := time.Now().Add(-6 * time.Minute)
-	r.models["m1"].QuotaExceededClients["client-1"] = &quotaTime
-	r.mutex.Unlock()
-
-	r.CleanupExpiredQuotas()
-
-	if count := r.GetModelCount("m1"); count != 1 {
-		t.Fatalf("expected model count 1 after cleanup, got %d", count)
-	}
-	models := r.GetAvailableModels("openai")
-	if len(models) != 1 {
-		t.Fatalf("expected model to stay available after cleanup, got %d", len(models))
-	}
-	if got := models[0]["id"]; got != "m1" {
-		t.Fatalf("expected model id m1, got %v", got)
 	}
 }
 

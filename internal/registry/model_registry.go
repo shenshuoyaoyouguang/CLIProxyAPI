@@ -1329,28 +1329,6 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 	}
 }
 
-// CleanupExpiredQuotas removes expired quota tracking entries
-func (r *ModelRegistry) CleanupExpiredQuotas() {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-
-	now := time.Now()
-	invalidated := false
-
-	for modelID, registration := range r.models {
-		for clientID, quotaTime := range registration.QuotaExceededClients {
-			if quotaTime != nil && now.Sub(*quotaTime) >= modelQuotaExceededWindow {
-				delete(registration.QuotaExceededClients, clientID)
-				invalidated = true
-				log.Debugf("Cleaned up expired quota tracking for model %s, client %s", modelID, clientID)
-			}
-		}
-	}
-	if invalidated {
-		r.invalidateAvailableModelsCacheLocked()
-	}
-}
-
 // GetFirstAvailableModel returns the first available model for the given handler type.
 // It prioritizes models by their creation timestamp (newest first) and checks if they have
 // available clients that are not suspended or over quota.

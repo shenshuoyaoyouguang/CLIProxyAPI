@@ -33,12 +33,6 @@ func init() {
 	}
 }
 
-// GetCodexClientModelsJSON returns the current Codex client model catalog.
-func GetCodexClientModelsJSON() []byte {
-	data, _ := GetCodexClientModelsSnapshot()
-	return data
-}
-
 // GetCodexClientModelsRevision returns the current revision of the Codex client model catalog.
 func GetCodexClientModelsRevision() uint64 {
 	codexClientCatalogStore.mu.RLock()
