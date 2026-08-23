@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -16,8 +17,65 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
+
+// purgeMalformedArtifacts removes plugin-extension files whose names fail the
+// canonical discovery validators (legacy hand-dropped artifacts such as
+// "_old.so"). Such files are invisible to pluginhost loading and can no longer
+// be managed through the API, so sync deletes them instead of letting them
+// accumulate. It must run only after the valid-file scan is complete; removal
+// failures are logged and never fail the sync.
+func purgeMalformedArtifacts(root string) {
+	platform := CurrentPlatform()
+	extension := discovery.Extension(platform.GOOS)
+	valid, errValid := discovery.AllFiles(root)
+	if errValid != nil {
+		// Without the complete valid set we cannot tell junk from real plugins.
+		log.Warnf("home plugins: skip malformed artifact purge in %s: %v", root, errValid)
+		return
+	}
+	validPaths := make(map[string]struct{}, len(valid))
+	for _, file := range valid {
+		validPaths[file.Path] = struct{}{}
+	}
+	for _, dir := range discovery.Dirs(root, platform.GOOS, platform.GOARCH) {
+		entries, errReadDir := os.ReadDir(dir)
+		if errReadDir != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry == nil || !entry.Type().IsRegular() {
+				continue
+			}
+			name := entry.Name()
+			if !strings.HasSuffix(strings.ToLower(name), extension) {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			if _, ok := validPaths[path]; ok {
+				continue
+			}
+			reason := invalidArtifactReason(name, extension)
+			if errRemove := os.Remove(path); errRemove != nil {
+				log.Warnf("home plugins: remove malformed plugin artifact %s (%s): %v", path, reason, errRemove)
+				continue
+			}
+			log.Warnf("home plugins: removed malformed plugin artifact %s (%s)", path, reason)
+		}
+	}
+}
+
+// invalidArtifactReason classifies why a filename failed discovery parsing,
+// mirroring FromPath's two failure modes without re-implementing its split.
+func invalidArtifactReason(baseName string, extension string) string {
+	stem := baseName[:len(baseName)-len(extension)]
+	if index := strings.LastIndex(stem, "-v"); index > 0 && discovery.ValidID(stem[:index]) {
+		return "invalid version suffix"
+	}
+	return "invalid plugin id"
+}
 
 type Platform struct {
 	GOOS   string `json:"goos"`
@@ -182,6 +240,7 @@ func SyncPlatformWithReport(ctx context.Context, cfg *config.Config, pluginRunti
 		report.Plugins = append(report.Plugins, status)
 	}
 	errSync := errors.Join(syncErrors...)
+	purgeMalformedArtifacts(root)
 	finishReport(&report, errSync)
 	return report, errSync
 }
@@ -235,6 +294,7 @@ func SyncResolvedWithReport(ctx context.Context, cfg *config.Config, items []sdk
 		upsertPluginInstallStatus(&report, status)
 	}
 	errSync := errors.Join(syncErrors...)
+	purgeMalformedArtifacts(root)
 	finishReport(&report, errSync)
 	return report, errSync
 }
