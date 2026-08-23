@@ -494,7 +494,7 @@ func (w *ResponseWriterWrapper) extractRequestBody(c *gin.Context) []byte {
 			break
 		}
 	}
-	body = decodeCapturedRequestBodyForLogWithLimit(body, encoding, maxDeferredErrorRequestBodyBytes)
+	body = decodeCapturedRequestBodyForLog(body, encoding, maxDeferredErrorRequestBodyBytes)
 	if statusMarker == "" {
 		return body
 	}
@@ -581,42 +581,6 @@ func (w *ResponseWriterWrapper) logRequest(requestBody []byte, statusCode int, h
 			apiRequestSource,
 			apiResponseBody,
 			apiResponseSource,
-			apiWebsocketTimeline,
-			apiWebsocketTimelineSource,
-			apiResponseErrors,
-			forceLog,
-			w.requestInfo.RequestID,
-			w.requestInfo.Timestamp,
-			apiResponseTimestamp,
-		)
-	}
-
-	if loggerWithSources, ok := w.logger.(interface {
-		LogRequestWithOptionsAndSources(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, *logging.FileBodySource, []byte, []byte, []byte, *logging.FileBodySource, []*interfaces.ErrorMessage, bool, string, time.Time, time.Time) error
-	}); ok {
-		var errMerge error
-		apiRequestBody, errMerge = mergeFileBodySource(apiRequestBody, apiRequestSource)
-		if errMerge != nil {
-			cleanupFileBodySources(websocketTimelineSource, apiResponseSource, apiWebsocketTimelineSource)
-			return errMerge
-		}
-		apiResponseBody, errMerge = mergeFileBodySource(apiResponseBody, apiResponseSource)
-		if errMerge != nil {
-			cleanupFileBodySources(websocketTimelineSource, apiWebsocketTimelineSource)
-			return errMerge
-		}
-		return loggerWithSources.LogRequestWithOptionsAndSources(
-			w.requestInfo.URL,
-			w.requestInfo.Method,
-			w.requestInfo.Headers,
-			requestBody,
-			statusCode,
-			headers,
-			body,
-			websocketTimeline,
-			websocketTimelineSource,
-			apiRequestBody,
-			apiResponseBody,
 			apiWebsocketTimeline,
 			apiWebsocketTimelineSource,
 			apiResponseErrors,

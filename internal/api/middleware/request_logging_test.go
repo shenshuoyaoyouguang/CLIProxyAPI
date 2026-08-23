@@ -333,7 +333,7 @@ func TestDecodeCapturedRequestBodyForLogWithLimitTruncatesZstdExpansion(t *testi
 		t.Fatalf("zstd close: %v", errClose)
 	}
 
-	decoded := decodeCapturedRequestBodyForLogWithLimit(compressed.Bytes(), "zstd", 64)
+	decoded := decodeCapturedRequestBodyForLog(compressed.Bytes(), "zstd", 64)
 	if len(decoded) > 128 {
 		t.Fatalf("limited decoded body length = %d, want bounded output", len(decoded))
 	}
