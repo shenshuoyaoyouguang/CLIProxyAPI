@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -820,36 +819,8 @@ func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]by
 		return eventData
 	}
 
-	indexes := make([]int64, 0, len(outputItemsByIndex))
-	for idx := range outputItemsByIndex {
-		indexes = append(indexes, idx)
-	}
-	sort.Slice(indexes, func(i, j int) bool {
-		return indexes[i] < indexes[j]
-	})
-
-	outputArray := []byte("[]")
-	var buf bytes.Buffer
-	buf.WriteByte('[')
-	wrote := false
-	for _, idx := range indexes {
-		if wrote {
-			buf.WriteByte(',')
-		}
-		buf.Write(outputItemsByIndex[idx])
-		wrote = true
-	}
-	for _, item := range outputItemsFallback {
-		if wrote {
-			buf.WriteByte(',')
-		}
-		buf.Write(item)
-		wrote = true
-	}
-	buf.WriteByte(']')
-	if wrote {
-		outputArray = buf.Bytes()
-	}
+	items := helps.OrderedOutputItems(outputItemsByIndex, outputItemsFallback)
+	outputArray := helps.BuildOutputArray(items)
 
 	patched, _ := sjson.SetRawBytes(eventData, "response.output", outputArray)
 	return patched

@@ -1,15 +1,15 @@
 package executor
 
 import (
-	"bytes"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 )
 
 const codexIncompleteStreamMessage = "stream error: stream disconnected before completion: stream closed before response.completed"
@@ -83,41 +83,8 @@ func patchCodexCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]
 		return eventData
 	}
 
-	indexes := make([]int64, 0, len(outputItemsByIndex))
-	for idx := range outputItemsByIndex {
-		indexes = append(indexes, idx)
-	}
-	sort.Slice(indexes, func(i, j int) bool {
-		return indexes[i] < indexes[j]
-	})
-
-	items := make([][]byte, 0, len(outputItemsByIndex)+len(outputItemsFallback))
-	for _, idx := range indexes {
-		items = append(items, outputItemsByIndex[idx])
-	}
-	items = append(items, outputItemsFallback...)
-
-	outputArray := []byte("[]")
-	if len(items) > 0 {
-		var buf bytes.Buffer
-		totalLen := 2
-		for _, item := range items {
-			totalLen += len(item)
-		}
-		if len(items) > 1 {
-			totalLen += len(items) - 1
-		}
-		buf.Grow(totalLen)
-		buf.WriteByte('[')
-		for i, item := range items {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			buf.Write(item)
-		}
-		buf.WriteByte(']')
-		outputArray = buf.Bytes()
-	}
+	items := helps.OrderedOutputItems(outputItemsByIndex, outputItemsFallback)
+	outputArray := helps.BuildOutputArray(items)
 
 	completedDataPatched, _ := sjson.SetRawBytes(eventData, "response.output", outputArray)
 	return completedDataPatched
