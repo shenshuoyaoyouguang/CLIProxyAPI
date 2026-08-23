@@ -19,6 +19,11 @@ func ValidateCredentialWeight(weight *int) error {
 	return errNormalize
 }
 
+// validateCredentialWeightYAML validates credential weights on the raw YAML document
+// before it is unmarshalled. It is the load-path validator: yaml.v3 silently truncates
+// non-integer weight values (e.g. `weight: 1.5`) into the *int struct fields, so a
+// struct-level walk cannot detect them. It also enforces the Normalize bounds with
+// path-annotated messages, covering everything the struct walk checks on the load path.
 func validateCredentialWeightYAML(data []byte) error {
 	var document yaml.Node
 	if errUnmarshal := yaml.Unmarshal(data, &document); errUnmarshal != nil {
@@ -107,6 +112,10 @@ func validateOpenAICompatibilityWeightNodes(sequence *yaml.Node) error {
 }
 
 // ValidateCredentialWeights validates weights for every API-key family.
+// It is used by programmatic callers that construct a Config without raw YAML
+// (watcher/synthesizer, sdk/cliproxy). The load path (parse.go/config_load.go)
+// validates via validateCredentialWeightYAML on the raw document instead, so that
+// non-integer weights rejected by yaml.v3 truncation are still caught.
 func (cfg *Config) ValidateCredentialWeights() error {
 	if cfg == nil {
 		return nil
