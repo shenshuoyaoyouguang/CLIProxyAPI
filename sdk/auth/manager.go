@@ -42,11 +42,6 @@ func (m *Manager) Register(a Authenticator) {
 	m.authenticators[a.Provider()] = a
 }
 
-// SetStore updates the token store used for persistence.
-func (m *Manager) SetStore(store coreauth.Store) {
-	m.store = store
-}
-
 // Login executes the provider login flow and persists the resulting auth record.
 func (m *Manager) Login(ctx context.Context, provider string, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, string, error) {
 	auth, ok := m.authenticators[provider]
