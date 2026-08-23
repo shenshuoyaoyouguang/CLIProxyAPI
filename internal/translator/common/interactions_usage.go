@@ -17,3 +17,14 @@ func InteractionsUsage(root gjson.Result) gjson.Result {
 	}
 	return gjson.Result{}
 }
+
+// FirstUsageInt returns the value of the first existing path parsed as an
+// integer, plus whether any path matched.
+func FirstUsageInt(root gjson.Result, paths ...string) (int64, bool) {
+	for _, path := range paths {
+		if v := root.Get(path); v.Exists() {
+			return v.Int(), true
+		}
+	}
+	return 0, false
+}

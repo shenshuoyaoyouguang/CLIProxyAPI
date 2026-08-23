@@ -300,10 +300,10 @@ func setClaudeUsageFromInteractions(out []byte, path string, usage gjson.Result)
 	if !usage.Exists() {
 		return out
 	}
-	if v, ok := firstUsageInt(usage, "input_tokens", "total_input_tokens"); ok {
+	if v, ok := translatorcommon.FirstUsageInt(usage, "input_tokens", "total_input_tokens"); ok {
 		out, _ = sjson.SetBytes(out, path+".input_tokens", v)
 	}
-	if v, ok := firstUsageInt(usage, "output_tokens", "total_output_tokens"); ok {
+	if v, ok := translatorcommon.FirstUsageInt(usage, "output_tokens", "total_output_tokens"); ok {
 		out, _ = sjson.SetBytes(out, path+".output_tokens", v)
 	}
 	return out
@@ -346,15 +346,6 @@ func firstExisting(root gjson.Result, paths ...string) gjson.Result {
 		}
 	}
 	return gjson.Result{}
-}
-
-func firstUsageInt(root gjson.Result, paths ...string) (int64, bool) {
-	for _, path := range paths {
-		if value := root.Get(path); value.Exists() {
-			return value.Int(), true
-		}
-	}
-	return 0, false
 }
 
 func firstNonEmpty(values ...string) string {

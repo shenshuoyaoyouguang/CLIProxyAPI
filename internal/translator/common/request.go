@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const tooluLetters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -58,4 +59,33 @@ func requestModelName(rawJSON []byte) string {
 		}
 	}
 	return ""
+}
+
+// SetRawIfDifferent sets a raw JSON value at path only when the current value
+// differs, leaving the document untouched on sjson errors.
+func SetRawIfDifferent(out []byte, path string, value gjson.Result) []byte {
+	current := gjson.GetBytes(out, path)
+	if current.Exists() && current.Raw == value.Raw {
+		return out
+	}
+	updated, errSet := sjson.SetRawBytes(out, path, []byte(value.Raw))
+	if errSet != nil {
+		return out
+	}
+	return updated
+}
+
+// NormalizeCodexServiceTier maps a Codex service_tier string to its canonical
+// form: "fast" and "priority" (any case/whitespace) map to "priority";
+// anything missing or unrecognized maps to "".
+func NormalizeCodexServiceTier(result gjson.Result) string {
+	if !result.Exists() || result.Type != gjson.String {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(result.String())) {
+	case "fast", "priority":
+		return "priority"
+	default:
+		return ""
+	}
 }

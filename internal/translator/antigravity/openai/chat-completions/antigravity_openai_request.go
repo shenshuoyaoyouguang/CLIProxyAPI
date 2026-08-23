@@ -548,16 +548,16 @@ func normalizeAntigravityOpenAIThinkingConfig(out []byte) []byte {
 			}
 		}
 		if thinkingLevel := gjson.GetBytes(out, prefix+".thinkingLevel"); thinkingLevel.Exists() {
-			out = setAntigravityOpenAIRawIfDifferent(out, "request.generationConfig.thinkingConfig.thinkingLevel", thinkingLevel)
+			out = translatorcommon.SetRawIfDifferent(out, "request.generationConfig.thinkingConfig.thinkingLevel", thinkingLevel)
 		}
 		if thinkingLevel := gjson.GetBytes(out, prefix+".thinking_level"); thinkingLevel.Exists() {
-			out = setAntigravityOpenAIRawIfDifferent(out, "request.generationConfig.thinkingConfig.thinkingLevel", thinkingLevel)
+			out = translatorcommon.SetRawIfDifferent(out, "request.generationConfig.thinkingConfig.thinkingLevel", thinkingLevel)
 		}
 		if thinkingBudget := gjson.GetBytes(out, prefix+".thinkingBudget"); thinkingBudget.Exists() {
-			out = setAntigravityOpenAIRawIfDifferent(out, "request.generationConfig.thinkingConfig.thinkingBudget", thinkingBudget)
+			out = translatorcommon.SetRawIfDifferent(out, "request.generationConfig.thinkingConfig.thinkingBudget", thinkingBudget)
 		}
 		if thinkingBudget := gjson.GetBytes(out, prefix+".thinking_budget"); thinkingBudget.Exists() {
-			out = setAntigravityOpenAIRawIfDifferent(out, "request.generationConfig.thinkingConfig.thinkingBudget", thinkingBudget)
+			out = translatorcommon.SetRawIfDifferent(out, "request.generationConfig.thinkingConfig.thinkingBudget", thinkingBudget)
 		}
 	}
 
@@ -603,18 +603,6 @@ func setAntigravityOpenAIBoolIfDifferent(out []byte, path string, value bool) []
 		return out
 	}
 	updated, errSet := sjson.SetBytes(out, path, value)
-	if errSet != nil {
-		return out
-	}
-	return updated
-}
-
-func setAntigravityOpenAIRawIfDifferent(out []byte, path string, value gjson.Result) []byte {
-	current := gjson.GetBytes(out, path)
-	if current.Exists() && current.Raw == value.Raw {
-		return out
-	}
-	updated, errSet := sjson.SetRawBytes(out, path, []byte(value.Raw))
 	if errSet != nil {
 		return out
 	}

@@ -379,7 +379,7 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 	// OpenAI documents reasoning summaries as explicit opt-in output. Leave
 	// reasoning.summary to the source request's canonical summary intent instead
 	// of coupling it to reasoning effort.
-	serviceTier := normalizeCodexServiceTier(rootResult.Get("service_tier"))
+	serviceTier := translatorcommon.NormalizeCodexServiceTier(rootResult.Get("service_tier"))
 	if speed := rootResult.Get("speed"); speed.Type == gjson.String && speed.String() == "fast" {
 		serviceTier = "priority"
 	}
@@ -400,19 +400,6 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 func codexClaudeTargetAcceptsGrokSignature(modelName string) bool {
 	baseModel := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName))
 	return strings.Contains(baseModel, "grok")
-}
-
-func normalizeCodexServiceTier(result gjson.Result) string {
-	if !result.Exists() || result.Type != gjson.String {
-		return ""
-	}
-
-	switch strings.ToLower(strings.TrimSpace(result.String())) {
-	case "fast", "priority":
-		return "priority"
-	default:
-		return ""
-	}
 }
 
 // shortenCodexCallIDIfNeeded keeps Claude tool IDs within the OpenAI Responses

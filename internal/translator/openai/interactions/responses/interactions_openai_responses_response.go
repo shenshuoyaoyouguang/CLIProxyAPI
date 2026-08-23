@@ -530,19 +530,19 @@ func setResponsesUsageFromInteractions(out []byte, path string, usage gjson.Resu
 	if !usage.Exists() {
 		return out
 	}
-	if v, ok := firstUsageInt(usage, "input_tokens", "total_input_tokens"); ok {
+	if v, ok := translatorcommon.FirstUsageInt(usage, "input_tokens", "total_input_tokens"); ok {
 		out, _ = sjson.SetBytes(out, path+".input_tokens", v)
 	}
-	if v, ok := firstUsageInt(usage, "output_tokens", "total_output_tokens"); ok {
+	if v, ok := translatorcommon.FirstUsageInt(usage, "output_tokens", "total_output_tokens"); ok {
 		out, _ = sjson.SetBytes(out, path+".output_tokens", v)
 	}
-	if v, ok := firstUsageInt(usage, "total_tokens"); ok {
+	if v, ok := translatorcommon.FirstUsageInt(usage, "total_tokens"); ok {
 		out, _ = sjson.SetBytes(out, path+".total_tokens", v)
 	}
-	if v, ok := firstUsageInt(usage, "cached_tokens", "total_cached_tokens"); ok {
+	if v, ok := translatorcommon.FirstUsageInt(usage, "cached_tokens", "total_cached_tokens"); ok {
 		out, _ = sjson.SetBytes(out, path+".input_tokens_details.cached_tokens", v)
 	}
-	if v, ok := firstUsageInt(usage, "reasoning_tokens", "total_thought_tokens"); ok {
+	if v, ok := translatorcommon.FirstUsageInt(usage, "reasoning_tokens", "total_thought_tokens"); ok {
 		out, _ = sjson.SetBytes(out, path+".output_tokens_details.reasoning_tokens", v)
 	}
 	return out
@@ -919,15 +919,6 @@ func setInteractionsUsageFromResponses(out []byte, path string, usage gjson.Resu
 
 func responseModel(modelName string, root gjson.Result) string {
 	return firstNonEmpty(modelName, root.Get("model").String(), root.Get("response.model").String(), root.Get("interaction.model").String())
-}
-
-func firstUsageInt(root gjson.Result, paths ...string) (int64, bool) {
-	for _, path := range paths {
-		if v := root.Get(path); v.Exists() {
-			return v.Int(), true
-		}
-	}
-	return 0, false
 }
 
 func nextResponsesSeq(st *interactionsToResponsesStreamState) int {

@@ -341,33 +341,21 @@ func copyInteractionsToolsToCodex(out []byte, root gjson.Result) []byte {
 }
 
 func copyInteractionsCodexTopLevel(out []byte, root gjson.Result) []byte {
-	if serviceTier := normalizeInteractionsCodexServiceTier(root.Get("service_tier")); serviceTier != "" {
+	if serviceTier := translatorcommon.NormalizeCodexServiceTier(root.Get("service_tier")); serviceTier != "" {
 		current := gjson.GetBytes(out, "service_tier")
 		if current.Type != gjson.String || current.String() != serviceTier {
 			out, _ = sjson.SetBytes(out, "service_tier", serviceTier)
 		}
 	}
 	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
-		out = setInteractionsCodexRawIfDifferent(out, "tool_choice", toolChoice)
+		out = translatorcommon.SetRawIfDifferent(out, "tool_choice", toolChoice)
 	}
 	for _, path := range []string{"parallel_tool_calls", "store", "metadata", "include", "truncation"} {
 		if value := root.Get(path); value.Exists() {
-			out = setInteractionsCodexRawIfDifferent(out, path, value)
+			out = translatorcommon.SetRawIfDifferent(out, path, value)
 		}
 	}
 	return out
-}
-
-func setInteractionsCodexRawIfDifferent(out []byte, path string, value gjson.Result) []byte {
-	current := gjson.GetBytes(out, path)
-	if current.Exists() && current.Raw == value.Raw {
-		return out
-	}
-	updated, errSet := sjson.SetRawBytes(out, path, []byte(value.Raw))
-	if errSet != nil {
-		return out
-	}
-	return updated
 }
 
 func appendInteractionsThoughtToCodex(items *[][]byte, step gjson.Result) {
@@ -653,17 +641,6 @@ func interactionsCodexDefaultRole(role, fallback string) string {
 	return "user"
 }
 
-func normalizeInteractionsCodexServiceTier(serviceTier gjson.Result) string {
-	if !serviceTier.Exists() || serviceTier.Type != gjson.String {
-		return ""
-	}
-	switch strings.ToLower(strings.TrimSpace(serviceTier.String())) {
-	case "priority", "fast":
-		return "priority"
-	}
-	return ""
-}
-
 func firstString(root gjson.Result, paths ...string) string {
 	for _, path := range paths {
 		if value := root.Get(path); value.Exists() {
@@ -671,4 +648,10 @@ func firstString(root gjson.Result, paths ...string) string {
 		}
 	}
 	return ""
+}
+
+// setInteractionsCodexRawIfDifferent delegates to the shared raw-set helper.
+// Kept because noop_optimization_test.go references the local name.
+func setInteractionsCodexRawIfDifferent(out []byte, path string, value gjson.Result) []byte {
+	return translatorcommon.SetRawIfDifferent(out, path, value)
 }
