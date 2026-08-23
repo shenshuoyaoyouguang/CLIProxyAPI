@@ -182,12 +182,18 @@ func containsString(list []string, target string) bool {
 	return false
 }
 
-func parseUnixOrTimestamp(raw string) (time.Time, bool) {
+// parseTimeValue parses a rate-limit timestamp. Numeric input is treated as
+// epoch seconds when delta is false or as a delta from now when delta is true;
+// RFC3339 and HTTP-date inputs are always absolute timestamps.
+func parseTimeValue(raw string, now time.Time, delta bool) (time.Time, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return time.Time{}, false
 	}
 	if sec, err := strconv.ParseFloat(raw, 64); err == nil && sec > 0 {
+		if delta {
+			return now.Add(time.Duration(sec * float64(time.Second))), true
+		}
 		secInt := int64(sec)
 		nsec := int64((sec - float64(secInt)) * 1e9)
 		return time.Unix(secInt, nsec), true
@@ -201,22 +207,12 @@ func parseUnixOrTimestamp(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func parseUnixOrTimestamp(raw string) (time.Time, bool) {
+	return parseTimeValue(raw, time.Time{}, false)
+}
+
 func parseRetryAfterHeader(raw string, now time.Time) (time.Time, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return time.Time{}, false
-	}
-	if sec, err := strconv.ParseFloat(raw, 64); err == nil && sec > 0 {
-		d := time.Duration(sec * float64(time.Second))
-		return now.Add(d), true
-	}
-	if t, err := http.ParseTime(raw); err == nil {
-		return t, true
-	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
+	return parseTimeValue(raw, now, true)
 }
 
 func randomClaudeFuzzDuration(minSec, maxSec int) time.Duration {

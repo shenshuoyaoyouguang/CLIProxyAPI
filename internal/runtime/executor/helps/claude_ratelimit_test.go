@@ -191,3 +191,65 @@ func TestParseClaudeRateLimitReset_AllCases(t *testing.T) {
 		}
 	})
 }
+
+func TestParseUnixOrTimestamp(t *testing.T) {
+	epoch := time.Unix(1_700_000_000, 0)
+	cases := []struct {
+		name string
+		raw  string
+		want time.Time
+		ok   bool
+	}{
+		{"epoch seconds", "1700000000", epoch, true},
+		{"epoch fractional seconds", "1700000000.5", time.Unix(1_700_000_000, 500_000_000), true},
+		{"milliseconds treated as seconds", "1700000000000", time.Unix(1_700_000_000_000, 0), true},
+		{"rfc3339", "2026-08-23T12:00:00Z", time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC), true},
+		{"http date", "Sun, 23 Aug 2026 12:00:00 GMT", time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC), true},
+		{"garbage", "not-a-time", time.Time{}, false},
+		{"negative", "-5", time.Time{}, false},
+		{"zero", "0", time.Time{}, false},
+		{"empty", "", time.Time{}, false},
+		{"whitespace padded epoch", "  1700000000  ", epoch, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseUnixOrTimestamp(tc.raw)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v (got %v)", ok, tc.ok, got)
+			}
+			if ok && !got.Equal(tc.want) {
+				t.Fatalf("time = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseRetryAfterHeader(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		raw  string
+		want time.Time
+		ok   bool
+	}{
+		{"delta seconds", "120", now.Add(120 * time.Second), true},
+		{"delta fractional seconds", "1.5", now.Add(1500 * time.Millisecond), true},
+		{"future delta", "300", now.Add(5 * time.Minute), true},
+		{"rfc3339 absolute", "2026-08-23T12:00:00Z", now, true},
+		{"http date absolute", "Sun, 23 Aug 2026 12:00:00 GMT", now, true},
+		{"garbage", "abc", time.Time{}, false},
+		{"negative", "-5", time.Time{}, false},
+		{"empty", "", time.Time{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseRetryAfterHeader(tc.raw, now)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v (got %v)", ok, tc.ok, got)
+			}
+			if ok && !got.Equal(tc.want) {
+				t.Fatalf("time = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
