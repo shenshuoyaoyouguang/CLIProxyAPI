@@ -72,8 +72,8 @@ func TestSyncPlatformInstallsManifestArtifact(t *testing.T) {
 	restore := replacePluginStoreClientForTest(httpClient)
 	defer restore()
 
-	if errSync := SyncPlatform(context.Background(), syncTestConfig(t, root), nil, Platform{GOOS: "windows", GOARCH: "amd64"}); errSync != nil {
-		t.Fatalf("SyncPlatform() error = %v", errSync)
+	if _, errSync := SyncPlatformWithReport(context.Background(), syncTestConfig(t, root), nil, Platform{GOOS: "windows", GOARCH: "amd64"}); errSync != nil {
+		t.Fatalf("SyncPlatformWithReport() error = %v", errSync)
 	}
 	target := pluginTestPath(root, "windows", "amd64", "sample", "0.2.0")
 	got, errRead := os.ReadFile(target)
@@ -395,8 +395,8 @@ func TestSyncPlatformSkipsIdenticalBusyPlugin(t *testing.T) {
 	defer restore()
 
 	runtime := &fakePluginRuntime{busy: true}
-	if errSync := SyncPlatform(context.Background(), syncTestConfig(t, root), runtime, Platform{GOOS: "windows", GOARCH: "amd64"}); errSync != nil {
-		t.Fatalf("SyncPlatform() error = %v", errSync)
+	if _, errSync := SyncPlatformWithReport(context.Background(), syncTestConfig(t, root), runtime, Platform{GOOS: "windows", GOARCH: "amd64"}); errSync != nil {
+		t.Fatalf("SyncPlatformWithReport() error = %v", errSync)
 	}
 	if len(runtime.unloaded) != 0 {
 		t.Fatalf("UnloadPlugin() calls = %v, want none", runtime.unloaded)
@@ -424,8 +424,8 @@ func TestSyncPlatformSkipsConfigWithoutManifest(t *testing.T) {
 			},
 		},
 	}
-	if errSync := SyncPlatform(context.Background(), cfg, nil, Platform{GOOS: "linux", GOARCH: "amd64"}); errSync != nil {
-		t.Fatalf("SyncPlatform() error = %v", errSync)
+	if _, errSync := SyncPlatformWithReport(context.Background(), cfg, nil, Platform{GOOS: "linux", GOARCH: "amd64"}); errSync != nil {
+		t.Fatalf("SyncPlatformWithReport() error = %v", errSync)
 	}
 }
 
@@ -444,8 +444,8 @@ store:
 			},
 		},
 	}
-	if errSync := SyncPlatform(context.Background(), cfg, nil, Platform{GOOS: "linux", GOARCH: "amd64"}); errSync == nil {
-		t.Fatal("SyncPlatform() error = nil, want invalid manifest")
+	if _, errSync := SyncPlatformWithReport(context.Background(), cfg, nil, Platform{GOOS: "linux", GOARCH: "amd64"}); errSync == nil {
+		t.Fatal("SyncPlatformWithReport() error = nil, want invalid manifest")
 	}
 }
 

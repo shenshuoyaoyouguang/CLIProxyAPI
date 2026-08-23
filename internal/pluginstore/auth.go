@@ -216,11 +216,6 @@ func pluginGitHubReleaseAuthConfigured(plugin Plugin, auth []AuthConfig) bool {
 		AuthConfigured(auth, releasesURL+"tags/", RequestKindMetadata)
 }
 
-func applyPluginStoreAuth(headers http.Header, auth []AuthConfig, requestURL string, kind string) error {
-	_, errApply := applyPluginStoreAuthForClient(headers, nil, auth, requestURL, kind)
-	return errApply
-}
-
 func applyPluginStoreAuthForClient(headers http.Header, resolved []ResolvedAuthConfig, auth []AuthConfig, requestURL string, kind string) (bool, error) {
 	if item, ok := matchingResolvedAuthConfig(resolved, requestURL, kind); ok {
 		applied, errApply := applyResolvedPluginStoreAuth(headers, item)

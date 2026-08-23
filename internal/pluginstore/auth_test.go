@@ -38,8 +38,8 @@ func TestPluginStoreAuthMatchesURLHostAndPathBoundaries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			headers := http.Header{}
-			if errAuth := applyPluginStoreAuth(headers, auth, tt.url, RequestKindArtifact); errAuth != nil {
-				t.Fatalf("applyPluginStoreAuth() error = %v", errAuth)
+			if _, errAuth := applyPluginStoreAuthForClient(headers, nil, auth, tt.url, RequestKindArtifact); errAuth != nil {
+				t.Fatalf("applyPluginStoreAuthForClient() error = %v", errAuth)
 			}
 			gotAuth := headers.Get("Authorization") != ""
 			if gotAuth != tt.wantAuth {
@@ -59,8 +59,8 @@ func TestPluginStoreGitHubTokenUsesExplicitTokenEnv(t *testing.T) {
 		TokenEnv: "PLUGIN_STORE_TOKEN",
 	}}
 
-	if errAuth := applyPluginStoreAuth(headers, auth, "https://api.github.com/repos/author-name/sample-provider/releases/assets/1", RequestKindArtifact); errAuth != nil {
-		t.Fatalf("applyPluginStoreAuth() error = %v", errAuth)
+	if _, errAuth := applyPluginStoreAuthForClient(headers, nil, auth, "https://api.github.com/repos/author-name/sample-provider/releases/assets/1", RequestKindArtifact); errAuth != nil {
+		t.Fatalf("applyPluginStoreAuthForClient() error = %v", errAuth)
 	}
 	if gotAuth := headers.Get("Authorization"); gotAuth != "Bearer secret-token" {
 		t.Fatalf("Authorization = %q, want Bearer secret-token", gotAuth)
