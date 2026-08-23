@@ -1,6 +1,7 @@
 package chat_completions
 
 import (
+	"fmt"
 	"strings"
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
@@ -257,7 +258,7 @@ func interactionsContentPartToOpenAI(part gjson.Result, role string) ([]byte, bo
 		return out, true
 	case "document", "file":
 		out := []byte(`{"type":"file","file":{"filename":"","file_data":""}}`)
-		out, _ = sjson.SetBytes(out, "file.filename", firstNonEmpty(part.Get("filename").String(), translatorcommon.FileNameFromMIME(part.Get("mime_type").String())))
+		out, _ = sjson.SetBytes(out, "file.filename", firstNonEmpty(part.Get("filename").String(), openAIFileNameFromMIME(part.Get("mime_type").String())))
 		out, _ = sjson.SetBytes(out, "file.file_data", part.Get("data").String())
 		if url := firstNonEmpty(part.Get("file_url").String(), part.Get("url").String()); url != "" {
 			out, _ = sjson.DeleteBytes(out, "file.file_data")
@@ -337,6 +338,26 @@ func interactionsMediaDataURL(part gjson.Result, fallbackMimeType string) string
 	}
 	mimeType := firstNonEmpty(part.Get("mime_type").String(), fallbackMimeType)
 	return "data:" + mimeType + ";base64," + data
+}
+
+// openAIFileNameFromMIME maps a MIME type to a document file name, deriving
+// the extension from the subtype for unlisted types.
+func openAIFileNameFromMIME(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "application/pdf":
+		return "document.pdf"
+	case "text/plain":
+		return "document.txt"
+	case "text/csv":
+		return "document.csv"
+	case "application/json":
+		return "document.json"
+	default:
+		if _, suffix, ok := strings.Cut(mimeType, "/"); ok && suffix != "" {
+			return fmt.Sprintf("document.%s", strings.ReplaceAll(suffix, "+", "."))
+		}
+		return "document.bin"
+	}
 }
 
 func copyNumber(out *[]byte, path string, value gjson.Result) {

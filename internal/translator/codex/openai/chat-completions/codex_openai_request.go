@@ -630,11 +630,6 @@ func toolOutputFallbackPart(item gjson.Result) []byte {
 	return part
 }
 
-// buildShortNameMap delegates to the shared unique-short-name map builder.
-func buildShortNameMap(names []string) map[string]string {
-	return translatorcommon.BuildShortNameMap(names)
-}
-
 // shortenNameIfNeeded delegates to the shared tool-name shortener.
 func shortenNameIfNeeded(name string) string {
 	return translatorcommon.ShortenToolName(name)
