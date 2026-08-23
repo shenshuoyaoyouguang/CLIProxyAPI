@@ -554,3 +554,27 @@ func TestHomeConcurrencyTupleStringsAreValidUTF8(t *testing.T) {
 		t.Fatal("oversized model was accepted")
 	}
 }
+
+func TestRecognizedHomeConcurrencySuffix(t *testing.T) {
+	cases := map[string]bool{
+		// numeric boundary
+		"2147483647":  true,  // max int32 -> accepted
+		"2147483648":  false, // overflow -> rejected
+		"9999999999":  false, // 10 digits, overflow -> rejected
+		"0000000000":  true,  // 10 digits, parses to 0 -> accepted
+		"00000000000": false, // 11 chars -> rejected
+		"123":         true,
+		// signs and whitespace are rejected exactly as the hand-rolled loop did
+		"+1": false,
+		"-1": true, // dedicated sentinel, not numeric parsing
+		"-2": false,
+		" 5": false,
+		"5 ": false,
+		"":   false,
+	}
+	for input, want := range cases {
+		if got := recognizedHomeConcurrencySuffix(input); got != want {
+			t.Errorf("recognizedHomeConcurrencySuffix(%q) = %v, want %v", input, got, want)
+		}
+	}
+}

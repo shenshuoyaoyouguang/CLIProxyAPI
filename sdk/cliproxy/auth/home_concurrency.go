@@ -135,17 +135,13 @@ func recognizedHomeConcurrencySuffix(value string) bool {
 	if value == "" || len(value) > 10 {
 		return false
 	}
-	var parsed int64
 	for index := 0; index < len(value); index++ {
 		if value[index] < '0' || value[index] > '9' {
 			return false
 		}
-		parsed = parsed*10 + int64(value[index]-'0')
-		if parsed > 2_147_483_647 {
-			return false
-		}
 	}
-	return true
+	_, err := strconv.ParseInt(value, 10, 32) // bitSize 32 enforces the <= 2^31-1 cap the loop implemented
+	return err == nil
 }
 
 func validHomeConcurrencyTupleField(value string) bool {
