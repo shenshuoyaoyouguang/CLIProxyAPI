@@ -1,16 +1,16 @@
 # @sdk/access SDK Reference
 
-The `github.com/router-for-me/CLIProxyAPI/v6/sdk/access` package centralizes inbound request authentication for the proxy. It offers a lightweight manager that chains credential providers, so servers can reuse the same access control logic inside or outside the CLI runtime.
+The `github.com/router-for-me/CLIProxyAPI/v7/sdk/access` package centralizes inbound request authentication for the proxy. It offers a lightweight manager that chains credential providers, so servers can reuse the same access control logic inside or outside the CLI runtime.
 
 ## Importing
 
 ```go
 import (
-    sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+    sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 )
 ```
 
-Add the module with `go get github.com/router-for-me/CLIProxyAPI/v6/sdk/access`.
+Add the module with `go get github.com/router-for-me/CLIProxyAPI/v7/sdk/access`.
 
 ## Provider Registry
 
@@ -76,7 +76,7 @@ To consume a provider shipped in another Go module, import it for its registrati
 ```go
 import (
     _ "github.com/acme/xplatform/sdk/access/providers/partner" // registers partner-token
-    sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+    sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 )
 ```
 
@@ -126,29 +126,19 @@ Errors propagate immediately to the caller unless they are classified as `not_ha
 
 ## Integration with cliproxy Service
 
-`sdk/cliproxy` wires `@sdk/access` automatically when you build a CLI service via `cliproxy.NewBuilder`. Supplying a manager lets you reuse the same instance in your host process:
+`sdk/cliproxy` wires `sdk/access` automatically when you build a CLI service via `cliproxy.NewBuilder`: the builder creates the access manager during `Build()` and populates it from the global provider registry.
 
 ```go
 coreCfg, _ := config.LoadConfig("config.yaml")
-accessManager := sdkaccess.NewManager()
 
 svc, _ := cliproxy.NewBuilder().
   WithConfig(coreCfg).
   WithConfigPath("config.yaml").
-  WithRequestAccessManager(accessManager).
   Build()
 ```
 
-Register any custom providers (typically via blank imports) before calling `Build()` so they are present in the global registry snapshot.
+Register any custom providers (typically via blank imports) before calling `Build()` so they are present in the registry snapshot.
 
 ### Hot reloading
 
-When configuration changes, refresh any config-backed providers and then reset the manager's provider chain:
-
-```go
-// configaccess is github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access
-configaccess.Register(&newCfg.SDKConfig)
-accessManager.SetProviders(sdkaccess.RegisteredProviders())
-```
-
-This mirrors the behaviour in `internal/access.ApplyAccessProviders`, enabling runtime updates without restarting the process.
+When configuration changes, the service refreshes config-backed providers and resets the manager's provider chain on its own, mirroring `internal/access.ApplyAccessProviders` — no embedder action is required for runtime updates.

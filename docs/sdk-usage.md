@@ -5,7 +5,7 @@ The `sdk/cliproxy` module exposes the proxy as a reusable Go library so external
 ## Install & Import
 
 ```bash
-go get github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy
+go get github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy
 ```
 
 ```go
@@ -14,8 +14,8 @@ import (
     "errors"
     "time"
 
-    "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-    "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
+    "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+    "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
 )
 ```
 
@@ -54,12 +54,6 @@ svc, _ := cliproxy.NewBuilder().
   WithServerOptions(
     // Add global middleware
     cliproxy.WithMiddleware(func(c *gin.Context) { c.Header("X-Embed", "1"); c.Next() }),
-    // Tweak gin engine early (CORS, trusted proxies, etc.)
-    cliproxy.WithEngineConfigurator(func(e *gin.Engine) { e.ForwardedByClientIP = true }),
-    // Add your own routes after defaults
-    cliproxy.WithRouterConfigurator(func(e *gin.Engine, _ *handlers.BaseAPIHandler, _ *config.Config) {
-      e.GET("/healthz", func(c *gin.Context) { c.String(200, "ok") })
-    }),
     // Override request log writer/dir
     cliproxy.WithRequestLoggerFactory(func(cfg *config.Config, cfgPath string) logging.RequestLogger {
       return logging.NewFileRequestLogger(true, "logs", filepath.Dir(cfgPath))
@@ -114,25 +108,6 @@ for ch := range chunks { /* ... */ }
 ```
 
 Note: Built‑in provider executors are wired automatically when you run the `Service`. If you want to use `Manager` stand‑alone without the HTTP server, you must register your own executors that implement `auth.ProviderExecutor`.
-
-## Custom Client Sources
-
-Replace the default loaders if your creds live outside the local filesystem:
-
-```go
-type memoryTokenProvider struct{}
-func (p *memoryTokenProvider) Load(ctx context.Context, cfg *config.Config) (*cliproxy.TokenClientResult, error) {
-    // Populate from memory/remote store and return counts
-    return &cliproxy.TokenClientResult{}, nil
-}
-
-svc, _ := cliproxy.NewBuilder().
-  WithConfig(cfg).
-  WithConfigPath("config.yaml").
-  WithTokenClientProvider(&memoryTokenProvider{}).
-  WithAPIKeyClientProvider(cliproxy.NewAPIKeyClientProvider()).
-  Build()
-```
 
 ## Hooks
 

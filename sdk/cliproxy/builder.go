@@ -27,23 +27,11 @@ type Builder struct {
 	// configPath is the path to the configuration file.
 	configPath string
 
-	// watcherFactory creates file watcher instances.
-	watcherFactory WatcherFactory
-
 	// hooks provides lifecycle callbacks.
 	hooks Hooks
 
-	// authManager handles legacy authentication operations.
-	authManager *sdkAuth.Manager
-
-	// accessManager handles request authentication providers.
-	accessManager *sdkaccess.Manager
-
 	// coreManager handles core authentication and execution.
 	coreManager *coreauth.Manager
-
-	// cooldownStateStore overrides runtime cooldown persistence.
-	cooldownStateStore coreauth.CooldownStateStore
 
 	// pluginHost owns dynamic plugin lifecycle and adapters.
 	pluginHost *pluginhost.Host
@@ -147,20 +135,9 @@ func (b *Builder) Build() (*Service, error) {
 		return nil, fmt.Errorf("cliproxy: %w", errResolvePluginsDir)
 	}
 
-	watcherFactory := b.watcherFactory
-	if watcherFactory == nil {
-		watcherFactory = defaultWatcherFactory
-	}
-
-	authManager := b.authManager
-	if authManager == nil {
-		authManager = newDefaultAuthManager()
-	}
-
-	accessManager := b.accessManager
-	if accessManager == nil {
-		accessManager = sdkaccess.NewManager()
-	}
+	watcherFactory := defaultWatcherFactory
+	authManager := newDefaultAuthManager()
+	accessManager := sdkaccess.NewManager()
 
 	configaccess.Register(&b.cfg.SDKConfig)
 	pluginHost := b.pluginHost
@@ -174,7 +151,7 @@ func (b *Builder) Build() (*Service, error) {
 	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 
 	coreManager := b.coreManager
-	cooldownStateStore := b.cooldownStateStore
+	var cooldownStateStore coreauth.CooldownStateStore
 	var appliedRoutingState *routingRuntimeState
 	if coreManager == nil {
 		tokenStore := sdkAuth.GetTokenStore()

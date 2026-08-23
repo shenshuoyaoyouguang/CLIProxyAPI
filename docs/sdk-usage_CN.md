@@ -5,7 +5,7 @@
 ## 安装与导入
 
 ```bash
-go get github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy
+go get github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy
 ```
 
 ```go
@@ -14,8 +14,8 @@ import (
     "errors"
     "time"
 
-    "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-    "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
+    "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+    "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
 )
 ```
 
@@ -54,12 +54,6 @@ svc, _ := cliproxy.NewBuilder().
   WithServerOptions(
     // 追加全局中间件
     cliproxy.WithMiddleware(func(c *gin.Context) { c.Header("X-Embed", "1"); c.Next() }),
-    // 提前调整 gin 引擎（如 CORS、trusted proxies）
-    cliproxy.WithEngineConfigurator(func(e *gin.Engine) { e.ForwardedByClientIP = true }),
-    // 在默认路由之后追加自定义路由
-    cliproxy.WithRouterConfigurator(func(e *gin.Engine, _ *handlers.BaseAPIHandler, _ *config.Config) {
-      e.GET("/healthz", func(c *gin.Context) { c.String(200, "ok") })
-    }),
     // 覆盖请求日志的创建（启用/目录）
     cliproxy.WithRequestLoggerFactory(func(cfg *config.Config, cfgPath string) logging.RequestLogger {
       return logging.NewFileRequestLogger(true, "logs", filepath.Dir(cfgPath))
@@ -114,25 +108,6 @@ for ch := range chunks { /* ... */ }
 ```
 
 说明：运行 `Service` 时会自动注册内置的提供商执行器；若仅单独使用 `Manager` 而不启动 HTTP 服务器，则需要自行实现并注册满足 `auth.ProviderExecutor` 的执行器。
-
-## 自定义凭据来源
-
-当凭据不在本地文件系统时，替换默认加载器：
-
-```go
-type memoryTokenProvider struct{}
-func (p *memoryTokenProvider) Load(ctx context.Context, cfg *config.Config) (*cliproxy.TokenClientResult, error) {
-    // 从内存/远端加载并返回数量统计
-    return &cliproxy.TokenClientResult{}, nil
-}
-
-svc, _ := cliproxy.NewBuilder().
-  WithConfig(cfg).
-  WithConfigPath("config.yaml").
-  WithTokenClientProvider(&memoryTokenProvider{}).
-  WithAPIKeyClientProvider(cliproxy.NewAPIKeyClientProvider()).
-  Build()
-```
 
 ## 启动钩子
 

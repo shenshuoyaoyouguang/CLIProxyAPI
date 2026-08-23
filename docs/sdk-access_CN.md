@@ -1,16 +1,16 @@
 # @sdk/access 开发指引
 
-`github.com/router-for-me/CLIProxyAPI/v6/sdk/access` 包负责代理的入站访问认证。它提供一个轻量的管理器，用于按顺序链接多种凭证校验实现，让服务器在 CLI 运行时内外都能复用相同的访问控制逻辑。
+`github.com/router-for-me/CLIProxyAPI/v7/sdk/access` 包负责代理的入站访问认证。它提供一个轻量的管理器，用于按顺序链接多种凭证校验实现，让服务器在 CLI 运行时内外都能复用相同的访问控制逻辑。
 
 ## 引用方式
 
 ```go
 import (
-    sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+    sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 )
 ```
 
-通过 `go get github.com/router-for-me/CLIProxyAPI/v6/sdk/access` 添加依赖。
+通过 `go get github.com/router-for-me/CLIProxyAPI/v7/sdk/access` 添加依赖。
 
 ## Provider Registry
 
@@ -76,7 +76,7 @@ api-keys:
 ```go
 import (
     _ "github.com/acme/xplatform/sdk/access/providers/partner" // registers partner-token
-    sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+    sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 )
 ```
 
@@ -126,16 +126,14 @@ func init() {
 
 ## 与 cliproxy 集成
 
-使用 `sdk/cliproxy` 构建服务时会自动接入 `@sdk/access`。如果希望在宿主进程里复用同一个 `Manager` 实例，可传入自定义管理器：
+使用 `sdk/cliproxy` 构建服务时会自动接入 `sdk/access`：`Build()` 时会自动创建 access manager，并从全局 provider registry 装配 provider 链。
 
 ```go
 coreCfg, _ := config.LoadConfig("config.yaml")
-accessManager := sdkaccess.NewManager()
 
 svc, _ := cliproxy.NewBuilder().
   WithConfig(coreCfg).
   WithConfigPath("config.yaml").
-  WithRequestAccessManager(accessManager).
   Build()
 ```
 
@@ -143,12 +141,4 @@ svc, _ := cliproxy.NewBuilder().
 
 ### 动态热更新提供者
 
-当配置发生变化时，刷新依赖配置的 provider，然后重置 manager 的 provider 链：
-
-```go
-// configaccess is github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access
-configaccess.Register(&newCfg.SDKConfig)
-accessManager.SetProviders(sdkaccess.RegisteredProviders())
-```
-
-这一流程与 `internal/access.ApplyAccessProviders` 保持一致，避免为更新访问策略而重启进程。
+配置发生变化时，服务会自行刷新依赖配置的 provider 并重置 manager 的 provider 链，与 `internal/access.ApplyAccessProviders` 保持一致——嵌入方无需额外处理即可运行时更新访问策略。
