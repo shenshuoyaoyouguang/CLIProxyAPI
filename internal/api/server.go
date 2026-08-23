@@ -129,9 +129,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
-	if optionState.engineConfigurator != nil {
-		optionState.engineConfigurator(engine)
-	}
 
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
@@ -224,11 +221,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Setup routes
 	s.setupRoutes()
-
-	// Apply additional router configurators from options
-	if optionState.routerConfigurator != nil {
-		optionState.routerConfigurator(engine, s.handlers, cfg)
-	}
 
 	// Register management routes when configuration or environment secrets are available,
 	// or when a local management password is provided (e.g. TUI mode).

@@ -28,16 +28,6 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) bool {
 	return true
 }
 
-// UpdateClients updates the server's client list and configuration.
-// This method is called when the configuration or authentication tokens change.
-//
-// Parameters:
-//   - clients: The new slice of AI service clients
-//   - cfg: The new application configuration
-func (s *Server) UpdateClients(cfg *config.Config) {
-	s.UpdateClientsContext(context.Background(), cfg)
-}
-
 // UpdateClientsContext updates runtime clients while honoring cancellation between
 // short configuration and filesystem operations.
 func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) bool {
@@ -64,8 +54,6 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	if s.requestLogger != nil && (oldCfg == nil || previousRequestLog != cfg.RequestLog) {
 		if s.loggerToggle != nil {
 			s.loggerToggle(cfg.RequestLog)
-		} else if toggler, ok := s.requestLogger.(interface{ SetEnabled(bool) }); ok {
-			toggler.SetEnabled(cfg.RequestLog)
 		}
 	}
 

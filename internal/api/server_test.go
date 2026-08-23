@@ -1549,7 +1549,7 @@ func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 	server := newTestServerWithOptions(t, WithExampleAPIKeySafeMode())
 	cfg := *server.cfg
 	cfg.APIKeys = []string{"your-api-key-1"}
-	server.UpdateClients(&cfg)
+	server.UpdateClientsContext(context.Background(), &cfg)
 
 	t.Run("root warning page includes management link", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1645,7 +1645,7 @@ func TestExampleAPIKeySafeModeShowsWarningAndKeepsManagement(t *testing.T) {
 	t.Run("safe mode clears after key update", func(t *testing.T) {
 		nextCfg := cfg
 		nextCfg.APIKeys = []string{"real-key"}
-		server.UpdateClients(&nextCfg)
+		server.UpdateClientsContext(context.Background(), &nextCfg)
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		req.Header.Set("Authorization", "Bearer real-key")
@@ -1822,7 +1822,7 @@ func TestClaudeModelListCloakingConfigHotReload(t *testing.T) {
 	updatedCfg := *server.cfg
 	updatedCfg.SDKConfig = server.cfg.SDKConfig
 	updatedCfg.ClaudeCode.DisableCloakingModelList = true
-	server.UpdateClients(&updatedCfg)
+	server.UpdateClientsContext(context.Background(), &updatedCfg)
 
 	assertModelID(modelID)
 }
