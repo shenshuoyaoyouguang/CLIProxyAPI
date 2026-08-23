@@ -27,12 +27,6 @@ type Builder struct {
 	// configPath is the path to the configuration file.
 	configPath string
 
-	// tokenProvider handles loading token-based clients.
-	tokenProvider TokenClientProvider
-
-	// apiKeyProvider handles loading API key-based clients.
-	apiKeyProvider APIKeyClientProvider
-
 	// watcherFactory creates file watcher instances.
 	watcherFactory WatcherFactory
 
@@ -53,9 +47,6 @@ type Builder struct {
 
 	// pluginHost owns dynamic plugin lifecycle and adapters.
 	pluginHost *pluginhost.Host
-
-	// postAuthHook is called after auth record creation and before persistence.
-	postAuthHook coreauth.PostAuthHook
 
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
@@ -156,16 +147,6 @@ func (b *Builder) Build() (*Service, error) {
 		return nil, fmt.Errorf("cliproxy: %w", errResolvePluginsDir)
 	}
 
-	tokenProvider := b.tokenProvider
-	if tokenProvider == nil {
-		tokenProvider = NewFileTokenClientProvider()
-	}
-
-	apiKeyProvider := b.apiKeyProvider
-	if apiKeyProvider == nil {
-		apiKeyProvider = NewAPIKeyClientProvider()
-	}
-
 	watcherFactory := b.watcherFactory
 	if watcherFactory == nil {
 		watcherFactory = defaultWatcherFactory
@@ -221,8 +202,6 @@ func (b *Builder) Build() (*Service, error) {
 	service := &Service{
 		cfg:                 b.cfg,
 		configPath:          b.configPath,
-		tokenProvider:       tokenProvider,
-		apiKeyProvider:      apiKeyProvider,
 		watcherFactory:      watcherFactory,
 		hooks:               b.hooks,
 		authManager:         authManager,
@@ -232,9 +211,6 @@ func (b *Builder) Build() (*Service, error) {
 		pluginHost:          pluginHost,
 		appliedRoutingState: appliedRoutingState,
 		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
-	}
-	if b.postAuthHook != nil {
-		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))
 	}
 	service.serverOptions = append(service.serverOptions,
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),

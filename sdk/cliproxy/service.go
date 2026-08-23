@@ -44,12 +44,6 @@ type Service struct {
 	// configPath is the path to the configuration file.
 	configPath string
 
-	// tokenProvider handles loading token-based clients.
-	tokenProvider TokenClientProvider
-
-	// apiKeyProvider handles loading API key-based clients.
-	apiKeyProvider APIKeyClientProvider
-
 	// watcherFactory creates file watcher instances.
 	watcherFactory WatcherFactory
 

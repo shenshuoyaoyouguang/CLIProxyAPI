@@ -2,7 +2,6 @@ package cliproxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -83,24 +82,6 @@ func (s *Service) Run(ctx context.Context) error {
 			if errRestoreCooldown := s.coreManager.RestoreCooldownStates(ctx); errRestoreCooldown != nil {
 				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)
 			}
-		}
-	}
-
-	if !homeEnabled {
-		tokenResult, err := s.tokenProvider.Load(ctx, s.cfg)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
-		if tokenResult == nil {
-			tokenResult = &TokenClientResult{}
-		}
-
-		apiKeyResult, err := s.apiKeyProvider.Load(ctx, s.cfg)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
-		if apiKeyResult == nil {
-			apiKeyResult = &APIKeyClientResult{}
 		}
 	}
 

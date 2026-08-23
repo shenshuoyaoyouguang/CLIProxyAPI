@@ -19,7 +19,6 @@ type serverOptionConfig struct {
 	keepAliveEnabled      bool
 	keepAliveTimeout      time.Duration
 	keepAliveOnTimeout    func()
-	postAuthHook          auth.PostAuthHook
 	postAuthPersistHook   auth.PostAuthHook
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
@@ -79,13 +78,6 @@ func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption
 func WithRequestLoggerFactory(factory func(*config.Config, string) logging.RequestLogger) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.requestLoggerFactory = factory
-	}
-}
-
-// WithPostAuthHook registers a hook to be called after auth record creation.
-func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.postAuthHook = hook
 	}
 }
 
