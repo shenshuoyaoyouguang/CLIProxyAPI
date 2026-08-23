@@ -11,9 +11,9 @@ import (
 	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 )
 
-// Tests for the shared generation-fenced replay base (fenced_value_cache.go)
-// exercised through a standalone []byte-valued store, independent of the
-// kimi/claude wrappers.
+// Tests for the shared generation-fenced replay engine section of
+// replay_engine.go exercised through a standalone []byte-valued store,
+// independent of the kimi/claude wrappers.
 
 func newFencedTestCache() (*sync.Mutex, map[string]fencedReplayEntry[[]byte], *int) {
 	total := 0
@@ -108,7 +108,7 @@ func TestFencedTombstoneRequiresCurrentSnapshot(t *testing.T) {
 	if !tombstoneFencedReplayIfUnchanged(mu, entries, total, fencedTestSize, "k", true, "gen-1", now) {
 		t.Fatal("tombstone rejected current snapshot")
 	}
-	if !entries["k"].Deleted || entries["k"].Value != nil && len(entries["k"].Value) != 0 {
+	if !entries["k"].Deleted || (entries["k"].Value != nil && len(entries["k"].Value) != 0) {
 		t.Fatalf("entry not tombstoned: %+v", entries["k"])
 	}
 }

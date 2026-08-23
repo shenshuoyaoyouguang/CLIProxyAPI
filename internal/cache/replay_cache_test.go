@@ -10,8 +10,8 @@ import (
 	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 )
 
-// Tests for the shared item-list replay base (replay_cache.go) exercised
-// through a standalone store, independent of the codex/xai wrappers.
+// Tests for the shared item-list replay engine section of replay_engine.go
+// exercised through a standalone store, independent of the codex/xai wrappers.
 
 func newItemReplayTestStore() (*sync.Mutex, map[string]itemReplayEntry) {
 	return &sync.Mutex{}, make(map[string]itemReplayEntry)
@@ -180,5 +180,3 @@ func TestItemReplayHomeGetMissingKey(t *testing.T) {
 		t.Fatalf("missing key err=%v ok=%v items=%v, want clean miss", err, ok, items)
 	}
 }
-
-var _ sync.Locker = (*sync.Mutex)(nil)
