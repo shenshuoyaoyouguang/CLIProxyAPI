@@ -4,16 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
-
-type OAuthRequestScopedErrorsSummary struct {
-	hash  string
-	count int
-}
 
 // SummarizeOAuthRequestScopedErrors summarizes OAuth request-scoped errors per channel.
 func SummarizeOAuthRequestScopedErrors(entries map[string][]config.RequestScopedErrorRule) map[string]OAuthRequestScopedErrorsSummary {
@@ -36,35 +30,7 @@ func SummarizeOAuthRequestScopedErrors(entries map[string][]config.RequestScoped
 
 // DiffOAuthRequestScopedErrorsChanges compares OAuth request-scoped error maps.
 func DiffOAuthRequestScopedErrorsChanges(oldMap, newMap map[string][]config.RequestScopedErrorRule) ([]string, []string) {
-	oldSummary := SummarizeOAuthRequestScopedErrors(oldMap)
-	newSummary := SummarizeOAuthRequestScopedErrors(newMap)
-	keys := make(map[string]struct{}, len(oldSummary)+len(newSummary))
-	for k := range oldSummary {
-		keys[k] = struct{}{}
-	}
-	for k := range newSummary {
-		keys[k] = struct{}{}
-	}
-	changes := make([]string, 0, len(keys))
-	affected := make([]string, 0, len(keys))
-	for key := range keys {
-		oldInfo, okOld := oldSummary[key]
-		newInfo, okNew := newSummary[key]
-		switch {
-		case okOld && !okNew:
-			changes = append(changes, fmt.Sprintf("oauth-request-scoped-errors[%s]: removed", key))
-			affected = append(affected, key)
-		case !okOld && okNew:
-			changes = append(changes, fmt.Sprintf("oauth-request-scoped-errors[%s]: added (%d entries)", key, newInfo.count))
-			affected = append(affected, key)
-		case okOld && okNew && oldInfo.hash != newInfo.hash:
-			changes = append(changes, fmt.Sprintf("oauth-request-scoped-errors[%s]: updated (%d -> %d entries)", key, oldInfo.count, newInfo.count))
-			affected = append(affected, key)
-		}
-	}
-	sort.Strings(changes)
-	sort.Strings(affected)
-	return changes, affected
+	return diffSummaryMapChanges(SummarizeOAuthRequestScopedErrors(oldMap), SummarizeOAuthRequestScopedErrors(newMap), "oauth-request-scoped-errors")
 }
 
 func summarizeOAuthRequestScopedErrorsList(list []config.RequestScopedErrorRule) OAuthRequestScopedErrorsSummary {
