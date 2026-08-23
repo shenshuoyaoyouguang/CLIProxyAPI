@@ -1,11 +1,19 @@
 package common
 
 import (
+	"mime"
 	"path/filepath"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 )
+
+// bareMediaType strips parameters (e.g. "; charset=utf-8") that system MIME
+// tables append, so fallback types match the curated table's bare media types.
+func bareMediaType(mediaType string) string {
+	bare, _, _ := strings.Cut(mediaType, ";")
+	return strings.TrimSpace(bare)
+}
 
 // NormalizeOpenAIFileData returns the MIME type and raw base64 payload for OpenAI file content.
 func NormalizeOpenAIFileData(filename, fallbackMIMEType, fileData string) (mimeType, data string, ok bool) {
@@ -16,6 +24,9 @@ func NormalizeOpenAIFileData(filename, fallbackMIMEType, fileData string) (mimeT
 	if fallbackMIMEType == "" {
 		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
 		fallbackMIMEType = misc.MimeTypes[ext]
+		if fallbackMIMEType == "" && ext != "" {
+			fallbackMIMEType = bareMediaType(mime.TypeByExtension("." + ext))
+		}
 	}
 	const dataURLPrefix = "data:"
 	if len(fileData) < len(dataURLPrefix) || !strings.EqualFold(fileData[:len(dataURLPrefix)], dataURLPrefix) {

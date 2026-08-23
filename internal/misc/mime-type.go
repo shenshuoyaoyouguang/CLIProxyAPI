@@ -7,8 +7,9 @@ package misc
 // serves. Keys are lower-case extension without the leading dot, matching the key
 // construction in internal/translator/common/file_data.go (filepath.Ext minus the dot).
 // Values are byte-for-byte the same as the prior comprehensive table for these keys.
-// System MIME tables cover the long tail via mime.TypeByExtension at the call site's
-// discretion. Re-add entries if a provider starts rejecting a specific extension.
+// System MIME tables cover the long tail via mime.TypeByExtension at the call
+// site in file_data.go. Re-add entries if a provider starts rejecting the
+// system table's value for an extension.
 var MimeTypes = map[string]string{
 	"png":  "image/png",
 	"jpg":  "image/jpeg",
