@@ -103,7 +103,7 @@ func ConvertInteractionsResponseToClaudeNonStream(_ context.Context, modelName s
 }
 
 func convertInteractionsEventToClaude(modelName string, rawJSON []byte, st *interactionsToClaudeStreamState) [][]byte {
-	payload := interactionsSSEPayload(rawJSON)
+	payload := translatorcommon.InteractionsSSEPayload(rawJSON)
 	if len(payload) == 0 {
 		return nil
 	}
@@ -307,27 +307,6 @@ func setClaudeUsageFromInteractions(out []byte, path string, usage gjson.Result)
 		out, _ = sjson.SetBytes(out, path+".output_tokens", v)
 	}
 	return out
-}
-
-func interactionsSSEPayload(rawJSON []byte) []byte {
-	trimmed := bytes.TrimSpace(rawJSON)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) {
-		return trimmed
-	}
-	if bytes.HasPrefix(trimmed, []byte("data:")) {
-		return bytes.TrimSpace(trimmed[len("data:"):])
-	}
-	var dataLines [][]byte
-	for _, line := range bytes.Split(trimmed, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if bytes.HasPrefix(line, []byte("data:")) {
-			dataLines = append(dataLines, bytes.TrimSpace(line[len("data:"):]))
-		}
-	}
-	if len(dataLines) > 0 {
-		return bytes.Join(dataLines, []byte("\n"))
-	}
-	return trimmed
 }
 
 func interactionsContentTexts(content gjson.Result) []string {

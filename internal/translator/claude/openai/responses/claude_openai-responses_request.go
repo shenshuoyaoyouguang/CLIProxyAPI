@@ -945,16 +945,6 @@ func responsesCustomToolNames(requestRawJSON []byte) map[string]struct{} {
 	return names
 }
 
-func unwrapCustomToolInput(arguments string) string {
-	if v := gjson.Get(arguments, "input"); v.Exists() {
-		if v.Type == gjson.String {
-			return v.String()
-		}
-		return v.Raw
-	}
-	return arguments
-}
-
 func convertResponsesFunctionToolToClaude(tool gjson.Result, overrideName string) ([]byte, bool) {
 	name := strings.TrimSpace(overrideName)
 	if name == "" {
@@ -969,7 +959,7 @@ func convertResponsesFunctionToolToClaude(tool gjson.Result, overrideName string
 	if d := responsesToolDescription(tool); d != "" {
 		tJSON, _ = sjson.SetBytes(tJSON, "description", d)
 	}
-	tJSON, _ = sjson.SetRawBytes(tJSON, "input_schema", util.NormalizeClaudeToolInputSchema([]byte(responsesToolParameters(tool).Raw)))
+	tJSON, _ = sjson.SetRawBytes(tJSON, "input_schema", util.NormalizeClaudeToolInputSchema([]byte(common.ResponsesToolParameters(tool).Raw)))
 	tJSON = common.AttachCacheControl(tJSON, tool)
 	if !gjson.GetBytes(tJSON, "cache_control").Exists() {
 		tJSON = common.AttachCacheControl(tJSON, tool.Get("function"))
@@ -1030,21 +1020,6 @@ func responsesToolDescription(tool gjson.Result) string {
 		return description
 	}
 	return tool.Get("function.description").String()
-}
-
-func responsesToolParameters(tool gjson.Result) gjson.Result {
-	for _, path := range []string{
-		"parameters",
-		"parametersJsonSchema",
-		"input_schema",
-		"function.parameters",
-		"function.parametersJsonSchema",
-	} {
-		if parameters := tool.Get(path); parameters.Exists() {
-			return parameters
-		}
-	}
-	return gjson.Result{}
 }
 
 func qualifyResponsesNamespaceToolName(namespaceName, childName string) string {

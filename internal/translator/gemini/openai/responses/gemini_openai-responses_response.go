@@ -81,16 +81,6 @@ var responseIDCounter uint64
 // funcCallIDCounter provides a process-wide unique counter for function call identifiers.
 var funcCallIDCounter uint64
 
-func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
-	if len(originalRequestRawJSON) > 0 && gjson.ValidBytes(originalRequestRawJSON) {
-		return originalRequestRawJSON
-	}
-	if len(requestRawJSON) > 0 && gjson.ValidBytes(requestRawJSON) {
-		return requestRawJSON
-	}
-	return nil
-}
-
 func unwrapRequestRoot(root gjson.Result) gjson.Result {
 	req := root.Get("request")
 	if !req.Exists() {
@@ -120,7 +110,7 @@ func emitEvent(event string, payload []byte) []byte {
 
 // ConvertGeminiResponseToOpenAIResponses converts Gemini SSE chunks into OpenAI Responses SSE events.
 func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
-	reqJSON := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+	reqJSON := translatorcommon.PickRequestJSON(originalRequestRawJSON, requestRawJSON)
 	if *param == nil {
 		*param = &geminiToResponsesState{
 			FuncArgsBuf:             make(map[int]*strings.Builder),
@@ -785,7 +775,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		completed, _ = sjson.SetBytes(completed, "response.id", st.ResponseID)
 		completed, _ = sjson.SetBytes(completed, "response.created_at", st.CreatedAt)
 
-		if reqJSON := pickRequestJSON(originalRequestRawJSON, requestRawJSON); len(reqJSON) > 0 {
+		if reqJSON := translatorcommon.PickRequestJSON(originalRequestRawJSON, requestRawJSON); len(reqJSON) > 0 {
 			req := unwrapRequestRoot(gjson.ParseBytes(reqJSON))
 			if v := req.Get("instructions"); v.Exists() {
 				completed, _ = sjson.SetBytes(completed, "response.instructions", v.String())
@@ -938,7 +928,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) []byte {
 	root := gjson.ParseBytes(rawJSON)
 	root = unwrapGeminiResponseRoot(root)
-	reqJSON := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+	reqJSON := translatorcommon.PickRequestJSON(originalRequestRawJSON, requestRawJSON)
 	sanitizedNameMap := util.SanitizedToolNameMap(originalRequestRawJSON)
 	toolIdentityMap := util.ResponsesToolReverseIdentityMap(reqJSON)
 
@@ -966,7 +956,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	resp, _ = sjson.SetBytes(resp, "created_at", createdAt)
 
 	// Echo request fields when present; fallback model from response modelVersion
-	if reqJSON := pickRequestJSON(originalRequestRawJSON, requestRawJSON); len(reqJSON) > 0 {
+	if reqJSON := translatorcommon.PickRequestJSON(originalRequestRawJSON, requestRawJSON); len(reqJSON) > 0 {
 		req := unwrapRequestRoot(gjson.ParseBytes(reqJSON))
 		if v := req.Get("instructions"); v.Exists() {
 			resp, _ = sjson.SetBytes(resp, "instructions", v.String())

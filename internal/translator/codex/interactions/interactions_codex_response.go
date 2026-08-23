@@ -358,7 +358,7 @@ func buildCodexImageItemToInteractions(item gjson.Result) []byte {
 		return nil
 	}
 	step := []byte(`{"type":"model_output","content":[{"type":"image","mime_type":"","data":""}]}`)
-	step, _ = sjson.SetBytes(step, "content.0.mime_type", mimeTypeFromCodexOutputFormat(item.Get("output_format").String()))
+	step, _ = sjson.SetBytes(step, "content.0.mime_type", translatorcommon.MimeTypeFromCodexOutputFormat(item.Get("output_format").String()))
 	step, _ = sjson.SetBytes(step, "content.0.data", result)
 	return step
 }
@@ -433,7 +433,7 @@ func appendCodexImageItemToInteractionsStream(out [][]byte, st *codexToInteracti
 	out = ensureCodexInteractionsStep(out, st, "model_output", item)
 	delta := []byte(`{"index":0,"delta":{"content":{"type":"image","mime_type":"","data":""},"type":"content"},"event_type":"step.delta"}`)
 	delta, _ = sjson.SetBytes(delta, "index", st.ActiveStepIndex)
-	delta, _ = sjson.SetBytes(delta, "delta.content.mime_type", mimeTypeFromCodexOutputFormat(item.Get("output_format").String()))
+	delta, _ = sjson.SetBytes(delta, "delta.content.mime_type", translatorcommon.MimeTypeFromCodexOutputFormat(item.Get("output_format").String()))
 	delta, _ = sjson.SetBytes(delta, "delta.content.data", result)
 	return append(out, translatorcommon.SSEEventData("step.delta", delta))
 }
@@ -571,25 +571,4 @@ func setCodexInteractionsUsage(out []byte, path string, usage gjson.Result, stre
 		out, _ = sjson.SetBytes(out, path+".cached_tokens", cachedTokens)
 	}
 	return out
-}
-
-func mimeTypeFromCodexOutputFormat(outputFormat string) string {
-	if outputFormat == "" {
-		return "image/png"
-	}
-	if strings.Contains(outputFormat, "/") {
-		return outputFormat
-	}
-	switch strings.ToLower(outputFormat) {
-	case "png":
-		return "image/png"
-	case "jpg", "jpeg":
-		return "image/jpeg"
-	case "webp":
-		return "image/webp"
-	case "gif":
-		return "image/gif"
-	default:
-		return "image/png"
-	}
 }

@@ -830,7 +830,7 @@ func buildReverseMapFromClaudeOriginalShortToOriginal(original []byte) map[strin
 		}
 	}
 	if len(names) > 0 {
-		m := buildShortNameMap(names)
+		m := translatorcommon.BuildShortNameMap(names)
 		for orig, short := range m {
 			rev[short] = orig
 		}

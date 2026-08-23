@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -30,14 +31,6 @@ type ConvertAnthropicResponseToOpenAIParams struct {
 	ToolCallsAccumulator map[int]*ToolCallAccumulator
 }
 
-type claudeUsageTokens struct {
-	InputTokens              int64
-	OutputTokens             int64
-	CacheCreationInputTokens int64
-	CacheReadInputTokens     int64
-	HasUsage                 bool
-}
-
 // ToolCallAccumulator holds the state for accumulating tool call data
 type ToolCallAccumulator struct {
 	ID        string
@@ -45,26 +38,9 @@ type ToolCallAccumulator struct {
 	Arguments strings.Builder
 }
 
-func (u *claudeUsageTokens) Merge(usage gjson.Result) {
-	if !usage.Exists() {
-		return
-	}
-	u.HasUsage = true
-	if inputTokens := usage.Get("input_tokens"); inputTokens.Exists() {
-		u.InputTokens = inputTokens.Int()
-	}
-	if outputTokens := usage.Get("output_tokens"); outputTokens.Exists() {
-		u.OutputTokens = outputTokens.Int()
-	}
-	if cacheCreationInputTokens := usage.Get("cache_creation_input_tokens"); cacheCreationInputTokens.Exists() {
-		u.CacheCreationInputTokens = cacheCreationInputTokens.Int()
-	}
-	if cacheReadInputTokens := usage.Get("cache_read_input_tokens"); cacheReadInputTokens.Exists() {
-		u.CacheReadInputTokens = cacheReadInputTokens.Int()
-	}
-}
-
-func (u claudeUsageTokens) OpenAIUsage() (promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens int64) {
+// openAIUsage derives the OpenAI Chat Completions usage tuple from the shared
+// Claude usage accumulator.
+func openAIUsage(u translatorcommon.ClaudeUsageTokens) (promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens int64) {
 	cachedTokens = u.CacheReadInputTokens
 	cachedCreationTokens = u.CacheCreationInputTokens
 	promptTokens = u.InputTokens + cachedCreationTokens + cachedTokens
@@ -242,7 +218,8 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 		// Handle usage information for token counts
 		if usage := root.Get("usage"); usage.Exists() {
 			(*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.Merge(usage)
-			promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.OpenAIUsage()
+			params := (*param).(*ConvertAnthropicResponseToOpenAIParams)
+			promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := openAIUsage(params.Usage)
 			template, _ = sjson.SetBytes(template, "usage.prompt_tokens", promptTokens)
 			template, _ = sjson.SetBytes(template, "usage.completion_tokens", completionTokens)
 			template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokens)
@@ -409,7 +386,7 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 	}
 
 	if usageTokens.HasUsage {
-		promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := usageTokens.OpenAIUsage()
+		promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := openAIUsage(usageTokens)
 		out, _ = sjson.SetBytes(out, "usage.prompt_tokens", promptTokens)
 		out, _ = sjson.SetBytes(out, "usage.completion_tokens", completionTokens)
 		out, _ = sjson.SetBytes(out, "usage.total_tokens", totalTokens)
@@ -473,3 +450,6 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 
 	return out
 }
+
+// claudeUsageTokens aliases the shared Claude usage accumulator.
+type claudeUsageTokens = translatorcommon.ClaudeUsageTokens

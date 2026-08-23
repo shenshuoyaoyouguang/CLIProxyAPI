@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"strconv"
 
 	"github.com/tidwall/gjson"
@@ -84,15 +85,7 @@ func SSEEventData(event string, payload []byte) []byte {
 }
 
 func AppendSSEEventString(out []byte, event, payload string, trailingNewlines int) []byte {
-	out = append(out, "event: "...)
-	out = append(out, event...)
-	out = append(out, '\n')
-	out = append(out, "data: "...)
-	out = append(out, payload...)
-	for i := 0; i < trailingNewlines; i++ {
-		out = append(out, '\n')
-	}
-	return out
+	return AppendSSEEventBytes(out, event, []byte(payload), trailingNewlines)
 }
 
 func AppendSSEEventBytes(out []byte, event string, payload []byte, trailingNewlines int) []byte {
@@ -105,4 +98,29 @@ func AppendSSEEventBytes(out []byte, event string, payload []byte, trailingNewli
 		out = append(out, '\n')
 	}
 	return out
+}
+
+// InteractionsSSEPayload extracts the data payload from an interactions SSE
+// frame: it trims whitespace, unwraps a single or multi-line "data:" prefix,
+// passes "[DONE]" through untouched, and returns the trimmed input when no
+// data prefix is present.
+func InteractionsSSEPayload(rawJSON []byte) []byte {
+	trimmed := bytes.TrimSpace(rawJSON)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) {
+		return trimmed
+	}
+	if bytes.HasPrefix(trimmed, []byte("data:")) {
+		return bytes.TrimSpace(trimmed[len("data:"):])
+	}
+	var dataLines [][]byte
+	for _, line := range bytes.Split(trimmed, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("data:")) {
+			dataLines = append(dataLines, bytes.TrimSpace(line[len("data:"):]))
+		}
+	}
+	if len(dataLines) > 0 {
+		return bytes.Join(dataLines, []byte("\n"))
+	}
+	return trimmed
 }

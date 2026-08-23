@@ -60,14 +60,6 @@ type claudeResponsesReasoningItem struct {
 	Signature   string
 }
 
-type claudeResponsesUsageTokens struct {
-	InputTokens              int64
-	OutputTokens             int64
-	CacheCreationInputTokens int64
-	CacheReadInputTokens     int64
-	HasUsage                 bool
-}
-
 var dataTag = []byte("data:")
 
 // ClaudeResponsesRedactedThinkingPrefix marks a Responses reasoning item whose
@@ -97,41 +89,14 @@ func claudeReasoningCarrier(contentBlock gjson.Result) string {
 	return ""
 }
 
-func (u *claudeResponsesUsageTokens) Merge(usage gjson.Result) {
-	if !usage.Exists() {
-		return
-	}
-	u.HasUsage = true
-	if inputTokens := usage.Get("input_tokens"); inputTokens.Exists() {
-		u.InputTokens = inputTokens.Int()
-	}
-	if outputTokens := usage.Get("output_tokens"); outputTokens.Exists() {
-		u.OutputTokens = outputTokens.Int()
-	}
-	if cacheCreationInputTokens := usage.Get("cache_creation_input_tokens"); cacheCreationInputTokens.Exists() {
-		u.CacheCreationInputTokens = cacheCreationInputTokens.Int()
-	}
-	if cacheReadInputTokens := usage.Get("cache_read_input_tokens"); cacheReadInputTokens.Exists() {
-		u.CacheReadInputTokens = cacheReadInputTokens.Int()
-	}
-}
-
-func (u claudeResponsesUsageTokens) OpenAIResponsesUsage() (inputTokens, outputTokens, totalTokens, cachedTokens int64) {
+// openAIResponsesUsage derives the OpenAI Responses usage tuple from the
+// shared Claude usage accumulator.
+func openAIResponsesUsage(u translatorcommon.ClaudeUsageTokens) (inputTokens, outputTokens, totalTokens, cachedTokens int64) {
 	cachedTokens = u.CacheReadInputTokens
 	inputTokens = u.InputTokens + u.CacheCreationInputTokens + cachedTokens
 	outputTokens = u.OutputTokens
 	totalTokens = inputTokens + outputTokens
 	return inputTokens, outputTokens, totalTokens, cachedTokens
-}
-
-func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
-	if len(originalRequestRawJSON) > 0 && gjson.ValidBytes(originalRequestRawJSON) {
-		return originalRequestRawJSON
-	}
-	if len(requestRawJSON) > 0 && gjson.ValidBytes(requestRawJSON) {
-		return requestRawJSON
-	}
-	return nil
 }
 
 func applyResponsesFunctionCallNamespaceFields(item []byte, requestRawJSON []byte, qualifiedName string, itemPath string) []byte {
@@ -251,7 +216,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 	}
 	rawJSON = bytes.TrimSpace(rawJSON[5:])
 	root := gjson.ParseBytes(rawJSON)
-	requestForToolMetadata := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+	requestForToolMetadata := translatorcommon.PickRequestJSON(originalRequestRawJSON, requestRawJSON)
 	customToolNames := responsesCustomToolNames(requestForToolMetadata)
 	ev := root.Get("type").String()
 	var out [][]byte
@@ -474,7 +439,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				}
 			}
 			if st.FuncCustom[idx] {
-				input := unwrapCustomToolInput(args)
+				input := translatorcommon.UnwrapCustomToolInput(args)
 				inputDone := []byte(`{"type":"response.custom_tool_call_input.done","sequence_number":0,"item_id":"","output_index":0,"input":""}`)
 				inputDone, _ = sjson.SetBytes(inputDone, "sequence_number", nextSeq())
 				inputDone, _ = sjson.SetBytes(inputDone, "item_id", fmt.Sprintf("ctc_%s", st.CurrentFCID))
@@ -555,7 +520,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		completed, _ = sjson.SetBytes(completed, "response.created_at", st.CreatedAt)
 		// Inject original request fields into response as per docs/response.completed.json
 
-		reqBytes := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+		reqBytes := translatorcommon.PickRequestJSON(originalRequestRawJSON, requestRawJSON)
 		if len(reqBytes) > 0 {
 			req := gjson.ParseBytes(reqBytes)
 			if v := req.Get("instructions"); v.Exists() {
@@ -673,7 +638,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				if st.FuncCustom[idx] {
 					item := []byte(`{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}`)
 					item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("ctc_%s", callID))
-					item, _ = sjson.SetBytes(item, "input", unwrapCustomToolInput(args))
+					item, _ = sjson.SetBytes(item, "input", translatorcommon.UnwrapCustomToolInput(args))
 					item, _ = sjson.SetBytes(item, "call_id", callID)
 					item = applyResponsesFunctionCallNamespaceFields(item, reqBytes, name, "")
 					outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, fmt.Sprintf("arr.%d", st.FuncOutputIndices[idx]), item)
@@ -698,7 +663,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		reasoningTokens := int64(reasoningLength / 4)
 		usagePresent := st.Usage.HasUsage || reasoningTokens > 0
 		if usagePresent {
-			inputTokens, outputTokens, totalTokens, cachedTokens := st.Usage.OpenAIResponsesUsage()
+			inputTokens, outputTokens, totalTokens, cachedTokens := openAIResponsesUsage(st.Usage)
 			completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens", inputTokens)
 			completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens_details.cached_tokens", cachedTokens)
 			completed, _ = sjson.SetBytes(completed, "response.usage.output_tokens", outputTokens)
@@ -739,7 +704,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		chunks = append(chunks, line[len(dataTag):])
 	}
 
-	reqBytes := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
+	reqBytes := translatorcommon.PickRequestJSON(originalRequestRawJSON, requestRawJSON)
 	customToolNames := responsesCustomToolNames(reqBytes)
 
 	// Base OpenAI Responses (non-stream) object
@@ -982,7 +947,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			if outputItem.itemType == "custom_tool_call" {
 				item = []byte(`{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}`)
 				item, _ = sjson.SetBytes(item, "id", outputItem.id)
-				item, _ = sjson.SetBytes(item, "input", unwrapCustomToolInput(outputItem.args.String()))
+				item, _ = sjson.SetBytes(item, "input", translatorcommon.UnwrapCustomToolInput(outputItem.args.String()))
 				item, _ = sjson.SetBytes(item, "call_id", outputItem.callID)
 				item = applyResponsesFunctionCallNamespaceFields(item, reqBytes, outputItem.name, "")
 				break
@@ -1006,7 +971,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	}
 
 	// Usage
-	inputTokens, outputTokens, totalTokens, cachedTokens := usageTokens.OpenAIResponsesUsage()
+	inputTokens, outputTokens, totalTokens, cachedTokens := openAIResponsesUsage(usageTokens)
 	if inputTokens != 0 {
 		out, _ = sjson.SetBytes(out, "usage.input_tokens", inputTokens)
 	}
@@ -1035,3 +1000,6 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 
 	return out
 }
+
+// claudeResponsesUsageTokens aliases the shared Claude usage accumulator.
+type claudeResponsesUsageTokens = translatorcommon.ClaudeUsageTokens

@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"strings"
 	"time"
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
@@ -155,7 +154,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		}
 
 		outputFormat := rootResult.Get("output_format").String()
-		mimeType := mimeTypeFromCodexOutputFormat(outputFormat)
+		mimeType := translatorcommon.MimeTypeFromCodexOutputFormat(outputFormat)
 		imageURL := "data:" + mimeType + ";base64," + b64
 
 		imagesResult := gjson.GetBytes(template, "choices.0.delta.images")
@@ -281,7 +280,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			}
 
 			outputFormat := itemResult.Get("output_format").String()
-			mimeType := mimeTypeFromCodexOutputFormat(outputFormat)
+			mimeType := translatorcommon.MimeTypeFromCodexOutputFormat(outputFormat)
 			imageURL := "data:" + mimeType + ";base64," + b64
 
 			imagesResult := gjson.GetBytes(template, "choices.0.delta.images")
@@ -488,7 +487,7 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 					break
 				}
 				outputFormat := outputItem.Get("output_format").String()
-				mimeType := mimeTypeFromCodexOutputFormat(outputFormat)
+				mimeType := translatorcommon.MimeTypeFromCodexOutputFormat(outputFormat)
 				imageURL := "data:" + mimeType + ";base64," + b64
 
 				imagePayload := []byte(`{"type":"image_url","image_url":{"url":""}}`)
@@ -623,32 +622,11 @@ func buildReverseMapFromOriginalOpenAI(original []byte) map[string]string {
 			}
 		}
 		if len(names) > 0 {
-			m := buildShortNameMap(names)
+			m := translatorcommon.BuildShortNameMap(names)
 			for orig, short := range m {
 				rev[short] = orig
 			}
 		}
 	}
 	return rev
-}
-
-func mimeTypeFromCodexOutputFormat(outputFormat string) string {
-	if outputFormat == "" {
-		return "image/png"
-	}
-	if strings.Contains(outputFormat, "/") {
-		return outputFormat
-	}
-	switch strings.ToLower(outputFormat) {
-	case "png":
-		return "image/png"
-	case "jpg", "jpeg":
-		return "image/jpeg"
-	case "webp":
-		return "image/webp"
-	case "gif":
-		return "image/gif"
-	default:
-		return "image/png"
-	}
 }

@@ -8,7 +8,6 @@ package chat_completions
 
 import (
 	"strconv"
-	"strings"
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
@@ -98,7 +97,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				}
 			}
 			if len(names) > 0 {
-				originalToolNameMap = buildShortNameMap(names)
+				originalToolNameMap = translatorcommon.BuildShortNameMap(names)
 			}
 			// A normalized function envelope cannot disambiguate declarations that share a name.
 			// Preserve function behavior for such ambiguous names.
@@ -347,7 +346,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 								if short, ok := originalToolNameMap[toolCallName]; ok {
 									toolCallName = short
 								} else {
-									toolCallName = shortenNameIfNeeded(toolCallName)
+									toolCallName = translatorcommon.ShortenToolName(toolCallName)
 								}
 								funcCall, _ = sjson.SetBytes(funcCall, "name", toolCallName)
 								funcCall, _ = sjson.SetBytes(funcCall, "arguments", toolCallInput)
@@ -359,7 +358,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 								if short, ok := originalToolNameMap[toolCallName]; ok {
 									toolCallName = short
 								} else {
-									toolCallName = shortenNameIfNeeded(toolCallName)
+									toolCallName = translatorcommon.ShortenToolName(toolCallName)
 								}
 								customCall, _ = sjson.SetBytes(customCall, "name", toolCallName)
 								customCall, _ = sjson.SetBytes(customCall, "input", toolCallInput)
@@ -431,7 +430,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				if short, ok := originalToolNameMap[name]; ok {
 					name = short
 				} else {
-					name = shortenNameIfNeeded(name)
+					name = translatorcommon.ShortenToolName(name)
 				}
 				item, _ = sjson.SetBytes(item, "name", name)
 				toolItems = append(toolItems, item)
@@ -455,7 +454,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 						if short, ok := originalToolNameMap[name]; ok {
 							name = short
 						} else {
-							name = shortenNameIfNeeded(name)
+							name = translatorcommon.ShortenToolName(name)
 						}
 						item, _ = sjson.SetBytes(item, "name", name)
 					}
@@ -496,7 +495,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 					if short, ok := originalToolNameMap[name]; ok {
 						name = short
 					} else {
-						name = shortenNameIfNeeded(name)
+						name = translatorcommon.ShortenToolName(name)
 					}
 				}
 				choice := []byte(`{}`)
@@ -631,80 +630,12 @@ func toolOutputFallbackPart(item gjson.Result) []byte {
 	return part
 }
 
-// shortenNameIfNeeded applies the simple shortening rule for a single name.
-// If the name length exceeds 64, it will try to preserve the "mcp__" prefix and last segment.
-// Otherwise it truncates to 64 characters.
-func shortenNameIfNeeded(name string) string {
-	const limit = 64
-	if len(name) <= limit {
-		return name
-	}
-	if strings.HasPrefix(name, "mcp__") {
-		// Keep prefix and last segment after '__'
-		idx := strings.LastIndex(name, "__")
-		if idx > 0 {
-			candidate := "mcp__" + name[idx+2:]
-			if len(candidate) > limit {
-				return candidate[:limit]
-			}
-			return candidate
-		}
-	}
-	return name[:limit]
+// buildShortNameMap delegates to the shared unique-short-name map builder.
+func buildShortNameMap(names []string) map[string]string {
+	return translatorcommon.BuildShortNameMap(names)
 }
 
-// buildShortNameMap generates unique short names (<=64) for the given list of names.
-// It preserves the "mcp__" prefix with the last segment when possible and ensures uniqueness
-// by appending suffixes like "~1", "~2" if needed.
-func buildShortNameMap(names []string) map[string]string {
-	const limit = 64
-	used := map[string]struct{}{}
-	m := map[string]string{}
-
-	baseCandidate := func(n string) string {
-		if len(n) <= limit {
-			return n
-		}
-		if strings.HasPrefix(n, "mcp__") {
-			idx := strings.LastIndex(n, "__")
-			if idx > 0 {
-				cand := "mcp__" + n[idx+2:]
-				if len(cand) > limit {
-					cand = cand[:limit]
-				}
-				return cand
-			}
-		}
-		return n[:limit]
-	}
-
-	makeUnique := func(cand string) string {
-		if _, ok := used[cand]; !ok {
-			return cand
-		}
-		base := cand
-		for i := 1; ; i++ {
-			suffix := "_" + strconv.Itoa(i)
-			allowed := limit - len(suffix)
-			if allowed < 0 {
-				allowed = 0
-			}
-			tmp := base
-			if len(tmp) > allowed {
-				tmp = tmp[:allowed]
-			}
-			tmp = tmp + suffix
-			if _, ok := used[tmp]; !ok {
-				return tmp
-			}
-		}
-	}
-
-	for _, n := range names {
-		cand := baseCandidate(n)
-		uniq := makeUnique(cand)
-		used[uniq] = struct{}{}
-		m[n] = uniq
-	}
-	return m
+// shortenNameIfNeeded delegates to the shared tool-name shortener.
+func shortenNameIfNeeded(name string) string {
+	return translatorcommon.ShortenToolName(name)
 }

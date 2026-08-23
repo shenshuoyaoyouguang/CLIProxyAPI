@@ -7,7 +7,6 @@ package gemini
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -59,7 +58,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 			}
 		}
 		if len(names) > 0 {
-			shortMap = buildShortNameMap(names)
+			shortMap = translatorcommon.BuildShortNameMap(names)
 		}
 	}
 
@@ -175,7 +174,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 						if short, ok := shortMap[n]; ok {
 							n = short
 						} else {
-							n = shortenNameIfNeeded(n)
+							n = translatorcommon.ShortenToolName(n)
 						}
 						fn, _ = sjson.SetBytes(fn, "name", n)
 					}
@@ -250,7 +249,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 					if short, ok := shortMap[name]; ok {
 						name = short
 					} else {
-						name = shortenNameIfNeeded(name)
+						name = translatorcommon.ShortenToolName(name)
 					}
 					tool, _ = sjson.SetBytes(tool, "name", name)
 				}
@@ -362,7 +361,7 @@ func setCodexToolChoiceFromGeminiToolConfig(out []byte, functionCallingConfig gj
 		allowedNameItems := allowedNames.Array()
 		if allowedNames.IsArray() && len(allowedNameItems) == 1 {
 			choice := []byte(`{"type":"function","name":""}`)
-			choice, _ = sjson.SetBytes(choice, "name", shortenNameIfNeeded(allowedNameItems[0].String()))
+			choice, _ = sjson.SetBytes(choice, "name", translatorcommon.ShortenToolName(allowedNameItems[0].String()))
 			out, _ = sjson.SetRawBytes(out, "tool_choice", choice)
 		} else {
 			out, _ = sjson.SetBytes(out, "tool_choice", "required")
@@ -425,12 +424,12 @@ func codexContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 	case strings.HasPrefix(lowerMimeType, "audio/"):
 		contentPart := []byte(`{"type":"input_audio","input_audio":{"data":"","format":""}}`)
 		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.data", data)
-		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.format", codexInputAudioFormatFromMIME(mimeType))
+		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.format", translatorcommon.InputAudioFormatFromMIME(mimeType))
 		return contentPart, true
 	default:
 		contentPart := []byte(`{"type":"input_file","file_data":"","filename":""}`)
 		contentPart, _ = sjson.SetBytes(contentPart, "file_data", data)
-		contentPart, _ = sjson.SetBytes(contentPart, "filename", codexFileNameFromMIME(mimeType))
+		contentPart, _ = sjson.SetBytes(contentPart, "filename", translatorcommon.FileNameFromMIME(mimeType))
 		return contentPart, true
 	}
 }
@@ -463,7 +462,7 @@ func codexContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
 	if strings.HasPrefix(lowerMimeType, "video/") || strings.HasPrefix(lowerMimeType, "application/") || strings.HasPrefix(lowerMimeType, "text/") {
 		contentPart := []byte(`{"type":"input_file","file_url":"","filename":""}`)
 		contentPart, _ = sjson.SetBytes(contentPart, "file_url", fileURI)
-		contentPart, _ = sjson.SetBytes(contentPart, "filename", codexFileNameFromMIME(mimeType))
+		contentPart, _ = sjson.SetBytes(contentPart, "filename", translatorcommon.FileNameFromMIME(mimeType))
 		return contentPart, true
 	}
 	fileInfo := "File: " + fileURI
@@ -473,112 +472,4 @@ func codexContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
 	contentPart := []byte(`{"type":"input_text","text":""}`)
 	contentPart, _ = sjson.SetBytes(contentPart, "text", fileInfo)
 	return contentPart, true
-}
-
-func codexInputAudioFormatFromMIME(mimeType string) string {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/flac":
-		return "flac"
-	case "audio/opus", "audio/ogg":
-		return "opus"
-	case "audio/pcm", "audio/l16":
-		return "pcm16"
-	default:
-		return "mp3"
-	}
-}
-
-func codexFileNameFromMIME(mimeType string) string {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "application/pdf":
-		return "document.pdf"
-	case "text/plain":
-		return "document.txt"
-	case "text/csv":
-		return "document.csv"
-	case "application/json":
-		return "document.json"
-	case "application/xml", "text/xml":
-		return "document.xml"
-	default:
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "video/") {
-			return "video"
-		}
-		return "document"
-	}
-}
-
-// shortenNameIfNeeded applies the simple shortening rule for a single name.
-func shortenNameIfNeeded(name string) string {
-	const limit = 64
-	if len(name) <= limit {
-		return name
-	}
-	if strings.HasPrefix(name, "mcp__") {
-		idx := strings.LastIndex(name, "__")
-		if idx > 0 {
-			cand := "mcp__" + name[idx+2:]
-			if len(cand) > limit {
-				return cand[:limit]
-			}
-			return cand
-		}
-	}
-	return name[:limit]
-}
-
-// buildShortNameMap ensures uniqueness of shortened names within a request.
-func buildShortNameMap(names []string) map[string]string {
-	const limit = 64
-	used := map[string]struct{}{}
-	m := map[string]string{}
-
-	baseCandidate := func(n string) string {
-		if len(n) <= limit {
-			return n
-		}
-		if strings.HasPrefix(n, "mcp__") {
-			idx := strings.LastIndex(n, "__")
-			if idx > 0 {
-				cand := "mcp__" + n[idx+2:]
-				if len(cand) > limit {
-					cand = cand[:limit]
-				}
-				return cand
-			}
-		}
-		return n[:limit]
-	}
-
-	makeUnique := func(cand string) string {
-		if _, ok := used[cand]; !ok {
-			return cand
-		}
-		base := cand
-		for i := 1; ; i++ {
-			suffix := "_" + strconv.Itoa(i)
-			allowed := limit - len(suffix)
-			if allowed < 0 {
-				allowed = 0
-			}
-			tmp := base
-			if len(tmp) > allowed {
-				tmp = tmp[:allowed]
-			}
-			tmp = tmp + suffix
-			if _, ok := used[tmp]; !ok {
-				return tmp
-			}
-		}
-	}
-
-	for _, n := range names {
-		cand := baseCandidate(n)
-		uniq := makeUnique(cand)
-		used[uniq] = struct{}{}
-		m[n] = uniq
-	}
-	return m
 }

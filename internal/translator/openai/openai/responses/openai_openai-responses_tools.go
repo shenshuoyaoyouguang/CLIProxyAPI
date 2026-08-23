@@ -149,7 +149,7 @@ func convertResponsesFunctionToolToOpenAIChat(tool gjson.Result, overrideName st
 	if description := responsesToolDescription(tool); description != "" {
 		chatTool, _ = sjson.SetBytes(chatTool, "function.description", description)
 	}
-	if parameters := responsesToolParameters(tool); parameters.Exists() {
+	if parameters := translatorcommon.ResponsesToolParameters(tool); parameters.Exists() {
 		chatTool, _ = sjson.SetRawBytes(chatTool, "function.parameters", []byte(parameters.Raw))
 	}
 	return chatTool, true
@@ -167,21 +167,6 @@ func responsesToolDescription(tool gjson.Result) string {
 		return description
 	}
 	return tool.Get("function.description").String()
-}
-
-func responsesToolParameters(tool gjson.Result) gjson.Result {
-	for _, path := range []string{
-		"parameters",
-		"parametersJsonSchema",
-		"input_schema",
-		"function.parameters",
-		"function.parametersJsonSchema",
-	} {
-		if parameters := tool.Get(path); parameters.Exists() {
-			return parameters
-		}
-	}
-	return gjson.Result{}
 }
 
 // responsesToolOutputText flattens a tool output value that may be a plain
@@ -255,15 +240,6 @@ func responsesSingleCustomToolName(requestRawJSON []byte) (string, bool) {
 // unwrapCustomToolInput extracts the freeform input from the {"input": "..."}
 // function-call arguments produced for a converted custom tool; it falls back
 // to the raw arguments when the wrapper is absent.
-func unwrapCustomToolInput(arguments string) string {
-	if v := gjson.Get(arguments, "input"); v.Exists() {
-		if v.Type == gjson.String {
-			return v.String()
-		}
-		return v.Raw
-	}
-	return arguments
-}
 
 func qualifyResponsesNamespaceToolName(namespaceName, childName string) string {
 	childName = strings.TrimSpace(childName)
@@ -308,16 +284,6 @@ func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, quali
 		return resolvedName, resolvedNamespace
 	}
 	return qualifiedName, ""
-}
-
-func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
-	if len(originalRequestRawJSON) > 0 && gjson.ValidBytes(originalRequestRawJSON) {
-		return originalRequestRawJSON
-	}
-	if len(requestRawJSON) > 0 && gjson.ValidBytes(requestRawJSON) {
-		return requestRawJSON
-	}
-	return nil
 }
 
 func applyResponsesFunctionCallNamespaceFields(item []byte, requestRawJSON []byte, qualifiedName string, itemPath string) []byte {

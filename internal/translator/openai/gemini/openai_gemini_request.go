@@ -416,7 +416,7 @@ func openAIContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 	case strings.HasPrefix(lowerMimeType, "audio/"):
 		contentPart := []byte(`{"type":"input_audio","input_audio":{"data":"","format":""}}`)
 		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.data", data)
-		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.format", openAIInputAudioFormatFromMIME(mimeType))
+		contentPart, _ = sjson.SetBytes(contentPart, "input_audio.format", translatorcommon.InputAudioFormatFromMIME(mimeType))
 		return contentPart, true
 	case strings.HasPrefix(lowerMimeType, "video/"):
 		contentPart := []byte(`{"type":"video_url","video_url":{"url":""}}`)
@@ -424,7 +424,7 @@ func openAIContentPartFromGeminiInlineData(part gjson.Result) ([]byte, bool) {
 		return contentPart, true
 	default:
 		contentPart := []byte(`{"type":"file","file":{"filename":"","file_data":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "file.filename", openAIFileNameFromMIME(mimeType))
+		contentPart, _ = sjson.SetBytes(contentPart, "file.filename", translatorcommon.FileNameFromMIME(mimeType))
 		contentPart, _ = sjson.SetBytes(contentPart, "file.file_data", data)
 		return contentPart, true
 	}
@@ -462,7 +462,7 @@ func openAIContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
 	}
 	if strings.HasPrefix(lowerMimeType, "application/") || strings.HasPrefix(lowerMimeType, "text/") {
 		contentPart := []byte(`{"type":"file","file":{"filename":"","file_url":""}}`)
-		contentPart, _ = sjson.SetBytes(contentPart, "file.filename", openAIFileNameFromMIME(mimeType))
+		contentPart, _ = sjson.SetBytes(contentPart, "file.filename", translatorcommon.FileNameFromMIME(mimeType))
 		contentPart, _ = sjson.SetBytes(contentPart, "file.file_url", fileURI)
 		return contentPart, true
 	}
@@ -473,39 +473,4 @@ func openAIContentPartFromGeminiFileData(part gjson.Result) ([]byte, bool) {
 	contentPart := []byte(`{"type":"text","text":""}`)
 	contentPart, _ = sjson.SetBytes(contentPart, "text", fileInfo)
 	return contentPart, true
-}
-
-func openAIInputAudioFormatFromMIME(mimeType string) string {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/flac":
-		return "flac"
-	case "audio/opus", "audio/ogg":
-		return "opus"
-	case "audio/pcm", "audio/l16":
-		return "pcm16"
-	default:
-		return "mp3"
-	}
-}
-
-func openAIFileNameFromMIME(mimeType string) string {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "application/pdf":
-		return "document.pdf"
-	case "text/plain":
-		return "document.txt"
-	case "text/csv":
-		return "document.csv"
-	case "application/json":
-		return "document.json"
-	case "application/xml", "text/xml":
-		return "document.xml"
-	default:
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "video/") {
-			return "video"
-		}
-		return "document"
-	}
 }

@@ -274,7 +274,7 @@ func appendInteractionsContentToCodexItem(items *[][]byte, content gjson.Result,
 func appendInteractionsFunctionCallToCodex(items *[][]byte, step gjson.Result) {
 	item := []byte(`{"type":"function_call"}`)
 	if name := step.Get("name"); name.Exists() {
-		item, _ = sjson.SetBytes(item, "name", shortenCodexToolNameIfNeeded(name.String()))
+		item, _ = sjson.SetBytes(item, "name", translatorcommon.ShortenToolName(name.String()))
 	}
 	if callID := interactionsCodexCallID(step); callID != "" {
 		item, _ = sjson.SetBytes(item, "call_id", callID)
@@ -480,7 +480,7 @@ func interactionsCodexAudioPart(part gjson.Result) []byte {
 	}
 	item := []byte(`{"type":"input_audio","input_audio":{"data":"","format":""}}`)
 	item, _ = sjson.SetBytes(item, "input_audio.data", data)
-	item, _ = sjson.SetBytes(item, "input_audio.format", codexInputAudioFormatFromMIME(mimeType))
+	item, _ = sjson.SetBytes(item, "input_audio.format", translatorcommon.InputAudioFormatFromMIME(mimeType))
 	return item
 }
 
@@ -495,7 +495,7 @@ func interactionsCodexFilePart(part gjson.Result) []byte {
 	if fileURI := firstString(part, "file_uri", "fileUri", "url"); fileURI != "" {
 		item := []byte(`{"type":"input_file","file_url":"","filename":""}`)
 		item, _ = sjson.SetBytes(item, "file_url", fileURI)
-		item, _ = sjson.SetBytes(item, "filename", codexFileNameFromMIME(mimeType))
+		item, _ = sjson.SetBytes(item, "filename", translatorcommon.FileNameFromMIME(mimeType))
 		return item
 	}
 	data := part.Get("data").String()
@@ -504,7 +504,7 @@ func interactionsCodexFilePart(part gjson.Result) []byte {
 	}
 	item := []byte(`{"type":"input_file","file_data":"","filename":""}`)
 	item, _ = sjson.SetBytes(item, "file_data", data)
-	item, _ = sjson.SetBytes(item, "filename", codexFileNameFromMIME(mimeType))
+	item, _ = sjson.SetBytes(item, "filename", translatorcommon.FileNameFromMIME(mimeType))
 	return item
 }
 
@@ -537,7 +537,7 @@ func interactionsCodexFileDataPart(fileData gjson.Result) []byte {
 	}
 	item := []byte(`{"type":"input_file","file_url":"","filename":""}`)
 	item, _ = sjson.SetBytes(item, "file_url", fileURI)
-	item, _ = sjson.SetBytes(item, "filename", codexFileNameFromMIME(mimeType))
+	item, _ = sjson.SetBytes(item, "filename", translatorcommon.FileNameFromMIME(mimeType))
 	return item
 }
 
@@ -556,7 +556,7 @@ func appendCodexToolDeclarations(normalized *[]map[string]any, declarations gjso
 func codexToolFromDeclaration(declaration gjson.Result) map[string]any {
 	tool := map[string]any{
 		"type":   "function",
-		"name":   shortenCodexToolNameIfNeeded(declaration.Get("name").String()),
+		"name":   translatorcommon.ShortenToolName(declaration.Get("name").String()),
 		"strict": false,
 	}
 	if desc := declaration.Get("description"); desc.Exists() {
@@ -662,59 +662,6 @@ func normalizeInteractionsCodexServiceTier(serviceTier gjson.Result) string {
 		return "priority"
 	}
 	return ""
-}
-
-func codexInputAudioFormatFromMIME(mimeType string) string {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/flac":
-		return "flac"
-	case "audio/opus", "audio/ogg":
-		return "opus"
-	case "audio/pcm", "audio/l16":
-		return "pcm16"
-	default:
-		return "mp3"
-	}
-}
-
-func codexFileNameFromMIME(mimeType string) string {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "application/pdf":
-		return "document.pdf"
-	case "text/plain":
-		return "document.txt"
-	case "text/csv":
-		return "document.csv"
-	case "application/json":
-		return "document.json"
-	case "application/xml", "text/xml":
-		return "document.xml"
-	default:
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "video/") {
-			return "video"
-		}
-		return "document"
-	}
-}
-
-func shortenCodexToolNameIfNeeded(name string) string {
-	const limit = 64
-	if len(name) <= limit {
-		return name
-	}
-	if strings.HasPrefix(name, "mcp__") {
-		idx := strings.LastIndex(name, "__")
-		if idx > 0 {
-			candidate := "mcp__" + name[idx+2:]
-			if len(candidate) > limit {
-				return candidate[:limit]
-			}
-			return candidate
-		}
-	}
-	return name[:limit]
 }
 
 func firstString(root gjson.Result, paths ...string) string {

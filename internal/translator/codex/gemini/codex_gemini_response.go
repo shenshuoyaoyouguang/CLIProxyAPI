@@ -96,7 +96,7 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 		}
 
 		outputFormat := rootResult.Get("output_format").String()
-		mimeType := mimeTypeFromCodexOutputFormat(outputFormat)
+		mimeType := translatorcommon.MimeTypeFromCodexOutputFormat(outputFormat)
 
 		part := []byte(`{"inlineData":{"data":"","mimeType":""}}`)
 		part, _ = sjson.SetBytes(part, "inlineData.data", b64)
@@ -127,7 +127,7 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 			}
 
 			outputFormat := itemResult.Get("output_format").String()
-			mimeType := mimeTypeFromCodexOutputFormat(outputFormat)
+			mimeType := translatorcommon.MimeTypeFromCodexOutputFormat(outputFormat)
 
 			part := []byte(`{"inlineData":{"data":"","mimeType":""}}`)
 			part, _ = sjson.SetBytes(part, "inlineData.data", b64)
@@ -340,7 +340,7 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 						break
 					}
 					outputFormat := value.Get("output_format").String()
-					mimeType := mimeTypeFromCodexOutputFormat(outputFormat)
+					mimeType := translatorcommon.MimeTypeFromCodexOutputFormat(outputFormat)
 
 					part := []byte(`{"inlineData":{"data":"","mimeType":""}}`)
 					part, _ = sjson.SetBytes(part, "inlineData.data", b64)
@@ -405,7 +405,7 @@ func buildReverseMapFromGeminiOriginal(original []byte) map[string]string {
 		}
 	}
 	if len(names) > 0 {
-		m := buildShortNameMap(names)
+		m := translatorcommon.BuildShortNameMap(names)
 		for orig, short := range m {
 			rev[short] = orig
 		}
@@ -437,25 +437,4 @@ func codexGeminiIncompleteFinishReason(reason string) string {
 
 func GeminiTokenCount(ctx context.Context, count int64) []byte {
 	return translatorcommon.GeminiTokenCountJSON(count)
-}
-
-func mimeTypeFromCodexOutputFormat(outputFormat string) string {
-	if outputFormat == "" {
-		return "image/png"
-	}
-	if strings.Contains(outputFormat, "/") {
-		return outputFormat
-	}
-	switch strings.ToLower(outputFormat) {
-	case "png":
-		return "image/png"
-	case "jpg", "jpeg":
-		return "image/jpeg"
-	case "webp":
-		return "image/webp"
-	case "gif":
-		return "image/gif"
-	default:
-		return "image/png"
-	}
 }

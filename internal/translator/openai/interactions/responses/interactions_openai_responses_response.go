@@ -110,7 +110,7 @@ func ConvertInteractionsResponseToOpenAIResponsesNonStream(ctx context.Context, 
 }
 
 func convertInteractionsEventToResponses(modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, st *interactionsToResponsesStreamState) [][]byte {
-	payload := interactionsSSEPayload(rawJSON)
+	payload := translatorcommon.InteractionsSSEPayload(rawJSON)
 	if len(payload) == 0 {
 		return nil
 	}
@@ -592,7 +592,7 @@ func ConvertOpenAIResponsesResponseToInteractionsNonStream(ctx context.Context, 
 }
 
 func convertOpenAIResponsesEventToInteractions(modelName string, rawJSON []byte, st *responsesToInteractionsStreamState) [][]byte {
-	payload := interactionsSSEPayload(rawJSON)
+	payload := translatorcommon.InteractionsSSEPayload(rawJSON)
 	if len(payload) == 0 {
 		return nil
 	}
@@ -915,27 +915,6 @@ func setInteractionsUsageFromResponses(out []byte, path string, usage gjson.Resu
 		out, _ = sjson.SetBytes(out, path+".total_thought_tokens", v.Int())
 	}
 	return out
-}
-
-func interactionsSSEPayload(rawJSON []byte) []byte {
-	trimmed := bytes.TrimSpace(rawJSON)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[DONE]")) {
-		return trimmed
-	}
-	if bytes.HasPrefix(trimmed, []byte("data:")) {
-		return bytes.TrimSpace(trimmed[len("data:"):])
-	}
-	var dataLines [][]byte
-	for _, line := range bytes.Split(trimmed, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if bytes.HasPrefix(line, []byte("data:")) {
-			dataLines = append(dataLines, bytes.TrimSpace(line[len("data:"):]))
-		}
-	}
-	if len(dataLines) > 0 {
-		return bytes.Join(dataLines, []byte("\n"))
-	}
-	return trimmed
 }
 
 func responseModel(modelName string, root gjson.Result) string {

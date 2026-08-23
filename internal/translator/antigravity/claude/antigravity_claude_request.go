@@ -7,6 +7,7 @@ package claude
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
@@ -812,7 +813,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					tool, _ = sjson.SetBytes(tool, "name", mappedName)
 				}
 				for toolKey := range gjson.ParseBytes(tool).Map() {
-					if util.InArray(allowedToolKeys, toolKey) {
+					if slices.Contains(allowedToolKeys, toolKey) {
 						continue
 					}
 					tool, _ = sjson.DeleteBytes(tool, toolKey)
