@@ -6,59 +6,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost/discovery"
 )
-
-func TestCandidateDirs(t *testing.T) {
-	got := candidateDirs("plugins", "darwin", "arm64")
-	want := []string{
-		filepath.Join("plugins", "darwin", "arm64"),
-		"plugins",
-	}
-	if len(got) != len(want) {
-		t.Fatalf("len(candidateDirs) = %d, want %d", len(got), len(want))
-	}
-	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("candidateDirs[%d] = %q, want %q", index, got[index], want[index])
-		}
-	}
-}
-
-func TestPluginExtensionForPlatform(t *testing.T) {
-	cases := []struct {
-		goos string
-		want string
-	}{
-		{goos: "linux", want: ".so"},
-		{goos: "freebsd", want: ".so"},
-		{goos: "darwin", want: ".dylib"},
-		{goos: "windows", want: ".dll"},
-	}
-
-	for _, tc := range cases {
-		if got := pluginExtension(tc.goos); got != tc.want {
-			t.Fatalf("pluginExtension(%q) = %q, want %q", tc.goos, got, tc.want)
-		}
-	}
-}
-
-func TestPluginIDFromDynamicLibraryPath(t *testing.T) {
-	cases := map[string]string{
-		"plugins/example.so":    "example",
-		"plugins/example.dylib": "example",
-		"plugins/example.dll":   "example",
-	}
-
-	for path, want := range cases {
-		file, ok := pluginFileFromPath(path, "")
-		if !ok {
-			t.Fatalf("pluginFileFromPath(%q) = not ok, want id %q", path, want)
-		}
-		if file.ID != want {
-			t.Fatalf("pluginFileFromPath(%q).ID = %q, want %q", path, file.ID, want)
-		}
-	}
-}
 
 func TestSelectPluginFilesFiltersInvalidIDAndDeduplicatesByID(t *testing.T) {
 	root := t.TempDir()
@@ -67,7 +17,7 @@ func TestSelectPluginFilesFiltersInvalidIDAndDeduplicatesByID(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", errMkdirAll)
 	}
 
-	extension := pluginExtension(runtime.GOOS)
+	extension := discovery.Extension(runtime.GOOS)
 	paths := []string{
 		filepath.Join(root, "sample"+extension),
 		filepath.Join(archDir, "sample"+extension),
@@ -111,7 +61,7 @@ func TestSelectPluginFilesPrefersPlatformDirOverRootFallback(t *testing.T) {
 		t.Fatalf("MkdirAll() error = %v", errMkdirAll)
 	}
 
-	extension := pluginExtension(runtime.GOOS)
+	extension := discovery.Extension(runtime.GOOS)
 	platformPath := filepath.Join(archDir, "alpha"+extension)
 	rootPath := filepath.Join(root, "alpha"+extension)
 	for _, path := range []string{rootPath, platformPath} {
@@ -152,7 +102,7 @@ func TestSelectPluginFilesPrefersConfiguredVersionOverHigherVersion(t *testing.T
 		t.Fatalf("MkdirAll() error = %v", errMkdirAll)
 	}
 
-	extension := pluginExtension(runtime.GOOS)
+	extension := discovery.Extension(runtime.GOOS)
 	olderPath := filepath.Join(archDir, "alpha-v1.0.3"+extension)
 	newerPath := filepath.Join(archDir, "alpha-v1.0.4"+extension)
 	for _, path := range []string{olderPath, newerPath} {
@@ -180,7 +130,7 @@ func TestSelectPluginFilesFallsBackToHighestVersionWithoutConfiguredVersion(t *t
 		t.Fatalf("MkdirAll() error = %v", errMkdirAll)
 	}
 
-	extension := pluginExtension(runtime.GOOS)
+	extension := discovery.Extension(runtime.GOOS)
 	olderPath := filepath.Join(archDir, "alpha-v1.0.3"+extension)
 	newerPath := filepath.Join(archDir, "alpha-v1.0.4"+extension)
 	for _, path := range []string{olderPath, newerPath} {
@@ -208,7 +158,7 @@ func TestSelectPluginFilesSkipsPluginWhenConfiguredVersionIsMissing(t *testing.T
 		t.Fatalf("MkdirAll() error = %v", errMkdirAll)
 	}
 
-	extension := pluginExtension(runtime.GOOS)
+	extension := discovery.Extension(runtime.GOOS)
 	path := filepath.Join(archDir, "alpha-v1.0.4"+extension)
 	if errWriteFile := os.WriteFile(path, []byte("x"), 0o644); errWriteFile != nil {
 		t.Fatalf("WriteFile(%s) error = %v", path, errWriteFile)

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost/discovery"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
 	"gopkg.in/yaml.v3"
 )
@@ -87,7 +88,7 @@ func TestSyncPlatformInstallsManifestArtifact(t *testing.T) {
 
 func TestSyncResolvedWithReportUsesTemporaryAuthAndClearsIt(t *testing.T) {
 	root := t.TempDir()
-	libraryName := "sample" + pluginExtension(runtime.GOOS)
+	libraryName := "sample" + discovery.Extension(runtime.GOOS)
 	archiveData := makeZip(t, map[string]string{libraryName: "library-data"})
 	checksum := sha256.Sum256(archiveData)
 	var authenticated bool
@@ -572,7 +573,7 @@ func TestDeleteWithReportRejectsUnresolvedPluginsDir(t *testing.T) {
 	if errMkdir := os.MkdirAll(targetDir, 0o755); errMkdir != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", targetDir, errMkdir)
 	}
-	target := filepath.Join(targetDir, "sample"+pluginExtension(runtime.GOOS))
+	target := filepath.Join(targetDir, "sample"+discovery.Extension(runtime.GOOS))
 	if errWrite := os.WriteFile(target, []byte("library-data"), 0o644); errWrite != nil {
 		t.Fatalf("WriteFile(%s) error = %v", target, errWrite)
 	}
@@ -605,7 +606,7 @@ func TestDeleteWithReportRemovesCurrentPlatformPlugin(t *testing.T) {
 	if errMkdir := os.MkdirAll(targetDir, 0o755); errMkdir != nil {
 		t.Fatalf("MkdirAll() error = %v", errMkdir)
 	}
-	target := filepath.Join(targetDir, "sample"+pluginExtension(runtime.GOOS))
+	target := filepath.Join(targetDir, "sample"+discovery.Extension(runtime.GOOS))
 	if errWrite := os.WriteFile(target, []byte("library-data"), 0o644); errWrite != nil {
 		t.Fatalf("WriteFile() error = %v", errWrite)
 	}
@@ -632,7 +633,7 @@ func TestDeleteWithReportRemovesAllCurrentPlatformPluginVersions(t *testing.T) {
 	if errMkdir := os.MkdirAll(targetDir, 0o755); errMkdir != nil {
 		t.Fatalf("MkdirAll() error = %v", errMkdir)
 	}
-	extension := pluginExtension(runtime.GOOS)
+	extension := discovery.Extension(runtime.GOOS)
 	olderTarget := filepath.Join(targetDir, "sample-v0.2.0"+extension)
 	newerTarget := filepath.Join(targetDir, "sample-v0.3.0"+extension)
 	otherTarget := filepath.Join(targetDir, "other-v0.3.0"+extension)
@@ -751,7 +752,7 @@ func pluginTestPath(root string, goos string, goarch string, id string, version 
 	if version != "" {
 		name += "-v" + version
 	}
-	return filepath.Join(root, goos, goarch, name+pluginExtension(goos))
+	return filepath.Join(root, goos, goarch, name+discovery.Extension(goos))
 }
 
 func pluginConfigFromYAML(t *testing.T, text string) config.PluginInstanceConfig {

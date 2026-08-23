@@ -4,91 +4,24 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
-	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost/discovery"
 )
 
-var (
-	pluginIDPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-	pluginVersionPattern = regexp.MustCompile(`^[0-9][0-9A-Za-z.+-]*$`)
-)
-
-type pluginFile struct {
-	ID      string
-	Path    string
-	Version string
-}
+// pluginFile aliases the shared discovery type; the host loader, ABI, and
+// platform loaders all speak this vocabulary.
+type pluginFile = discovery.File
 
 // PluginFileInfo describes a plugin binary selected by the host discovery rules.
-type PluginFileInfo struct {
-	ID      string
-	Path    string
-	Version string
-}
+type PluginFileInfo = discovery.File
 
 // ValidatePluginID reports whether id can be used as a plugin configuration key.
 func ValidatePluginID(id string) bool {
-	return validPluginID(id)
-}
-
-func validPluginID(id string) bool {
-	return pluginIDPattern.MatchString(id)
-}
-
-func validPluginVersion(version string) bool {
-	return version != "" && !strings.HasPrefix(version, "v") && pluginVersionPattern.MatchString(version)
-}
-
-func pluginFileFromPath(filePath string, requiredExtension string) (pluginFile, bool) {
-	base := filepath.Base(filePath)
-	lowerBase := strings.ToLower(base)
-	extension := strings.TrimSpace(requiredExtension)
-	if extension != "" {
-		if !strings.HasSuffix(lowerBase, strings.ToLower(extension)) {
-			return pluginFile{}, false
-		}
-	} else {
-		for _, candidateExtension := range []string{".so", ".dylib", ".dll"} {
-			if strings.HasSuffix(lowerBase, candidateExtension) {
-				extension = candidateExtension
-				break
-			}
-		}
-		if extension == "" {
-			return pluginFile{}, false
-		}
-	}
-	name := base[:len(base)-len(extension)]
-	id := name
-	version := ""
-	if versionIndex := strings.LastIndex(name, "-v"); versionIndex > 0 {
-		candidateID := name[:versionIndex]
-		candidateVersion := name[versionIndex+2:]
-		if validPluginID(candidateID) && validPluginVersion(candidateVersion) {
-			id = candidateID
-			version = candidateVersion
-		}
-	}
-	if !validPluginID(id) {
-		return pluginFile{}, false
-	}
-	return pluginFile{ID: id, Path: filePath, Version: version}, true
-}
-
-func pluginExtension(goos string) string {
-	switch goos {
-	case "darwin":
-		return ".dylib"
-	case "windows":
-		return ".dll"
-	default:
-		return ".so"
-	}
+	return discovery.ValidID(id)
 }
 
 func selectPluginFiles(root string, desiredVersions ...map[string]string) ([]pluginFile, error) {
@@ -103,44 +36,21 @@ func selectPluginFilesWithCandidates(root string, desiredVersions ...map[string]
 	}
 	desired := normalizeDesiredPluginVersions(desiredVersions...)
 
-	candidates := candidateDirs(root, runtime.GOOS, runtime.GOARCH)
-	extension := pluginExtension(runtime.GOOS)
+	all, errAll := discovery.AllFiles(root)
+	if errAll != nil {
+		return nil, nil, errAll
+	}
 	selectedByID := make(map[string]pluginFile)
 	order := make([]string, 0)
-	all := make([]pluginFile, 0)
-	for _, dir := range candidates {
-		entries, errReadDir := os.ReadDir(dir)
-		if errReadDir != nil {
-			if os.IsNotExist(errReadDir) {
-				continue
-			}
-			return nil, nil, errReadDir
+	for _, file := range all {
+		current, exists := selectedByID[file.ID]
+		if !exists {
+			selectedByID[file.ID] = file
+			order = append(order, file.ID)
+			continue
 		}
-		files := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			if entry == nil || !entry.Type().IsRegular() {
-				continue
-			}
-			if strings.HasSuffix(strings.ToLower(entry.Name()), extension) {
-				files = append(files, filepath.Join(dir, entry.Name()))
-			}
-		}
-		sort.Strings(files)
-		for _, path := range files {
-			file, okFile := pluginFileFromPath(path, extension)
-			if !okFile {
-				continue
-			}
-			all = append(all, file)
-			current, exists := selectedByID[file.ID]
-			if !exists {
-				selectedByID[file.ID] = file
-				order = append(order, file.ID)
-				continue
-			}
-			if pluginFilePreferredForDesired(file, current, desired[file.ID]) {
-				selectedByID[file.ID] = file
-			}
+		if pluginFilePreferredForDesired(file, current, desired[file.ID]) {
+			selectedByID[file.ID] = file
 		}
 	}
 	selected := make([]pluginFile, 0, len(order))
@@ -274,20 +184,5 @@ func DiscoverPluginFiles(root string, desiredVersions ...map[string]string) ([]P
 	if errSelect != nil {
 		return nil, errSelect
 	}
-	out := make([]PluginFileInfo, 0, len(files))
-	for _, file := range files {
-		out = append(out, PluginFileInfo{
-			ID:      file.ID,
-			Path:    file.Path,
-			Version: file.Version,
-		})
-	}
-	return out, nil
-}
-
-func candidateDirs(root, goos, goarch string) []string {
-	dirs := make([]string, 0, 2)
-	dirs = append(dirs, filepath.Join(root, goos, goarch))
-	dirs = append(dirs, root)
-	return dirs
+	return files, nil
 }

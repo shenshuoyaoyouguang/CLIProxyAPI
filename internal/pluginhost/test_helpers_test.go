@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost/discovery"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
@@ -347,7 +348,7 @@ func makePluginDir(t *testing.T, ids ...string) string {
 		t.Fatalf("MkdirAll() error = %v", errMkdirAll)
 	}
 	for _, id := range ids {
-		path := filepath.Join(archDir, id+pluginExtension(runtime.GOOS))
+		path := filepath.Join(archDir, id+discovery.Extension(runtime.GOOS))
 		if errWriteFile := os.WriteFile(path, []byte("x"), 0o644); errWriteFile != nil {
 			t.Fatalf("WriteFile(%s) error = %v", path, errWriteFile)
 		}
@@ -371,7 +372,7 @@ func writeVersionedPluginFile(t *testing.T, root, id, version string) string {
 	if errMkdirAll := os.MkdirAll(archDir, 0o755); errMkdirAll != nil {
 		t.Fatalf("MkdirAll() error = %v", errMkdirAll)
 	}
-	path := filepath.Join(archDir, fmt.Sprintf("%s-v%s%s", id, version, pluginExtension(runtime.GOOS)))
+	path := filepath.Join(archDir, fmt.Sprintf("%s-v%s%s", id, version, discovery.Extension(runtime.GOOS)))
 	if errWriteFile := os.WriteFile(path, []byte("x"), 0o644); errWriteFile != nil {
 		t.Fatalf("WriteFile(%s) error = %v", path, errWriteFile)
 	}

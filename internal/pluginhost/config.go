@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost/discovery"
 	"gopkg.in/yaml.v3"
 )
 
@@ -122,7 +123,7 @@ func normalizePluginDesiredVersion(version string) string {
 	if len(version) > 1 && (version[0] == 'v' || version[0] == 'V') {
 		version = version[1:]
 	}
-	if !validPluginVersion(version) {
+	if !discovery.ValidVersion(version) {
 		return ""
 	}
 	return version
