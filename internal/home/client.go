@@ -1118,33 +1118,6 @@ func (c *Client) KVExpire(ctx context.Context, key string, ttl time.Duration) (b
 	return cmd.Expire(ctx, key, ttl).Result()
 }
 
-func (c *Client) KVTTL(ctx context.Context, key string) (time.Duration, bool, error) {
-	cmd, errClient := c.commandClient()
-	if errClient != nil {
-		return 0, false, errClient
-	}
-	ttl, errTTL := cmd.TTL(ctx, key).Result()
-	if errTTL != nil {
-		return 0, false, errTTL
-	}
-	switch {
-	case ttl <= -2*time.Second:
-		return 0, false, nil
-	case ttl == -1*time.Second:
-		return 0, true, nil
-	default:
-		return ttl, true, nil
-	}
-}
-
-func (c *Client) KVIncrBy(ctx context.Context, key string, delta int64) (int64, error) {
-	cmd, errClient := c.commandClient()
-	if errClient != nil {
-		return 0, errClient
-	}
-	return cmd.IncrBy(ctx, key, delta).Result()
-}
-
 func (c *Client) KVMGet(ctx context.Context, keys ...string) ([][]byte, []bool, error) {
 	if len(keys) == 0 {
 		return nil, nil, nil
