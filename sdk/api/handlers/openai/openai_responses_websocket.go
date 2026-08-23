@@ -488,7 +488,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		} else if len(lastRequest) == 0 && strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "" {
 			errMsg = responsesWebsocketPreviousResponseNotFoundError()
 		} else {
-			requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequestWithIncrementalState(
+			requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequest(
 				payload,
 				lastRequest,
 				lastResponseOutput,
