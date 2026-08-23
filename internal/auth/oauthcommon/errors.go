@@ -1,7 +1,7 @@
-// Package claude provides authentication and token management functionality
-// for Anthropic's Claude AI services. It handles OAuth2 token storage, serialization,
-// and retrieval for maintaining authenticated sessions with the Claude API.
-package claude
+// OAuth error types shared by the per-provider auth packages.
+// This is the superset of the former internal/auth/claude and
+// internal/auth/codex copies (codex additionally had ErrBrowserOpenFailed).
+package oauthcommon
 
 import (
 	"errors"
@@ -99,6 +99,13 @@ var (
 		Type:    "callback_timeout",
 		Message: "Timeout waiting for OAuth callback",
 		Code:    http.StatusRequestTimeout,
+	}
+
+	// ErrBrowserOpenFailed represents an error when opening the browser for authentication fails.
+	ErrBrowserOpenFailed = &AuthenticationError{
+		Type:    "browser_open_failed",
+		Message: "Failed to open browser for authentication",
+		Code:    http.StatusInternalServerError,
 	}
 )
 
