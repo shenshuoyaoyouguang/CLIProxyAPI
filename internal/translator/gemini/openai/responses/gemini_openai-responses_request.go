@@ -732,18 +732,22 @@ func geminiResponsesInlineDataPart(mimeType, data string) []byte {
 func parseOpenAIResponsesDataURL(imageURL string) (string, string) {
 	mimeType := "application/octet-stream"
 	data := ""
-	if baseMime, baseData, ok := translatorcommon.SplitBase64DataURL(imageURL); ok {
-		if baseMime != "" {
-			mimeType = baseMime
-		}
-		data = baseData
-	} else if strings.HasPrefix(imageURL, "data:") {
-		pieces := strings.SplitN(strings.TrimPrefix(imageURL, "data:"), ",", 2)
-		if len(pieces) == 2 {
-			if pieces[0] != "" {
-				mimeType = pieces[0]
+	if strings.HasPrefix(imageURL, "data:") {
+		trimmed := strings.TrimPrefix(imageURL, "data:")
+		mediaAndData := strings.SplitN(trimmed, ";base64,", 2)
+		if len(mediaAndData) == 2 {
+			if mediaAndData[0] != "" {
+				mimeType = mediaAndData[0]
 			}
-			data = pieces[1]
+			data = mediaAndData[1]
+		} else {
+			mediaAndData = strings.SplitN(trimmed, ",", 2)
+			if len(mediaAndData) == 2 {
+				if mediaAndData[0] != "" {
+					mimeType = mediaAndData[0]
+				}
+				data = mediaAndData[1]
+			}
 		}
 	}
 	return mimeType, data

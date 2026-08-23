@@ -1559,3 +1559,28 @@ func TestConvertOpenAIResponsesRequestToGemini_TwoTurnCustomToolRoundtripWithRea
 		t.Fatalf("expected functionResponse result '/workspace', got: %s", userRespParts[0].Raw)
 	}
 }
+
+// TestParseOpenAIResponsesDataURLGolden pins the parser's exact split
+// semantics: the ";base64," literal is matched anywhere in the parameter
+// section, so MIME types carrying their own parameters survive intact, and
+// non-base64 payloads fall back to the comma split with the default mime.
+func TestParseOpenAIResponsesDataURLGolden(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		wantMime string
+		wantData string
+	}{
+		{"parameterized base64", "data:text/plain;charset=utf-8;base64,QUJD", "text/plain;charset=utf-8", "QUJD"},
+		{"plain base64", "data:image/png;base64,QUJD", "image/png", "QUJD"},
+		{"empty mime base64", "data:;base64,QUJD", "application/octet-stream", "QUJD"},
+		{"non-base64 comma fallback", "data:text/plain,hello", "text/plain", "hello"},
+		{"not a data url", "https://example.com/x.png", "application/octet-stream", ""},
+	}
+	for _, tc := range cases {
+		mime, data := parseOpenAIResponsesDataURL(tc.in)
+		if mime != tc.wantMime || data != tc.wantData {
+			t.Errorf("%s: got (%q,%q) want (%q,%q)", tc.name, mime, data, tc.wantMime, tc.wantData)
+		}
+	}
+}

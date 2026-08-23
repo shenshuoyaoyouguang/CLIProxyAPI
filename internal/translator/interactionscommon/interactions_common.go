@@ -307,6 +307,3 @@ func AppendDone(out [][]byte, st *StreamState) [][]byte {
 	st.Done = true
 	return out
 }
-
-// TextPartJSON builds a Gemini-style text part for interactions content,
-// optionally flagged as thought. (Placed here with the other part builders.)
