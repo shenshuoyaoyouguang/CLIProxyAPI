@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,13 +36,6 @@ const (
 	kimiThinkingReplayCacheMaxSerializedBytes = KimiThinkingReplayCacheMaxBytesPerEntry + 1024
 )
 
-type kimiThinkingReplayEntry struct {
-	Content    []byte
-	Timestamp  time.Time
-	Generation string
-	Deleted    bool
-}
-
 // KimiThinkingReplaySnapshot identifies the exact replay generation read for one request.
 type KimiThinkingReplaySnapshot struct {
 	raw        []byte
@@ -60,7 +52,7 @@ type kimiThinkingReplayHomeValue struct {
 
 var (
 	kimiThinkingReplayMu         sync.Mutex
-	kimiThinkingReplayEntries    = make(map[string]kimiThinkingReplayEntry)
+	kimiThinkingReplayEntries    = make(map[string]fencedReplayEntry[[]byte])
 	kimiThinkingReplayTotalBytes int
 )
 
@@ -74,6 +66,15 @@ type kimiThinkingReplayKVClient interface {
 
 var currentKimiThinkingReplayKVClient = func() (kimiThinkingReplayKVClient, bool, error) {
 	return homekv.CurrentKVClient()
+}
+
+func kimiThinkingReplayLimits() fencedReplayLimits {
+	return fencedReplayLimits{
+		TTL:           KimiThinkingReplayCacheTTL,
+		MaxEntries:    KimiThinkingReplayCacheMaxEntries,
+		EvictBatch:    KimiThinkingReplayCacheEvictBatchSize,
+		MaxTotalBytes: KimiThinkingReplayCacheMaxTotalBytes,
+	}
 }
 
 // CacheKimiThinkingReplayBestEffort stores one complete signed assistant content array.
@@ -105,7 +106,8 @@ func CacheKimiThinkingReplayBestEffort(ctx context.Context, modelFamily, session
 		return written
 	}
 
-	storeKimiThinkingReplayLocal(key, cloned, generation, false, time.Now())
+	cacheCleanupOnce.Do(startCacheCleanup)
+	storeFencedReplayLocal(&kimiThinkingReplayMu, kimiThinkingReplayEntries, &kimiThinkingReplayTotalBytes, kimiThinkingReplayLimits(), kimiThinkingReplayContentSize, key, cloned, generation, false, time.Now())
 	return true
 }
 
@@ -130,7 +132,11 @@ func GetKimiThinkingReplayWithSnapshotRequired(ctx context.Context, modelFamily,
 			return nil, KimiThinkingReplaySnapshot{loaded: true}, false, errClient
 		}
 		kvKey := kimiThinkingReplayKVKey(modelFamily, sessionKey)
-		raw, errRead := readOrReserveKimiThinkingReplayHomeValue(ctx, client, kvKey)
+		tombstone, errMarshal := marshalKimiThinkingReplayHomeValue(uuid.NewString(), true, nil)
+		if errMarshal != nil {
+			return nil, KimiThinkingReplaySnapshot{loaded: true}, false, errMarshal
+		}
+		raw, errRead := readOrReserveFencedReplayHome(ctx, client, kvKey, KimiThinkingReplayCacheTTL, kimiThinkingReplayCacheMaxSerializedBytes, "kimi", tombstone)
 		if errRead != nil {
 			return nil, KimiThinkingReplaySnapshot{loaded: true}, false, errRead
 		}
@@ -150,24 +156,12 @@ func GetKimiThinkingReplayWithSnapshotRequired(ctx context.Context, modelFamily,
 	}
 
 	cacheCleanupOnce.Do(startCacheCleanup)
-	now := time.Now()
-	kimiThinkingReplayMu.Lock()
-	defer kimiThinkingReplayMu.Unlock()
-	entry, ok := kimiThinkingReplayEntries[key]
-	if !ok || now.Sub(entry.Timestamp) > KimiThinkingReplayCacheTTL {
-		if ok {
-			kimiThinkingReplayTotalBytes -= len(entry.Content)
-			delete(kimiThinkingReplayEntries, key)
-		}
-		entry = reserveKimiThinkingReplayLocalLocked(key, now)
-	}
-	entry.Timestamp = now
-	kimiThinkingReplayEntries[key] = entry
+	entry := lookupFencedReplayLocal(&kimiThinkingReplayMu, kimiThinkingReplayEntries, &kimiThinkingReplayTotalBytes, kimiThinkingReplayLimits(), kimiThinkingReplayContentSize, key, time.Now())
 	snapshot := KimiThinkingReplaySnapshot{generation: entry.Generation, loaded: true, found: true}
 	if entry.Deleted {
 		return nil, snapshot, false, nil
 	}
-	return append([]byte(nil), entry.Content...), snapshot, true, nil
+	return append([]byte(nil), entry.Value...), snapshot, true, nil
 }
 
 // ReplaceKimiThinkingReplayIfUnchanged stores completed content only if the request snapshot is current.
@@ -183,13 +177,12 @@ func ReplaceKimiThinkingReplayIfUnchanged(ctx context.Context, modelFamily, sess
 		return CacheKimiThinkingReplayBestEffort(ctx, modelFamily, sessionKey, content), nil
 	}
 	cloned := append([]byte(nil), content...)
-	generation := uuid.NewString()
 	client, homeMode, errClient := currentKimiThinkingReplayKVClient()
 	if homeMode {
 		if errClient != nil {
 			return false, errClient
 		}
-		raw, errMarshal := marshalKimiThinkingReplayHomeValue(generation, false, cloned)
+		raw, errMarshal := marshalKimiThinkingReplayHomeValue(uuid.NewString(), false, cloned)
 		if errMarshal != nil {
 			return false, errMarshal
 		}
@@ -199,14 +192,10 @@ func ReplaceKimiThinkingReplayIfUnchanged(ctx context.Context, modelFamily, sess
 	cacheCleanupOnce.Do(startCacheCleanup)
 	kimiThinkingReplayMu.Lock()
 	defer kimiThinkingReplayMu.Unlock()
-	entry, found := kimiThinkingReplayEntries[key]
-	if found != snapshot.found || (found && entry.Generation != snapshot.generation) {
+	if _, current := fencedReplaySnapshotCurrentLocked(kimiThinkingReplayEntries, key, snapshot.found, snapshot.generation); !current {
 		return false, nil
 	}
-	kimiThinkingReplayTotalBytes -= len(entry.Content)
-	kimiThinkingReplayTotalBytes += len(cloned)
-	kimiThinkingReplayEntries[key] = kimiThinkingReplayEntry{Content: cloned, Timestamp: time.Now(), Generation: generation}
-	enforceKimiThinkingReplayLimitsLocked()
+	commitFencedReplayReplaceLocked(kimiThinkingReplayEntries, &kimiThinkingReplayTotalBytes, kimiThinkingReplayLimits(), kimiThinkingReplayContentSize, key, cloned, time.Now())
 	return true, nil
 }
 
@@ -235,15 +224,7 @@ func DeleteKimiThinkingReplayIfUnchanged(ctx context.Context, modelFamily, sessi
 		return client.KVCompareAndSwap(ctx, kimiThinkingReplayKVKey(modelFamily, sessionKey), snapshot.raw, snapshot.found, tombstone, KimiThinkingReplayCacheTTL)
 	}
 
-	kimiThinkingReplayMu.Lock()
-	defer kimiThinkingReplayMu.Unlock()
-	entry, found := kimiThinkingReplayEntries[key]
-	if found != snapshot.found || (found && entry.Generation != snapshot.generation) {
-		return false, nil
-	}
-	kimiThinkingReplayTotalBytes -= len(entry.Content)
-	kimiThinkingReplayEntries[key] = kimiThinkingReplayEntry{Timestamp: time.Now(), Generation: generation, Deleted: true}
-	return true, nil
+	return tombstoneFencedReplayIfUnchanged(&kimiThinkingReplayMu, kimiThinkingReplayEntries, &kimiThinkingReplayTotalBytes, kimiThinkingReplayContentSize, key, snapshot.found, snapshot.generation, time.Now()), nil
 }
 
 // DeleteKimiThinkingReplayRequired removes stale replay state unconditionally.
@@ -263,48 +244,17 @@ func DeleteKimiThinkingReplayRequired(ctx context.Context, modelFamily, sessionK
 		_, errDelete := client.KVDel(ctx, kimiThinkingReplayKVKey(modelFamily, sessionKey))
 		return errDelete
 	}
-	kimiThinkingReplayMu.Lock()
-	if entry, found := kimiThinkingReplayEntries[key]; found {
-		kimiThinkingReplayTotalBytes -= len(entry.Content)
-		delete(kimiThinkingReplayEntries, key)
-	}
-	kimiThinkingReplayMu.Unlock()
+	removeFencedReplayLocal(&kimiThinkingReplayMu, kimiThinkingReplayEntries, &kimiThinkingReplayTotalBytes, kimiThinkingReplayContentSize, key)
 	return nil
 }
 
 // ClearKimiThinkingReplayCache clears all in-process Kimi replay state.
 func ClearKimiThinkingReplayCache() {
-	kimiThinkingReplayMu.Lock()
-	kimiThinkingReplayEntries = make(map[string]kimiThinkingReplayEntry)
-	kimiThinkingReplayTotalBytes = 0
-	kimiThinkingReplayMu.Unlock()
+	clearFencedReplayLocal(&kimiThinkingReplayMu, kimiThinkingReplayEntries, &kimiThinkingReplayTotalBytes)
 }
 
-func readOrReserveKimiThinkingReplayHomeValue(ctx context.Context, client kimiThinkingReplayKVClient, key string) ([]byte, error) {
-	for attempt := 0; attempt < 4; attempt++ {
-		raw, found, errGet := client.KVGet(ctx, key)
-		if errGet != nil {
-			return nil, errGet
-		}
-		if found {
-			if len(raw) > kimiThinkingReplayCacheMaxSerializedBytes {
-				return nil, fmt.Errorf("kimi thinking replay value exceeds size limit")
-			}
-			return raw, nil
-		}
-		tombstone, errMarshal := marshalKimiThinkingReplayHomeValue(uuid.NewString(), true, nil)
-		if errMarshal != nil {
-			return nil, errMarshal
-		}
-		swapped, errReserve := client.KVCompareAndSwap(ctx, key, nil, false, tombstone, KimiThinkingReplayCacheTTL)
-		if errReserve != nil {
-			return nil, errReserve
-		}
-		if swapped {
-			return tombstone, nil
-		}
-	}
-	return nil, fmt.Errorf("could not reserve absent kimi thinking replay state")
+func kimiThinkingReplayContentSize(content []byte) int {
+	return len(content)
 }
 
 func marshalKimiThinkingReplayHomeValue(generation string, deleted bool, content []byte) ([]byte, error) {
@@ -339,25 +289,6 @@ func decodeKimiThinkingReplayHomeValue(raw []byte) ([]byte, string, bool, bool) 
 	return append([]byte(nil), value.Content...), value.Generation, false, true
 }
 
-func reserveKimiThinkingReplayLocalLocked(key string, now time.Time) kimiThinkingReplayEntry {
-	entry := kimiThinkingReplayEntry{Timestamp: now, Generation: uuid.NewString(), Deleted: true}
-	kimiThinkingReplayEntries[key] = entry
-	enforceKimiThinkingReplayLimitsLocked()
-	return entry
-}
-
-func storeKimiThinkingReplayLocal(key string, content []byte, generation string, deleted bool, now time.Time) {
-	cacheCleanupOnce.Do(startCacheCleanup)
-	kimiThinkingReplayMu.Lock()
-	defer kimiThinkingReplayMu.Unlock()
-	if previous, found := kimiThinkingReplayEntries[key]; found {
-		kimiThinkingReplayTotalBytes -= len(previous.Content)
-	}
-	kimiThinkingReplayTotalBytes += len(content)
-	kimiThinkingReplayEntries[key] = kimiThinkingReplayEntry{Content: content, Timestamp: now, Generation: generation, Deleted: deleted}
-	enforceKimiThinkingReplayLimitsLocked()
-}
-
 func kimiThinkingReplayCacheKey(modelFamily, sessionKey string) string {
 	modelFamily = strings.TrimSpace(modelFamily)
 	sessionKey = strings.TrimSpace(sessionKey)
@@ -379,48 +310,6 @@ func validKimiThinkingReplayContent(content []byte) bool {
 	return root.IsArray() && len(root.Array()) > 0 && len(root.Array()) <= KimiThinkingReplayCacheMaxBlocksPerEntry
 }
 
-func enforceKimiThinkingReplayLimitsLocked() {
-	for len(kimiThinkingReplayEntries) > KimiThinkingReplayCacheMaxEntries || kimiThinkingReplayTotalBytes > KimiThinkingReplayCacheMaxTotalBytes {
-		if len(kimiThinkingReplayEntries) == 0 {
-			kimiThinkingReplayTotalBytes = 0
-			return
-		}
-		evictOldestKimiThinkingReplayEntriesLocked(KimiThinkingReplayCacheEvictBatchSize)
-	}
-}
-
-func evictOldestKimiThinkingReplayEntriesLocked(count int) {
-	if count <= 0 || len(kimiThinkingReplayEntries) == 0 {
-		return
-	}
-	type candidate struct {
-		key       string
-		timestamp time.Time
-	}
-	candidates := make([]candidate, 0, len(kimiThinkingReplayEntries))
-	for key, entry := range kimiThinkingReplayEntries {
-		candidates = append(candidates, candidate{key: key, timestamp: entry.Timestamp})
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].timestamp.Before(candidates[j].timestamp)
-	})
-	if count > len(candidates) {
-		count = len(candidates)
-	}
-	for i := 0; i < count; i++ {
-		entry := kimiThinkingReplayEntries[candidates[i].key]
-		kimiThinkingReplayTotalBytes -= len(entry.Content)
-		delete(kimiThinkingReplayEntries, candidates[i].key)
-	}
-}
-
 func purgeExpiredKimiThinkingReplayCache(now time.Time) {
-	kimiThinkingReplayMu.Lock()
-	for key, entry := range kimiThinkingReplayEntries {
-		if now.Sub(entry.Timestamp) > KimiThinkingReplayCacheTTL {
-			kimiThinkingReplayTotalBytes -= len(entry.Content)
-			delete(kimiThinkingReplayEntries, key)
-		}
-	}
-	kimiThinkingReplayMu.Unlock()
+	purgeExpiredFencedReplay(&kimiThinkingReplayMu, kimiThinkingReplayEntries, &kimiThinkingReplayTotalBytes, kimiThinkingReplayLimits(), kimiThinkingReplayContentSize, now)
 }
