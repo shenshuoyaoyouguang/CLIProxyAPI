@@ -2,14 +2,13 @@ package wsrelay
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -193,13 +192,5 @@ func (m *Manager) handleSessionClosed(s *session, cause error) {
 }
 
 func randomProviderName() string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("aistudio-%x", time.Now().UnixNano())
-	}
-	for i := range buf {
-		buf[i] = alphabet[int(buf[i])%len(alphabet)]
-	}
-	return "aistudio-" + string(buf)
+	return "aistudio-" + uuid.NewString()
 }
