@@ -686,8 +686,8 @@ func waitForOAuthCallbackFile(state, provider string, authDir string, timeout ti
 // "expires_in" assignment used by xAI when the provider omits it.
 func buildDeviceFlowResponse(authURL, state, userCode string, expiresIn, fallbackExpiresIn int) gin.H {
 	response := gin.H{"status": "ok", "url": authURL, "state": state, "flow": "device"}
-	if strings.TrimSpace(userCode) != "" {
-		response["user_code"] = userCode
+	if u := strings.TrimSpace(userCode); u != "" {
+		response["user_code"] = u
 	}
 	if expiresIn > 0 {
 		response["expires_in"] = expiresIn
