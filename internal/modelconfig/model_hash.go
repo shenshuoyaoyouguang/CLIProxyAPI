@@ -13,77 +13,92 @@ import (
 
 // ComputeOpenAICompatModelsHash returns a stable hash for OpenAI-compatible models.
 func ComputeOpenAICompatModelsHash(models []config.OpenAICompatibilityModel) string {
-	keys := modelRoutingKeys(func(out func(key string)) {
-		for _, model := range models {
-			name := strings.TrimSpace(model.Name)
-			alias := strings.TrimSpace(model.Alias)
-			if name == "" && alias == "" {
-				continue
-			}
-			out(strings.ToLower(name) + "|" + strings.ToLower(alias) + "|" + strings.TrimSpace(model.DisplayName) + "|" + fmt.Sprintf("image=%t", model.Image) + "|" + fmt.Sprintf("force-mapping=%t", model.ForceMapping) + "|" + fmt.Sprintf("is-compat=%t", model.IsCompat) + "|input=" + strings.Join(normalizeModalities(model.InputModalities), ",") + "|output=" + strings.Join(normalizeModalities(model.OutputModalities), ",") + thinkingHashSuffix(model.Thinking))
+	return computeModelsHash(openAICompatModelKeys(models))
+}
+
+func openAICompatModelKeys(models []config.OpenAICompatibilityModel) []string {
+	keys := make([]string, 0, len(models))
+	for _, model := range models {
+		name := strings.TrimSpace(model.Name)
+		alias := strings.TrimSpace(model.Alias)
+		if name == "" && alias == "" {
+			continue
 		}
-	})
-	return hashJoined(keys)
+		keys = append(keys, strings.ToLower(name)+"|"+strings.ToLower(alias)+"|"+strings.TrimSpace(model.DisplayName)+"|"+fmt.Sprintf("image=%t", model.Image)+"|"+fmt.Sprintf("force-mapping=%t", model.ForceMapping)+"|"+fmt.Sprintf("is-compat=%t", model.IsCompat)+"|input="+strings.Join(normalizeModalities(model.InputModalities), ",")+"|output="+strings.Join(normalizeModalities(model.OutputModalities), ",")+thinkingHashSuffix(model.Thinking))
+	}
+	return keys
 }
 
 // ComputeVertexCompatModelsHash returns a stable hash for Vertex-compatible models.
 func ComputeVertexCompatModelsHash(models []config.VertexCompatModel) string {
-	keys := modelRoutingKeys(func(out func(key string)) {
-		for _, model := range models {
-			name := strings.TrimSpace(model.Name)
-			alias := strings.TrimSpace(model.Alias)
-			if name == "" && alias == "" {
-				continue
-			}
-			out(strings.ToLower(name) + "|" + strings.ToLower(alias) + "|" + strings.TrimSpace(model.DisplayName) + "|" + fmt.Sprintf("force-mapping=%t", model.ForceMapping) + thinkingHashSuffix(model.Thinking))
+	return computeModelsHash(vertexCompatModelKeys(models))
+}
+
+func vertexCompatModelKeys(models []config.VertexCompatModel) []string {
+	keys := make([]string, 0, len(models))
+	for _, model := range models {
+		name := strings.TrimSpace(model.Name)
+		alias := strings.TrimSpace(model.Alias)
+		if name == "" && alias == "" {
+			continue
 		}
-	})
-	return hashJoined(keys)
+		keys = append(keys, strings.ToLower(name)+"|"+strings.ToLower(alias)+"|"+strings.TrimSpace(model.DisplayName)+"|"+fmt.Sprintf("force-mapping=%t", model.ForceMapping)+thinkingHashSuffix(model.Thinking))
+	}
+	return keys
 }
 
 // ComputeClaudeModelsHash returns a stable hash for Claude model aliases.
 func ComputeClaudeModelsHash(models []config.ClaudeModel) string {
-	keys := modelRoutingKeys(func(out func(key string)) {
-		for _, model := range models {
-			name := strings.TrimSpace(model.Name)
-			alias := strings.TrimSpace(model.Alias)
-			if name == "" && alias == "" {
-				continue
-			}
-			out(strings.ToLower(name) + "|" + strings.ToLower(alias) + "|" + strings.TrimSpace(model.DisplayName) + "|" + fmt.Sprintf("force-mapping=%t", model.ForceMapping) + "|" + fmt.Sprintf("is-compat=%t", model.IsCompat) + thinkingHashSuffix(model.Thinking))
+	return computeModelsHash(claudeModelKeys(models))
+}
+
+func claudeModelKeys(models []config.ClaudeModel) []string {
+	keys := make([]string, 0, len(models))
+	for _, model := range models {
+		name := strings.TrimSpace(model.Name)
+		alias := strings.TrimSpace(model.Alias)
+		if name == "" && alias == "" {
+			continue
 		}
-	})
-	return hashJoined(keys)
+		keys = append(keys, strings.ToLower(name)+"|"+strings.ToLower(alias)+"|"+strings.TrimSpace(model.DisplayName)+"|"+fmt.Sprintf("force-mapping=%t", model.ForceMapping)+"|"+fmt.Sprintf("is-compat=%t", model.IsCompat)+thinkingHashSuffix(model.Thinking))
+	}
+	return keys
 }
 
 // ComputeCodexModelsHash returns a stable hash for Codex model aliases.
 func ComputeCodexModelsHash(models []config.CodexModel) string {
-	keys := modelRoutingKeys(func(out func(key string)) {
-		for _, model := range models {
-			name := strings.TrimSpace(model.Name)
-			alias := strings.TrimSpace(model.Alias)
-			if name == "" && alias == "" {
-				continue
-			}
-			out(strings.ToLower(name) + "|" + strings.ToLower(alias) + "|" + strings.TrimSpace(model.DisplayName) + "|" + fmt.Sprintf("force-mapping=%t", model.ForceMapping) + "|" + fmt.Sprintf("is-compat=%t", model.IsCompat) + thinkingHashSuffix(model.Thinking))
+	return computeModelsHash(codexModelKeys(models))
+}
+
+func codexModelKeys(models []config.CodexModel) []string {
+	keys := make([]string, 0, len(models))
+	for _, model := range models {
+		name := strings.TrimSpace(model.Name)
+		alias := strings.TrimSpace(model.Alias)
+		if name == "" && alias == "" {
+			continue
 		}
-	})
-	return hashJoined(keys)
+		keys = append(keys, strings.ToLower(name)+"|"+strings.ToLower(alias)+"|"+strings.TrimSpace(model.DisplayName)+"|"+fmt.Sprintf("force-mapping=%t", model.ForceMapping)+"|"+fmt.Sprintf("is-compat=%t", model.IsCompat)+thinkingHashSuffix(model.Thinking))
+	}
+	return keys
 }
 
 // ComputeGeminiModelsHash returns a stable hash for Gemini model aliases.
 func ComputeGeminiModelsHash(models []config.GeminiModel) string {
-	keys := modelRoutingKeys(func(out func(key string)) {
-		for _, model := range models {
-			name := strings.TrimSpace(model.Name)
-			alias := strings.TrimSpace(model.Alias)
-			if name == "" && alias == "" {
-				continue
-			}
-			out(strings.ToLower(name) + "|" + strings.ToLower(alias) + "|" + strings.TrimSpace(model.DisplayName) + "|" + fmt.Sprintf("force-mapping=%t", model.ForceMapping) + "|" + fmt.Sprintf("is-compat=%t", model.IsCompat) + thinkingHashSuffix(model.Thinking))
+	return computeModelsHash(geminiModelKeys(models))
+}
+
+func geminiModelKeys(models []config.GeminiModel) []string {
+	keys := make([]string, 0, len(models))
+	for _, model := range models {
+		name := strings.TrimSpace(model.Name)
+		alias := strings.TrimSpace(model.Alias)
+		if name == "" && alias == "" {
+			continue
 		}
-	})
-	return hashJoined(keys)
+		keys = append(keys, strings.ToLower(name)+"|"+strings.ToLower(alias)+"|"+strings.TrimSpace(model.DisplayName)+"|"+fmt.Sprintf("force-mapping=%t", model.ForceMapping)+"|"+fmt.Sprintf("is-compat=%t", model.IsCompat)+thinkingHashSuffix(model.Thinking))
+	}
+	return keys
 }
 
 func normalizeModalities(raw []string) []string {
@@ -108,15 +123,9 @@ func thinkingHashSuffix(support *registry.ThinkingSupport) string {
 	return "|thinking=" + string(data)
 }
 
-func modelRoutingKeys(collect func(out func(key string))) []string {
-	keys := make([]string, 0)
-	collect(func(key string) {
-		keys = append(keys, key)
-	})
-	return keys
-}
-
-func hashJoined(keys []string) string {
+// computeModelsHash hashes routing keys in order, preserving duplicates: a
+// duplicate or reordered entry must change the hash (asserted by tests).
+func computeModelsHash(keys []string) string {
 	if len(keys) == 0 {
 		return ""
 	}
