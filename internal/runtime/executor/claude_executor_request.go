@@ -1198,38 +1198,26 @@ type claudeRawJSONEdit struct {
 	replacement string
 }
 
-func remapOAuthToolNamesWithOptions(body []byte, mcpAliases claudeMCPAliasOptions) ([]byte, map[string]string) {
-	remapped, reverseMap, ok := remapOAuthToolNamesWithBatchedEdits(body, mcpAliases)
-	if ok {
-		return remapped, reverseMap
-	}
-	return remapOAuthToolNamesWithOptionsLegacy(body, mcpAliases)
-}
-
-// remapOAuthToolNamesWithBatchedEdits records offsets from the original JSON
-// and applies every rename in one copy. Repeated sjson.SetBytes calls copy most
-// of the request for every historical tool reference, turning this path into
-// O(body size * reference count) allocation growth.
-func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasOptions) ([]byte, map[string]string, bool) {
-	if !gjson.ValidBytes(body) {
-		return nil, nil, false
-	}
-
-	reverseMap := make(map[string]string)
-	recordRename := func(original, renamed string) {
-		// Preserve the first-seen original name if the same upstream name is
-		// produced from multiple call sites; they all map back identically.
+// newClaudeMCPReverseRecorder returns the rename-recording closure shared by
+// every remap path. It preserves the first-seen original name if the same
+// upstream name is produced from multiple call sites; they all map back
+// identically.
+func newClaudeMCPReverseRecorder(reverseMap map[string]string) func(original, renamed string) {
+	return func(original, renamed string) {
 		if _, exists := reverseMap[renamed]; !exists {
 			reverseMap[renamed] = original
 		}
 	}
+}
 
-	// Build one request-specific forward map from declarations. Every client
-	// tool, including typed custom declarations and names resembling Claude
-	// built-ins, gets an MCP alias. Historical references use this same map.
-	tools := gjson.GetBytes(body, "tools")
-	forwardMap := make(map[string]string)
-	protectedNames := make(map[string]bool)
+// buildClaudeMCPAliasMaps derives the request-scoped forward alias map and the
+// set of protected tool names (typed Anthropic server tools that must never be
+// renamed). Caller-owned passthrough MCP names are recorded into the reverse
+// map via recordRename so the response resolver treats them as exact
+// passthroughs.
+func buildClaudeMCPAliasMaps(body []byte, tools gjson.Result, mcpAliases claudeMCPAliasOptions, recordRename func(original, renamed string)) (forwardMap map[string]string, protectedNames map[string]bool) {
+	forwardMap = make(map[string]string)
+	protectedNames = make(map[string]bool)
 	reservedNames := helps.AugmentClaudeBuiltinToolRegistry(body, nil)
 	if tools.Exists() && tools.IsArray() {
 		tools.ForEach(func(_, tool gjson.Result) bool {
@@ -1269,16 +1257,109 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 		})
 		recordPassthroughMCPTools(recordRename, forwardMap, passthroughMCPTools)
 	}
+	return forwardMap, protectedNames
+}
 
-	rewriteName := func(name string) (string, bool) {
-		if name == "" || protectedNames[name] || helps.IsClaudeMCPToolName(name) {
-			return name, false
-		}
-		if newName, ok := forwardMap[name]; ok && newName != name {
-			return newName, true
-		}
+// rewriteClaudeMCPToolName returns the alias for a declared client tool name,
+// or the original name unchanged when it must be preserved (empty, a protected
+// typed Anthropic server tool, or an existing caller-owned MCP name).
+func rewriteClaudeMCPToolName(name string, forwardMap map[string]string, protectedNames map[string]bool) (string, bool) {
+	if name == "" || protectedNames[name] || helps.IsClaudeMCPToolName(name) {
 		return name, false
 	}
+	if newName, ok := forwardMap[name]; ok && newName != name {
+		return newName, true
+	}
+	return name, false
+}
+
+// buildClaudeMCPToolsRewrite rebuilds the tools array with renamed names. It
+// returns the rebuilt JSON and whether any rewrite is required.
+func buildClaudeMCPToolsRewrite(tools gjson.Result, forwardMap map[string]string, protectedNames map[string]bool, recordRename func(string, string)) (string, bool) {
+	toolsNeedRewrite := false
+	if tools.Exists() && tools.IsArray() {
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			toolType := tool.Get("type").String()
+			if helps.IsClaudeServerToolType(toolType) {
+				return true
+			}
+			if strings.TrimSpace(toolType) != "" {
+				toolsNeedRewrite = true
+				return false
+			}
+			name := tool.Get("name").String()
+			_, toolsNeedRewrite = rewriteClaudeMCPToolName(name, forwardMap, protectedNames)
+			return !toolsNeedRewrite
+		})
+	}
+	if !toolsNeedRewrite {
+		return "", false
+	}
+
+	var toolsJSON strings.Builder
+	toolsJSON.WriteByte('[')
+	toolCount := 0
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if helps.IsClaudeServerToolType(tool.Get("type").String()) {
+			if toolCount > 0 {
+				toolsJSON.WriteByte(',')
+			}
+			toolsJSON.WriteString(tool.Raw)
+			toolCount++
+			return true
+		}
+
+		name := tool.Get("name").String()
+		toolJSON := tool.Raw
+		if strings.TrimSpace(tool.Get("type").String()) != "" {
+			if updatedTool, errDelete := sjson.Delete(toolJSON, "type"); errDelete == nil {
+				toolJSON = updatedTool
+			}
+		}
+		if newName, renamed := rewriteClaudeMCPToolName(name, forwardMap, protectedNames); renamed {
+			updatedTool, err := sjson.Set(toolJSON, "name", newName)
+			if err == nil {
+				toolJSON = updatedTool
+				recordRename(name, newName)
+			}
+		}
+
+		if toolCount > 0 {
+			toolsJSON.WriteByte(',')
+		}
+		toolsJSON.WriteString(toolJSON)
+		toolCount++
+		return true
+	})
+	toolsJSON.WriteByte(']')
+	return toolsJSON.String(), true
+}
+
+func remapOAuthToolNamesWithOptions(body []byte, mcpAliases claudeMCPAliasOptions) ([]byte, map[string]string) {
+	remapped, reverseMap, ok := remapOAuthToolNamesWithBatchedEdits(body, mcpAliases)
+	if ok {
+		return remapped, reverseMap
+	}
+	return remapOAuthToolNamesWithOptionsLegacy(body, mcpAliases)
+}
+
+// remapOAuthToolNamesWithBatchedEdits records offsets from the original JSON
+// and applies every rename in one copy. Repeated sjson.SetBytes calls copy most
+// of the request for every historical tool reference, turning this path into
+// O(body size * reference count) allocation growth.
+func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasOptions) ([]byte, map[string]string, bool) {
+	if !gjson.ValidBytes(body) {
+		return nil, nil, false
+	}
+
+	reverseMap := make(map[string]string)
+	recordRename := newClaudeMCPReverseRecorder(reverseMap)
+
+	// Build one request-specific forward map from declarations. Every client
+	// tool, including typed custom declarations and names resembling Claude
+	// built-ins, gets an MCP alias. Historical references use this same map.
+	tools := gjson.GetBytes(body, "tools")
+	forwardMap, protectedNames := buildClaudeMCPAliasMaps(body, tools, mcpAliases, recordRename)
 
 	edits := make([]claudeRawJSONEdit, 0, len(forwardMap)+1)
 	appendRawEdit := func(result gjson.Result, replacement string) bool {
@@ -1298,60 +1379,8 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 
 	// 1. Rebuild typed custom tools exactly as before, but replace the original
 	// tools array only after all offsets have been collected.
-	toolsNeedRewrite := false
-	if tools.Exists() && tools.IsArray() {
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			toolType := tool.Get("type").String()
-			if helps.IsClaudeServerToolType(toolType) {
-				return true
-			}
-			if strings.TrimSpace(toolType) != "" {
-				toolsNeedRewrite = true
-				return false
-			}
-			name := tool.Get("name").String()
-			_, toolsNeedRewrite = rewriteName(name)
-			return !toolsNeedRewrite
-		})
-	}
-	if toolsNeedRewrite {
-		var toolsJSON strings.Builder
-		toolsJSON.WriteByte('[')
-		toolCount := 0
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			if helps.IsClaudeServerToolType(tool.Get("type").String()) {
-				if toolCount > 0 {
-					toolsJSON.WriteByte(',')
-				}
-				toolsJSON.WriteString(tool.Raw)
-				toolCount++
-				return true
-			}
-
-			name := tool.Get("name").String()
-			toolJSON := tool.Raw
-			if strings.TrimSpace(tool.Get("type").String()) != "" {
-				if updatedTool, errDelete := sjson.Delete(toolJSON, "type"); errDelete == nil {
-					toolJSON = updatedTool
-				}
-			}
-			if newName, renamed := rewriteName(name); renamed {
-				updatedTool, err := sjson.Set(toolJSON, "name", newName)
-				if err == nil {
-					toolJSON = updatedTool
-					recordRename(name, newName)
-				}
-			}
-
-			if toolCount > 0 {
-				toolsJSON.WriteByte(',')
-			}
-			toolsJSON.WriteString(toolJSON)
-			toolCount++
-			return true
-		})
-		toolsJSON.WriteByte(']')
-		if !appendRawEdit(tools, toolsJSON.String()) {
+	if toolsJSON, needRewrite := buildClaudeMCPToolsRewrite(tools, forwardMap, protectedNames, recordRename); needRewrite {
+		if !appendRawEdit(tools, toolsJSON) {
 			return nil, nil, false
 		}
 	}
@@ -1361,7 +1390,7 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 	if toolChoice.Get("type").String() == "tool" {
 		nameResult := toolChoice.Get("name")
 		tcName := nameResult.String()
-		if newName, renamed := rewriteName(tcName); renamed {
+		if newName, renamed := rewriteClaudeMCPToolName(tcName, forwardMap, protectedNames); renamed {
 			if !appendStringEdit(nameResult, newName) {
 				return nil, nil, false
 			}
@@ -1384,7 +1413,7 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 				case "tool_use":
 					nameResult := part.Get("name")
 					name := nameResult.String()
-					if newName, renamed := rewriteName(name); renamed {
+					if newName, renamed := rewriteClaudeMCPToolName(name, forwardMap, protectedNames); renamed {
 						if !appendStringEdit(nameResult, newName) {
 							validOffsets = false
 							return false
@@ -1394,7 +1423,7 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 				case "tool_reference":
 					nameResult := part.Get("tool_name")
 					toolName := nameResult.String()
-					if newName, renamed := rewriteName(toolName); renamed {
+					if newName, renamed := rewriteClaudeMCPToolName(toolName, forwardMap, protectedNames); renamed {
 						if !appendStringEdit(nameResult, newName) {
 							validOffsets = false
 							return false
@@ -1410,7 +1439,7 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 							}
 							nameResult := nestedPart.Get("tool_name")
 							nestedToolName := nameResult.String()
-							if newName, renamed := rewriteName(nestedToolName); renamed {
+							if newName, renamed := rewriteClaudeMCPToolName(nestedToolName, forwardMap, protectedNames); renamed {
 								if !appendStringEdit(nameResult, newName) {
 									validOffsets = false
 									return false
@@ -1429,7 +1458,7 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 							}
 							nameResult := refPart.Get("tool_name")
 							refToolName := nameResult.String()
-							if newName, renamed := rewriteName(refToolName); renamed {
+							if newName, renamed := rewriteClaudeMCPToolName(refToolName, forwardMap, protectedNames); renamed {
 								if !appendStringEdit(nameResult, newName) {
 									validOffsets = false
 									return false
@@ -1493,132 +1522,24 @@ func applyClaudeRawJSONEdits(body []byte, edits []claudeRawJSONEdit) ([]byte, bo
 // as a differential-test oracle for the batched implementation.
 func remapOAuthToolNamesWithOptionsLegacy(body []byte, mcpAliases claudeMCPAliasOptions) ([]byte, map[string]string) {
 	reverseMap := make(map[string]string)
-	recordRename := func(original, renamed string) {
-		// Preserve the first-seen original name if the same upstream name is
-		// produced from multiple call sites; they all map back identically.
-		if _, exists := reverseMap[renamed]; !exists {
-			reverseMap[renamed] = original
-		}
-	}
+	recordRename := newClaudeMCPReverseRecorder(reverseMap)
 
 	// Build one request-specific forward map from declarations. Every client
 	// tool, including typed custom declarations and names resembling Claude
 	// built-ins, gets an MCP alias. Historical references use this same map.
 	tools := gjson.GetBytes(body, "tools")
-	forwardMap := make(map[string]string)
-	protectedNames := make(map[string]bool)
-	reservedNames := helps.AugmentClaudeBuiltinToolRegistry(body, nil)
-	if tools.Exists() && tools.IsArray() {
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			name := tool.Get("name").String()
-			if name != "" {
-				reservedNames[name] = true
-			}
-			if helps.IsClaudeServerToolType(tool.Get("type").String()) {
-				protectedNames[name] = true
-			}
-			return true
-		})
-		passthroughMCPTools := make([]string, 0, 4)
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			if helps.IsClaudeServerToolType(tool.Get("type").String()) {
-				return true
-			}
-			name := tool.Get("name").String()
-			if name == "" {
-				return true
-			}
-			if helps.IsClaudeMCPToolName(name) {
-				passthroughMCPTools = append(passthroughMCPTools, name)
-				return true
-			}
-			if _, exists := forwardMap[name]; exists {
-				return true
-			}
-			alias, allocated := helps.AllocateClaudeMCPToolAlias(mcpAliases.secret, name, reservedNames)
-			if !allocated {
-				log.Warnf("claude oauth mcp alias: no free alias left for tool %q, forwarding the original name", name)
-				return true
-			}
-			forwardMap[name] = alias
-			reservedNames[alias] = true
-			return true
-		})
-		recordPassthroughMCPTools(recordRename, forwardMap, passthroughMCPTools)
-	}
-
-	rewriteName := func(name string) (string, bool) {
-		if name == "" || protectedNames[name] || helps.IsClaudeMCPToolName(name) {
-			return name, false
-		}
-		if newName, ok := forwardMap[name]; ok && newName != name {
-			return newName, true
-		}
-		return name, false
-	}
+	forwardMap, protectedNames := buildClaudeMCPAliasMaps(body, tools, mcpAliases, recordRename)
 
 	// 1. Rewrite the tools array without rebuilding from a stale gjson snapshot.
-	toolsNeedRewrite := false
-	if tools.Exists() && tools.IsArray() {
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			toolType := tool.Get("type").String()
-			if helps.IsClaudeServerToolType(toolType) {
-				return true
-			}
-			if strings.TrimSpace(toolType) != "" {
-				toolsNeedRewrite = true
-				return false
-			}
-			name := tool.Get("name").String()
-			_, toolsNeedRewrite = rewriteName(name)
-			return !toolsNeedRewrite
-		})
-	}
-	if toolsNeedRewrite {
-		var toolsJSON strings.Builder
-		toolsJSON.WriteByte('[')
-		toolCount := 0
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			if helps.IsClaudeServerToolType(tool.Get("type").String()) {
-				if toolCount > 0 {
-					toolsJSON.WriteByte(',')
-				}
-				toolsJSON.WriteString(tool.Raw)
-				toolCount++
-				return true
-			}
-
-			name := tool.Get("name").String()
-			toolJSON := tool.Raw
-			if strings.TrimSpace(tool.Get("type").String()) != "" {
-				if updatedTool, errDelete := sjson.Delete(toolJSON, "type"); errDelete == nil {
-					toolJSON = updatedTool
-				}
-			}
-			if newName, renamed := rewriteName(name); renamed {
-				updatedTool, err := sjson.Set(toolJSON, "name", newName)
-				if err == nil {
-					toolJSON = updatedTool
-					recordRename(name, newName)
-				}
-			}
-
-			if toolCount > 0 {
-				toolsJSON.WriteByte(',')
-			}
-			toolsJSON.WriteString(toolJSON)
-			toolCount++
-			return true
-		})
-		toolsJSON.WriteByte(']')
-		body, _ = sjson.SetRawBytes(body, "tools", []byte(toolsJSON.String()))
+	if toolsJSON, needRewrite := buildClaudeMCPToolsRewrite(tools, forwardMap, protectedNames, recordRename); needRewrite {
+		body, _ = sjson.SetRawBytes(body, "tools", []byte(toolsJSON))
 	}
 
 	// 2. Rename tool_choice if it references a declared client tool.
 	toolChoiceType := gjson.GetBytes(body, "tool_choice.type").String()
 	if toolChoiceType == "tool" {
 		tcName := gjson.GetBytes(body, "tool_choice.name").String()
-		if newName, renamed := rewriteName(tcName); renamed {
+		if newName, renamed := rewriteClaudeMCPToolName(tcName, forwardMap, protectedNames); renamed {
 			body, _ = sjson.SetBytes(body, "tool_choice.name", newName)
 			recordRename(tcName, newName)
 		}
@@ -1637,14 +1558,14 @@ func remapOAuthToolNamesWithOptionsLegacy(body []byte, mcpAliases claudeMCPAlias
 				switch partType {
 				case "tool_use":
 					name := part.Get("name").String()
-					if newName, renamed := rewriteName(name); renamed {
+					if newName, renamed := rewriteClaudeMCPToolName(name, forwardMap, protectedNames); renamed {
 						path := fmt.Sprintf("messages.%d.content.%d.name", msgIndex.Int(), contentIndex.Int())
 						body, _ = sjson.SetBytes(body, path, newName)
 						recordRename(name, newName)
 					}
 				case "tool_reference":
 					toolName := part.Get("tool_name").String()
-					if newName, renamed := rewriteName(toolName); renamed {
+					if newName, renamed := rewriteClaudeMCPToolName(toolName, forwardMap, protectedNames); renamed {
 						path := fmt.Sprintf("messages.%d.content.%d.tool_name", msgIndex.Int(), contentIndex.Int())
 						body, _ = sjson.SetBytes(body, path, newName)
 						recordRename(toolName, newName)
@@ -1658,7 +1579,7 @@ func remapOAuthToolNamesWithOptionsLegacy(body []byte, mcpAliases claudeMCPAlias
 						nestedContent.ForEach(func(nestedIndex, nestedPart gjson.Result) bool {
 							if nestedPart.Get("type").String() == "tool_reference" {
 								nestedToolName := nestedPart.Get("tool_name").String()
-								if newName, renamed := rewriteName(nestedToolName); renamed {
+								if newName, renamed := rewriteClaudeMCPToolName(nestedToolName, forwardMap, protectedNames); renamed {
 									nestedPath := fmt.Sprintf("messages.%d.content.%d.content.%d.tool_name", msgIndex.Int(), contentIndex.Int(), nestedIndex.Int())
 									body, _ = sjson.SetBytes(body, nestedPath, newName)
 									recordRename(nestedToolName, newName)
@@ -1673,7 +1594,7 @@ func remapOAuthToolNamesWithOptionsLegacy(body []byte, mcpAliases claudeMCPAlias
 						toolRefs.ForEach(func(refIndex, refPart gjson.Result) bool {
 							if refPart.Get("type").String() == "tool_reference" {
 								refToolName := refPart.Get("tool_name").String()
-								if newName, renamed := rewriteName(refToolName); renamed {
+								if newName, renamed := rewriteClaudeMCPToolName(refToolName, forwardMap, protectedNames); renamed {
 									refPath := fmt.Sprintf("messages.%d.content.%d.content.tool_references.%d.tool_name", msgIndex.Int(), contentIndex.Int(), refIndex.Int())
 									body, _ = sjson.SetBytes(body, refPath, newName)
 									recordRename(refToolName, newName)
