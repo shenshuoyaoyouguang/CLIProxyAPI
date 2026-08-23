@@ -541,6 +541,7 @@ func pluginFilePaths(root string, id string) ([]string, error) {
 }
 
 func pluginFileInfos(root string, id string) ([]pluginFileInfo, error) {
+	id = strings.TrimSpace(id)
 	files, errDiscover := discovery.AllFiles(root)
 	if errDiscover != nil {
 		return nil, errDiscover

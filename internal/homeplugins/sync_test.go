@@ -287,6 +287,26 @@ func TestInstalledVersionsUsesPluginFilesOnDisk(t *testing.T) {
 	}
 }
 
+func TestInstalledVersionsTrimsConfiguredPluginID(t *testing.T) {
+	root := t.TempDir()
+	target := pluginTestPath(root, runtime.GOOS, runtime.GOARCH, "sample", "2.3.4")
+	if errMkdir := os.MkdirAll(filepath.Dir(target), 0o755); errMkdir != nil {
+		t.Fatalf("MkdirAll() error = %v", errMkdir)
+	}
+	if errWrite := os.WriteFile(target, []byte("plugin"), 0o644); errWrite != nil {
+		t.Fatalf("WriteFile() error = %v", errWrite)
+	}
+	cfg := &config.Config{Plugins: config.PluginsConfig{Dir: root, Configs: map[string]config.PluginInstanceConfig{" sample ": {}}}}
+
+	versions, errVersions := InstalledVersions(cfg)
+	if errVersions != nil {
+		t.Fatalf("InstalledVersions() error = %v", errVersions)
+	}
+	if versions["sample"] != "2.3.4" {
+		t.Fatalf("InstalledVersions() = %#v, want sample 2.3.4 from whitespace-padded config key", versions)
+	}
+}
+
 func TestSyncPlatformWithReportRecordsSuccessfulInstall(t *testing.T) {
 	root := t.TempDir()
 	archiveData := makeZip(t, map[string]string{"sample.dll": "library-data"})
