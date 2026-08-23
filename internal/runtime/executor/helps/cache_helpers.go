@@ -50,15 +50,6 @@ func purgeExpiredCodexCache() {
 	}
 }
 
-// GetCodexCache retrieves a cached entry, returning ok=false if not found or expired.
-func GetCodexCache(key string) (CodexCache, bool) {
-	cache, ok, err := GetCodexCacheRequired(context.Background(), key)
-	if err == nil {
-		return cache, ok
-	}
-	return CodexCache{}, false
-}
-
 // GetCodexCacheRequired retrieves a cached entry for request-time paths.
 func GetCodexCacheRequired(ctx context.Context, key string) (CodexCache, bool, error) {
 	var homeCache CodexCache
@@ -82,11 +73,6 @@ func GetCodexCacheRequired(ctx context.Context, key string) (CodexCache, bool, e
 		return CodexCache{}, false, nil
 	}
 	return cache, true, nil
-}
-
-// SetCodexCache stores a cache entry.
-func SetCodexCache(key string, cache CodexCache) {
-	SetCodexCacheBestEffort(context.Background(), key, cache)
 }
 
 // SetCodexCacheRequired stores a cache entry for request-time paths.
