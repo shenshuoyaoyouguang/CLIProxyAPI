@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"sync"
@@ -11,7 +12,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	"golang.org/x/net/context"
 )
 
 // PluginInterceptorHost applies plugin interceptors around handler execution.

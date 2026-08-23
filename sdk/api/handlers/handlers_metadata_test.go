@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,7 +11,6 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
-	"golang.org/x/net/context"
 )
 
 func TestGetContextWithCancelCapturesClientRequestMetadata(t *testing.T) {
