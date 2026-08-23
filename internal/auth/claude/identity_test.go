@@ -74,7 +74,7 @@ func TestEnsureDeviceIDPoolRepairsAndStabilizesCredentialMetadata(t *testing.T) 
 		},
 	}
 
-	deviceIDs, changed, errEnsure := EnsureDeviceIDPool(metadata)
+	deviceIDs, changed, errEnsure := EnsureDeviceIDPoolFor(&metadata)
 	if errEnsure != nil {
 		t.Fatalf("EnsureDeviceIDPool() error = %v", errEnsure)
 	}
@@ -85,7 +85,7 @@ func TestEnsureDeviceIDPoolRepairsAndStabilizesCredentialMetadata(t *testing.T) 
 		t.Fatalf("device IDs = %#v, want repaired single-entry pool preserving first", deviceIDs)
 	}
 
-	second, changedAgain, errEnsureAgain := EnsureDeviceIDPool(metadata)
+	second, changedAgain, errEnsureAgain := EnsureDeviceIDPoolFor(&metadata)
 	if errEnsureAgain != nil {
 		t.Fatalf("EnsureDeviceIDPool() second error = %v", errEnsureAgain)
 	}
@@ -106,7 +106,7 @@ func TestEnsureDeviceIDPoolRepairsAndStabilizesCredentialMetadata(t *testing.T) 
 func TestEnsureDeviceIDPoolCanonicalizesSingleDevice(t *testing.T) {
 	const canonical = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	metadata := map[string]any{ClaudeDeviceIDsMetadataKey: []any{"  AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA  "}}
-	deviceIDs, changed, errEnsure := EnsureDeviceIDPool(metadata)
+	deviceIDs, changed, errEnsure := EnsureDeviceIDPoolFor(&metadata)
 	if errEnsure != nil {
 		t.Fatalf("EnsureDeviceIDPool() error = %v", errEnsure)
 	}
@@ -127,7 +127,7 @@ func TestEnsureDeviceIDPoolMigratesFiveSlotsToOne(t *testing.T) {
 		"4444444444444444444444444444444444444444444444444444444444444444",
 	}}
 
-	deviceIDs, changed, errEnsure := EnsureDeviceIDPool(metadata)
+	deviceIDs, changed, errEnsure := EnsureDeviceIDPoolFor(&metadata)
 	if errEnsure != nil {
 		t.Fatalf("EnsureDeviceIDPool() error = %v", errEnsure)
 	}
@@ -151,7 +151,7 @@ func TestEnsureDeviceIDPoolConcurrentInitialization(t *testing.T) {
 	var group sync.WaitGroup
 	for range workers {
 		group.Go(func() {
-			deviceIDs, _, errEnsure := EnsureDeviceIDPool(metadata)
+			deviceIDs, _, errEnsure := EnsureDeviceIDPoolFor(&metadata)
 			results <- deviceIDs
 			errors <- errEnsure
 		})

@@ -55,13 +55,6 @@ type codexClientModelsCatalog struct {
 	Models []map[string]any `json:"models"`
 }
 
-// RewriteCodexSpawnAgentDescription optimizes spawn_agent definitions for
-// official Codex clients when multi-agent v2 optimization is enabled.
-func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
-	updated, _ := OptimizeCodexMultiAgentV2Request(ctx, headers, payload, cfg)
-	return updated
-}
-
 // RewriteCodexMultiAgentV2Input converts official Codex multi-agent input into
 // standard Responses API messages when multi-agent v2 optimization is enabled.
 func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
@@ -302,16 +295,6 @@ func codexSpawnAgentModelsAndMarkdownForRequest(ctx context.Context, headers htt
 	return models, formatted
 }
 
-func codexSpawnAgentModelsForRequest(ctx context.Context, headers http.Header, homeEnabled bool) []codexSpawnAgentModel {
-	models, _ := codexSpawnAgentModelsAndMarkdownForRequest(ctx, headers, homeEnabled)
-	return models
-}
-
-func formatCodexSpawnAgentModelsForRequest(ctx context.Context, headers http.Header, homeEnabled bool) string {
-	_, formatted := codexSpawnAgentModelsAndMarkdownForRequest(ctx, headers, homeEnabled)
-	return formatted
-}
-
 func codexHomeAvailableModels(ctx context.Context, headers http.Header) []map[string]any {
 	client := home.Current()
 	if client == nil {
@@ -371,31 +354,6 @@ func decodeCodexHomeAvailableModels(raw []byte) []map[string]any {
 		return mapString(models[i], "id") < mapString(models[j], "id")
 	})
 	return models
-}
-
-func codexSpawnAgentModelsFromSources(availableModels []map[string]any, catalogJSON []byte, lookupModel func(string) *registry.ModelInfo) []codexSpawnAgentModel {
-	var catalog codexClientModelsCatalog
-	if err := json.Unmarshal(catalogJSON, &catalog); err != nil || len(catalog.Models) == 0 {
-		return nil
-	}
-
-	templates := make(map[string]map[string]any, len(catalog.Models))
-	var defaultTemplate map[string]any
-	for _, model := range catalog.Models {
-		modelID := mapString(model, "slug")
-		if modelID == "" {
-			continue
-		}
-		templates[modelID] = model
-		if modelID == "gpt-5.5" {
-			defaultTemplate = model
-		}
-	}
-	if defaultTemplate == nil {
-		return nil
-	}
-
-	return codexSpawnAgentModelsFromTemplates(availableModels, templates, defaultTemplate, lookupModel)
 }
 
 func codexSpawnAgentModelsFromTemplates(availableModels []map[string]any, templates map[string]map[string]any, defaultTemplate map[string]any, lookupModel func(string) *registry.ModelInfo) []codexSpawnAgentModel {
@@ -578,14 +536,6 @@ func mapInt(values map[string]any, key string) int {
 	default:
 		return 0
 	}
-}
-
-func rewriteCodexSpawnAgentDescription(payload []byte, models []codexSpawnAgentModel) []byte {
-	return rewriteCodexSpawnAgentTools(payload, codexSpawnAgentToolPaths(payload), models)
-}
-
-func rewriteCodexSpawnAgentTools(payload []byte, toolPaths []string, models []codexSpawnAgentModel) []byte {
-	return rewriteCodexCollaborationTools(payload, toolPaths, toolPaths, models, "")
 }
 
 func rewriteCodexCollaborationTools(payload []byte, messageToolPaths, spawnAgentToolPaths []string, models []codexSpawnAgentModel, modelList string) []byte {

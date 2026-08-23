@@ -17,12 +17,6 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
-// RewriteCodexSpawnAgentDescription optimizes spawn_agent definitions for
-// official Codex clients when multi-agent v2 optimization is enabled.
-func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
-	return multiagentv2.RewriteCodexSpawnAgentDescription(ctx, headers, payload, cfg)
-}
-
 // RewriteCodexMultiAgentV2Input converts official Codex multi-agent input into
 // standard Responses API messages when multi-agent v2 optimization is enabled.
 func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {

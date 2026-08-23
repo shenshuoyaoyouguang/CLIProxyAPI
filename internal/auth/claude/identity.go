@@ -106,16 +106,9 @@ func HasCanonicalDeviceIDPool(raw any) bool {
 	return len(values) == ClaudeDevicePoolSize && len(normalized) == ClaudeDevicePoolSize && values[0] == normalized[0]
 }
 
-// EnsureDeviceIDPool repairs or creates the single-device pool in credential metadata.
-func EnsureDeviceIDPool(metadata map[string]any) ([]string, bool, error) {
-	claudeDevicePoolMu.Lock()
-	defer claudeDevicePoolMu.Unlock()
-
-	return ensureDeviceIDPoolLocked(metadata)
-}
-
-// EnsureDeviceIDPoolFor lazily initializes the metadata map and then ensures the
-// pool, both under the device pool lock.
+// EnsureDeviceIDPoolFor repairs or creates the single-device pool in credential
+// metadata, lazily initializing the metadata map first, both under the device
+// pool lock.
 //
 // A single *Auth is shared by every concurrent request that selects the same
 // credential, so initializing the map field outside this lock races with the

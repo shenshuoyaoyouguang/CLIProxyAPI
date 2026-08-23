@@ -2,6 +2,7 @@ package multiagentv2
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -608,7 +609,7 @@ func TestRewriteCodexSpawnAgentDescriptionDisabledLeavesPayloadUnchanged(t *test
 
 	payload := []byte(`{"tools":[{"type":"function","name":"spawn_agent","description":"unchanged","parameters":{"properties":{"message":{"encrypted":true}}}}]}`)
 	headers := http.Header{"User-Agent": []string{"codex-tui/0.145.0"}}
-	got := RewriteCodexSpawnAgentDescription(context.Background(), headers, payload, &config.Config{})
+	got := rewriteCodexSpawnAgentDescriptionViaOptimizer(context.Background(), headers, payload, &config.Config{})
 	if string(got) != string(payload) {
 		t.Fatalf("disabled optimization changed payload: %s", got)
 	}
@@ -620,7 +621,7 @@ func TestRewriteCodexSpawnAgentDescriptionIgnoresOtherUserAgent(t *testing.T) {
 	payload := []byte(`{"tools":[{"type":"function","name":"spawn_agent","description":"unchanged"}]}`)
 	headers := http.Header{"User-Agent": []string{"curl/8.7.1"}}
 	cfg := &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}
-	got := RewriteCodexSpawnAgentDescription(context.Background(), headers, payload, cfg)
+	got := rewriteCodexSpawnAgentDescriptionViaOptimizer(context.Background(), headers, payload, cfg)
 	if string(got) != string(payload) {
 		t.Fatalf("payload changed for unrelated User-Agent: %s", got)
 	}
@@ -1006,4 +1007,59 @@ func BenchmarkOptimizeCodexMultiAgentV2Request(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		OptimizeCodexMultiAgentV2Request(ctx, headers, payload, cfg)
 	}
+}
+
+// rewriteCodexSpawnAgentDescriptionViaOptimizer mirrors the deleted production
+// wrapper RewriteCodexSpawnAgentDescription: run the full optimizer and keep
+// only the rewritten payload.
+func rewriteCodexSpawnAgentDescriptionViaOptimizer(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config) []byte {
+	updated, _ := OptimizeCodexMultiAgentV2Request(ctx, headers, payload, cfg)
+	return updated
+}
+
+// codexSpawnAgentModelsForRequest returns just the models half of
+// codexSpawnAgentModelsAndMarkdownForRequest; test-only convenience.
+func codexSpawnAgentModelsForRequest(ctx context.Context, headers http.Header, homeEnabled bool) []codexSpawnAgentModel {
+	models, _ := codexSpawnAgentModelsAndMarkdownForRequest(ctx, headers, homeEnabled)
+	return models
+}
+
+// formatCodexSpawnAgentModelsForRequest returns just the markdown half of
+// codexSpawnAgentModelsAndMarkdownForRequest; test-only convenience.
+func formatCodexSpawnAgentModelsForRequest(ctx context.Context, headers http.Header, homeEnabled bool) string {
+	_, formatted := codexSpawnAgentModelsAndMarkdownForRequest(ctx, headers, homeEnabled)
+	return formatted
+}
+
+// codexSpawnAgentModelsFromSources builds template models from a raw client
+// catalog JSON payload; moved here because only tests exercise catalog parsing.
+func codexSpawnAgentModelsFromSources(availableModels []map[string]any, catalogJSON []byte, lookupModel func(string) *registry.ModelInfo) []codexSpawnAgentModel {
+	var catalog codexClientModelsCatalog
+	if err := json.Unmarshal(catalogJSON, &catalog); err != nil || len(catalog.Models) == 0 {
+		return nil
+	}
+
+	templates := make(map[string]map[string]any, len(catalog.Models))
+	var defaultTemplate map[string]any
+	for _, model := range catalog.Models {
+		modelID := mapString(model, "slug")
+		if modelID == "" {
+			continue
+		}
+		templates[modelID] = model
+		if modelID == "gpt-5.5" {
+			defaultTemplate = model
+		}
+	}
+	if defaultTemplate == nil {
+		return nil
+	}
+
+	return codexSpawnAgentModelsFromTemplates(availableModels, templates, defaultTemplate, lookupModel)
+}
+
+// rewriteCodexSpawnAgentDescription rewrites spawn_agent tool descriptions for
+// the given models; test-only convenience over rewriteCodexCollaborationTools.
+func rewriteCodexSpawnAgentDescription(payload []byte, models []codexSpawnAgentModel) []byte {
+	return rewriteCodexCollaborationTools(payload, codexSpawnAgentToolPaths(payload), codexSpawnAgentToolPaths(payload), models, "")
 }
