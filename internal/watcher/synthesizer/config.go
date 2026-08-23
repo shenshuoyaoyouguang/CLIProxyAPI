@@ -7,8 +7,8 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -106,7 +106,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 		if base != "" {
 			attrs["base_url"] = base
 		}
-		if hash := diff.ComputeGeminiModelsHash(entry.Models); hash != "" {
+		if hash := modelconfig.ComputeGeminiModelsHash(entry.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(entry.Headers, attrs)
@@ -174,7 +174,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		if profile := strings.ToLower(strings.TrimSpace(ck.FingerprintProfile)); profile != "" {
 			attrs["fingerprint_profile"] = profile
 		}
-		if hash := diff.ComputeClaudeModelsHash(ck.Models); hash != "" {
+		if hash := modelconfig.ComputeClaudeModelsHash(ck.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(ck.Headers, attrs)
@@ -251,7 +251,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		if provider == "codex" && entry.AlphaSearch {
 			attrs[coreauth.AttributeCodexAlphaSearch] = "true"
 		}
-		if hash := diff.ComputeCodexModelsHash(entry.Models); hash != "" {
+		if hash := modelconfig.ComputeCodexModelsHash(entry.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(entry.Headers, attrs)
@@ -325,7 +325,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if key != "" {
 				attrs["api_key"] = key
 			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
+			if hash := modelconfig.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
@@ -367,7 +367,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
+			if hash := modelconfig.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
@@ -421,7 +421,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		if key != "" {
 			attrs["api_key"] = key
 		}
-		if hash := diff.ComputeVertexCompatModelsHash(compat.Models); hash != "" {
+		if hash := modelconfig.ComputeVertexCompatModelsHash(compat.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(compat.Headers, attrs)
