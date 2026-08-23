@@ -1258,39 +1258,53 @@ func newAuthDispatchRequestWithRetryRound(requestedModel string, sessionID strin
 }
 
 func (c *Client) RPopAuth(ctx context.Context, requestedModel string, sessionID string, headers http.Header, count int) ([]byte, error) {
-	return c.rPopAuth(ctx, requestedModel, sessionID, headers, count, "", nil, nil, "")
+	return c.rPopAuth(ctx, RPopAuthParams{RequestedModel: requestedModel, SessionID: sessionID, Headers: headers, Count: count})
 }
 
 // RPopAuthWithPolicy requests a Home credential constrained by the supplied fixed policy.
 func (c *Client) RPopAuthWithPolicy(ctx context.Context, requestedModel string, sessionID string, headers http.Header, count int, credentialPolicy string) ([]byte, error) {
-	return c.rPopAuth(ctx, requestedModel, sessionID, headers, count, credentialPolicy, nil, nil, "")
+	return c.rPopAuth(ctx, RPopAuthParams{RequestedModel: requestedModel, SessionID: sessionID, Headers: headers, Count: count, CredentialPolicy: credentialPolicy})
 }
 
 // RPopAuthWithConstraints requests a credential using the current retry-round
 // exclusions and optional pinned credential constraint.
 func (c *Client) RPopAuthWithConstraints(ctx context.Context, requestedModel string, sessionID string, headers http.Header, count int, excludedAuthIDs []string, pinnedAuthID string) ([]byte, error) {
-	return c.rPopAuth(ctx, requestedModel, sessionID, headers, count, "", nil, &excludedAuthIDs, pinnedAuthID)
+	return c.rPopAuth(ctx, RPopAuthParams{RequestedModel: requestedModel, SessionID: sessionID, Headers: headers, Count: count, ExcludedAuthIDs: &excludedAuthIDs, PinnedAuthID: pinnedAuthID})
 }
 
 // RPopAuthWithPolicyAndConstraints combines a fixed credential policy with the
 // current retry-round exclusions and optional pinned credential constraint.
 func (c *Client) RPopAuthWithPolicyAndConstraints(ctx context.Context, requestedModel string, sessionID string, headers http.Header, count int, credentialPolicy string, excludedAuthIDs []string, pinnedAuthID string) ([]byte, error) {
-	return c.rPopAuth(ctx, requestedModel, sessionID, headers, count, credentialPolicy, nil, &excludedAuthIDs, pinnedAuthID)
+	return c.rPopAuth(ctx, RPopAuthParams{RequestedModel: requestedModel, SessionID: sessionID, Headers: headers, Count: count, CredentialPolicy: credentialPolicy, ExcludedAuthIDs: &excludedAuthIDs, PinnedAuthID: pinnedAuthID})
 }
 
 // RPopAuthWithRetryRoundConstraints requests a credential with the retry round,
 // current-round exclusions, and optional pinned credential constraint.
 func (c *Client) RPopAuthWithRetryRoundConstraints(ctx context.Context, requestedModel string, sessionID string, headers http.Header, count int, retryRound int, excludedAuthIDs []string, pinnedAuthID string) ([]byte, error) {
-	return c.rPopAuth(ctx, requestedModel, sessionID, headers, count, "", &retryRound, &excludedAuthIDs, pinnedAuthID)
+	return c.rPopAuth(ctx, RPopAuthParams{RequestedModel: requestedModel, SessionID: sessionID, Headers: headers, Count: count, RetryRound: &retryRound, ExcludedAuthIDs: &excludedAuthIDs, PinnedAuthID: pinnedAuthID})
 }
 
 // RPopAuthWithPolicyAndRetryRoundConstraints combines a credential policy with
 // the retry round, current-round exclusions, and optional pin.
 func (c *Client) RPopAuthWithPolicyAndRetryRoundConstraints(ctx context.Context, requestedModel string, sessionID string, headers http.Header, count int, credentialPolicy string, retryRound int, excludedAuthIDs []string, pinnedAuthID string) ([]byte, error) {
-	return c.rPopAuth(ctx, requestedModel, sessionID, headers, count, credentialPolicy, &retryRound, &excludedAuthIDs, pinnedAuthID)
+	return c.rPopAuth(ctx, RPopAuthParams{RequestedModel: requestedModel, SessionID: sessionID, Headers: headers, Count: count, CredentialPolicy: credentialPolicy, RetryRound: &retryRound, ExcludedAuthIDs: &excludedAuthIDs, PinnedAuthID: pinnedAuthID})
 }
 
-func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID string, headers http.Header, count int, credentialPolicy string, retryRound *int, excludedAuthIDs *[]string, pinnedAuthID string) ([]byte, error) {
+// RPopAuthParams carries the optional constraints for an RPopAuth dispatch.
+// The exported RPopAuth* convenience methods preserve the sdk/cliproxy/auth
+// interface contracts and delegate to the params-struct form below.
+type RPopAuthParams struct {
+	RequestedModel   string
+	SessionID        string
+	Headers          http.Header
+	Count            int
+	CredentialPolicy string
+	RetryRound       *int
+	ExcludedAuthIDs  *[]string
+	PinnedAuthID     string
+}
+
+func (c *Client) rPopAuth(ctx context.Context, params RPopAuthParams) ([]byte, error) {
 	if c == nil || c.dispatchFenced.Load() {
 		return nil, ErrDispatchFenced
 	}
@@ -1300,15 +1314,15 @@ func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID 
 	if errContext := ctx.Err(); errContext != nil {
 		return nil, errContext
 	}
-	requestedModel = strings.TrimSpace(requestedModel)
+	requestedModel := strings.TrimSpace(params.RequestedModel)
 	if requestedModel == "" {
 		return nil, fmt.Errorf("home: requested model is empty")
 	}
 	var req authDispatchRequest
-	if retryRound == nil {
-		req = newAuthDispatchRequest(requestedModel, sessionID, headers, count, credentialPolicy, excludedAuthIDs, pinnedAuthID)
+	if params.RetryRound == nil {
+		req = newAuthDispatchRequest(requestedModel, params.SessionID, params.Headers, params.Count, params.CredentialPolicy, params.ExcludedAuthIDs, params.PinnedAuthID)
 	} else {
-		req = newAuthDispatchRequestWithRetryRound(requestedModel, sessionID, headers, count, credentialPolicy, *retryRound, excludedAuthIDs, pinnedAuthID)
+		req = newAuthDispatchRequestWithRetryRound(requestedModel, params.SessionID, params.Headers, params.Count, params.CredentialPolicy, *params.RetryRound, params.ExcludedAuthIDs, params.PinnedAuthID)
 	}
 	keyBytes, errMarshal := json.Marshal(&req)
 	if errMarshal != nil {
