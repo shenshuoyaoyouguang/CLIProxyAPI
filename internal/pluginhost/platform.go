@@ -44,21 +44,6 @@ func validPluginVersion(version string) bool {
 	return version != "" && !strings.HasPrefix(version, "v") && pluginVersionPattern.MatchString(version)
 }
 
-func pluginIDFromPath(path string) string {
-	file, ok := pluginFileFromPath(path, "")
-	if ok {
-		return file.ID
-	}
-	base := filepath.Base(path)
-	lowerBase := strings.ToLower(base)
-	for _, extension := range []string{".so", ".dylib", ".dll"} {
-		if strings.HasSuffix(lowerBase, extension) {
-			return base[:len(base)-len(extension)]
-		}
-	}
-	return base
-}
-
 func pluginFileFromPath(filePath string, requiredExtension string) (pluginFile, bool) {
 	base := filepath.Base(filePath)
 	lowerBase := strings.ToLower(base)
@@ -93,11 +78,6 @@ func pluginFileFromPath(filePath string, requiredExtension string) (pluginFile, 
 		return pluginFile{}, false
 	}
 	return pluginFile{ID: id, Path: filePath, Version: version}, true
-}
-
-// PluginExtension returns the dynamic library file extension used for goos.
-func PluginExtension(goos string) string {
-	return pluginExtension(goos)
 }
 
 func pluginExtension(goos string) string {

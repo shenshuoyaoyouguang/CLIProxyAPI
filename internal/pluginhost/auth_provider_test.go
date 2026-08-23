@@ -36,10 +36,6 @@ func TestAuthProviderDiscovery(t *testing.T) {
 		},
 	)
 
-	identifiers := host.AuthProviderIdentifiers()
-	if len(identifiers) != 2 || identifiers[0] != "high-provider" || identifiers[1] != "low-provider" {
-		t.Fatalf("AuthProviderIdentifiers() = %#v, want sorted normalized providers", identifiers)
-	}
 	if !host.HasAuthProvider(" HIGH-PROVIDER ") {
 		t.Fatal("HasAuthProvider(high-provider) = false, want true")
 	}

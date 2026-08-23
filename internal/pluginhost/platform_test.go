@@ -44,15 +44,18 @@ func TestPluginExtensionForPlatform(t *testing.T) {
 
 func TestPluginIDFromDynamicLibraryPath(t *testing.T) {
 	cases := map[string]string{
-		"plugins/example.so":     "example",
-		"plugins/example.dylib":  "example",
-		"plugins/example.dll":    "example",
-		"plugins/example.custom": "example.custom",
+		"plugins/example.so":    "example",
+		"plugins/example.dylib": "example",
+		"plugins/example.dll":   "example",
 	}
 
 	for path, want := range cases {
-		if got := pluginIDFromPath(path); got != want {
-			t.Fatalf("pluginIDFromPath(%q) = %q, want %q", path, got, want)
+		file, ok := pluginFileFromPath(path, "")
+		if !ok {
+			t.Fatalf("pluginFileFromPath(%q) = not ok, want id %q", path, want)
+		}
+		if file.ID != want {
+			t.Fatalf("pluginFileFromPath(%q).ID = %q, want %q", path, file.ID, want)
 		}
 	}
 }

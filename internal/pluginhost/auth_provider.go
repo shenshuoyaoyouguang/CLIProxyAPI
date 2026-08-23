@@ -105,24 +105,6 @@ func authIDForPath(path, authDir string) string {
 	return id
 }
 
-func (h *Host) AuthProviderIdentifiers() []string {
-	if h == nil {
-		return nil
-	}
-	out := make([]string, 0)
-	for _, record := range h.activeRecords() {
-		provider := record.plugin.Capabilities.AuthProvider
-		if provider == nil || h.isPluginFused(record.id) {
-			continue
-		}
-		identifier, okIdentifier := h.callAuthProviderIdentifier(record.id, provider)
-		if okIdentifier && identifier != "" {
-			out = append(out, identifier)
-		}
-	}
-	return out
-}
-
 func (h *Host) HasAuthProvider(provider string) bool {
 	return h.authProviderRecord(provider) != nil
 }

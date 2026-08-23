@@ -867,7 +867,3 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.CommandLinePlugin != nil ||
 		caps.ManagementAPI != nil
 }
-
-func typeName(v any) string {
-	return fmt.Sprintf("%T", v)
-}
