@@ -621,11 +621,6 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 	return auth, nil
 }
 
-func normalizeLineEndingsBytes(data []byte) []byte {
-	replaced := bytes.ReplaceAll(data, []byte{'\r', '\n'}, []byte{'\n'})
-	return bytes.ReplaceAll(replaced, []byte{'\r'}, []byte{'\n'})
-}
-
 func isObjectNotFound(err error) bool {
 	if err == nil {
 		return false

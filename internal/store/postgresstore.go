@@ -699,12 +699,3 @@ func labelFor(metadata map[string]any) string {
 func normalizeAuthID(id string) string {
 	return filepath.ToSlash(filepath.Clean(id))
 }
-
-func normalizeLineEndings(s string) string {
-	if s == "" {
-		return s
-	}
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\r", "\n")
-	return s
-}
