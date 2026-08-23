@@ -130,10 +130,10 @@ func DetectClaudeCodeRequest(headers http.Header, payload []byte, countTokens bo
 	if len(configs) > 0 {
 		cfg = configs[0]
 	}
-	userAgent := headerValue(headers, "User-Agent")
+	userAgent := HeaderValueCaseInsensitive(headers, "User-Agent")
 	entrypoint, agentSDKVersion := parseClaudeCodeUserAgentDetails(userAgent)
 	detection := ClaudeCodeRequestDetection{
-		XAppCLI:         headerValue(headers, "X-App") == "cli",
+		XAppCLI:         HeaderValueCaseInsensitive(headers, "X-App") == "cli",
 		UserAgent:       plausibleClaudeCodeUserAgent(userAgent, cfg),
 		BetasPresent:    headerContainsClaudeCodeBeta(headers),
 		Entrypoint:      entrypoint,
@@ -246,7 +246,7 @@ func measuredClaudeCodeHelperHeadersMatch(headers http.Header, cfg *config.Confi
 		"Anthropic-Dangerous-Direct-Browser-Access": "true",
 	}
 	for name, want := range expected {
-		if headerValue(headers, name) != want {
+		if HeaderValueCaseInsensitive(headers, name) != want {
 			return false
 		}
 	}
@@ -257,14 +257,14 @@ func measuredClaudeCodeHelperHeadersMatch(headers http.Header, cfg *config.Confi
 		"X-Stainless-OS",
 		"X-Stainless-Arch",
 	} {
-		if headerValue(headers, name) == "" {
+		if HeaderValueCaseInsensitive(headers, name) == "" {
 			return false
 		}
 	}
 	candidate := ClaudeDeviceProfile{
-		UserAgent:      headerValue(headers, "User-Agent"),
-		PackageVersion: headerValue(headers, "X-Stainless-Package-Version"),
-		RuntimeVersion: headerValue(headers, "X-Stainless-Runtime-Version"),
+		UserAgent:      HeaderValueCaseInsensitive(headers, "User-Agent"),
+		PackageVersion: HeaderValueCaseInsensitive(headers, "X-Stainless-Package-Version"),
+		RuntimeVersion: HeaderValueCaseInsensitive(headers, "X-Stainless-Runtime-Version"),
 	}
 	if version, ok := parseClaudeCLIVersion(candidate.UserAgent); ok {
 		candidate.version = version
@@ -273,16 +273,16 @@ func measuredClaudeCodeHelperHeadersMatch(headers http.Header, cfg *config.Confi
 	if !meetsClaudeDeviceProfileBaseline(candidate, profile) {
 		return false
 	}
-	if async := headerValue(headers, "X-Stainless-Async"); (shape == claudeCodeHelperShapeStructured && async != "async") ||
+	if async := HeaderValueCaseInsensitive(headers, "X-Stainless-Async"); (shape == claudeCodeHelperShapeStructured && async != "async") ||
 		(shape == claudeCodeHelperShapeMinimal && async != "") {
 		return false
 	}
-	compression := headerValue(headers, "Accept-Encoding")
+	compression := HeaderValueCaseInsensitive(headers, "Accept-Encoding")
 	if (shape == claudeCodeHelperShapeStructured && compression != "gzip, deflate, br, zstd") ||
 		(shape == claudeCodeHelperShapeMinimal && compression != "gzip") {
 		return false
 	}
-	requestID := headerValue(headers, "X-Client-Request-Id")
+	requestID := HeaderValueCaseInsensitive(headers, "X-Client-Request-Id")
 	_, errRequestID := uuid.Parse(requestID)
 	return errRequestID == nil
 }
@@ -306,7 +306,7 @@ func measuredClaudeCodeHelperSessionMatches(headers http.Header, payload []byte)
 		!claudeJSONObjectHasKeys(identityRaw, []string{"device_id", "account_uuid", "session_id", "parent_session_id"}) {
 		return false
 	}
-	return headerValue(headers, ClaudeCodeSessionHeader) == gjson.GetBytes(identityRaw, "session_id").String()
+	return HeaderValueCaseInsensitive(headers, ClaudeCodeSessionHeader) == gjson.GetBytes(identityRaw, "session_id").String()
 }
 
 func measuredClaudeCodeHelperBodyShape(payload []byte) claudeCodeHelperShape {
@@ -479,22 +479,6 @@ func parseClaudeCodeUserAgentDetails(userAgent string) (entrypoint, agentSDKVers
 		agentSDKVersion = strings.TrimSpace(matches[2])
 	}
 	return entrypoint, agentSDKVersion
-}
-
-func headerValue(headers http.Header, name string) string {
-	if headers == nil {
-		return ""
-	}
-	if value := headers.Get(name); value != "" {
-		return value
-	}
-	for key, values := range headers {
-		if !strings.EqualFold(key, name) || len(values) == 0 {
-			continue
-		}
-		return values[0]
-	}
-	return ""
 }
 
 func headerContainsClaudeCodeBeta(headers http.Header) bool {

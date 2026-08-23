@@ -45,37 +45,12 @@ func ClaudeCodeExecutionScope(ctx context.Context, payload []byte, headers http.
 }
 
 func claudeCodeHeader(ctx context.Context, headers http.Header, name string) string {
-	if value := headerValueCaseInsensitive(headers, name); value != "" {
+	if value := HeaderValueCaseInsensitive(headers, name); value != "" {
 		return value
 	}
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-			return headerValueCaseInsensitive(ginCtx.Request.Header, name)
-		}
-	}
-	return ""
-}
-
-// HeaderValueCaseInsensitive returns the first non-empty header value matching name case-insensitively.
-func HeaderValueCaseInsensitive(headers http.Header, name string) string {
-	return headerValueCaseInsensitive(headers, name)
-}
-
-func headerValueCaseInsensitive(headers http.Header, name string) string {
-	if headers == nil {
-		return ""
-	}
-	if value := strings.TrimSpace(headers.Get(name)); value != "" {
-		return value
-	}
-	for key, values := range headers {
-		if !strings.EqualFold(key, name) {
-			continue
-		}
-		for _, value := range values {
-			if value = strings.TrimSpace(value); value != "" {
-				return value
-			}
+			return HeaderValueCaseInsensitive(ginCtx.Request.Header, name)
 		}
 	}
 	return ""

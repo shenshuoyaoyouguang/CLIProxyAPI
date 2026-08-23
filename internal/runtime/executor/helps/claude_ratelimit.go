@@ -23,19 +23,19 @@ func ClaudeHeadersIndicateUnifiedRateLimitRejection(headers http.Header) bool {
 	if headers == nil {
 		return false
 	}
-	unifiedStatus := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-Status")))
-	status5h := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-5h-Status")))
+	unifiedStatus := strings.ToLower(strings.TrimSpace(HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-Status")))
+	status5h := strings.ToLower(strings.TrimSpace(HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-5h-Status")))
 	if status5h == "rejected" {
 		return true
 	}
-	status7d := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d-Status")))
+	status7d := strings.ToLower(strings.TrimSpace(HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d-Status")))
 	if status7d == "rejected" {
 		return true
 	}
 	if unifiedStatus != "rejected" {
 		return false
 	}
-	status7dOI := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d_oi-Status")))
+	status7dOI := strings.ToLower(strings.TrimSpace(HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d_oi-Status")))
 	return !isFableOnlyRejection(status5h, status7d, status7dOI)
 }
 
@@ -56,10 +56,10 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 		return nil
 	}
 
-	unifiedStatus := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-Status")))
-	status5h := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-5h-Status")))
-	status7d := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d-Status")))
-	status7dOI := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d_oi-Status")))
+	unifiedStatus := strings.ToLower(strings.TrimSpace(HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-Status")))
+	status5h := strings.ToLower(strings.TrimSpace(HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-5h-Status")))
+	status7d := strings.ToLower(strings.TrimSpace(HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d-Status")))
+	status7dOI := strings.ToLower(strings.TrimSpace(HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d_oi-Status")))
 	fableOnlyRejection := isFableOnlyRejection(status5h, status7d, status7dOI)
 
 	var candidateDeadlines []time.Time
@@ -79,7 +79,7 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 	}
 
 	// 1. Retry-After header
-	if rawRetryAfter := getHeaderCaseInsensitive(headers, "Retry-After"); rawRetryAfter != "" {
+	if rawRetryAfter := HeaderValueCaseInsensitive(headers, "Retry-After"); rawRetryAfter != "" {
 		if !containsString(rejectedWindows, "retry-after") {
 			rejectedWindows = append(rejectedWindows, "retry-after")
 		}
@@ -90,7 +90,7 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 
 	// 2. 5-hour window reset (only when rejected)
 	if status5h == "rejected" {
-		if raw := getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-5h-Reset"); raw != "" {
+		if raw := HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-5h-Reset"); raw != "" {
 			if t, ok := parseUnixOrTimestamp(raw); ok && t.After(now) {
 				candidateDeadlines = append(candidateDeadlines, t)
 			}
@@ -99,7 +99,7 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 
 	// 3. 7-day window reset (only when rejected)
 	if status7d == "rejected" {
-		if raw := getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d-Reset"); raw != "" {
+		if raw := HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d-Reset"); raw != "" {
 			if t, ok := parseUnixOrTimestamp(raw); ok && t.After(now) {
 				candidateDeadlines = append(candidateDeadlines, t)
 			}
@@ -108,7 +108,7 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 
 	// 4. Fable-specific 7-day window reset (only when rejected and not a Fable-only rejection)
 	if status7dOI == "rejected" && !fableOnlyRejection {
-		if raw := getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d_oi-Reset"); raw != "" {
+		if raw := HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d_oi-Reset"); raw != "" {
 			if t, ok := parseUnixOrTimestamp(raw); ok && t.After(now) {
 				candidateDeadlines = append(candidateDeadlines, t)
 			}
@@ -120,7 +120,7 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 		(unifiedStatus == "" && status5h != "allowed" && status7d != "allowed"))
 
 	if unifiedRejected {
-		if raw := getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-Reset"); raw != "" {
+		if raw := HeaderValueCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-Reset"); raw != "" {
 			if !containsString(rejectedWindows, "unified") {
 				rejectedWindows = append(rejectedWindows, "unified")
 			}
@@ -180,21 +180,6 @@ func containsString(list []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func getHeaderCaseInsensitive(h http.Header, target string) string {
-	if h == nil {
-		return ""
-	}
-	if val := h.Get(target); val != "" {
-		return val
-	}
-	for k, v := range h {
-		if strings.EqualFold(k, target) && len(v) > 0 {
-			return v[0]
-		}
-	}
-	return ""
 }
 
 func parseUnixOrTimestamp(raw string) (time.Time, bool) {
