@@ -139,13 +139,7 @@ func ApplySummaryConfig(body []byte, format string, config SummaryConfig) []byte
 // protocol and uses target model capabilities when a valid target request must
 // activate thinking before it can request summaries.
 func ApplySummaryConfigForModel(body []byte, format, model string, config SummaryConfig) []byte {
-	return applySummaryConfigForModel(body, format, model, nil, config)
-}
-
-// applySummaryConfigForModel uses the resolved model definition when execution
-// selected a configured API-key model whose capability is not globally visible.
-func applySummaryConfigForModel(body []byte, format, model string, modelInfo *registry.ModelInfo, config SummaryConfig) []byte {
-	return applySummaryConfigForProvider(body, format, model, "", modelInfo, config)
+	return applySummaryConfigForProvider(body, format, model, "", nil, config)
 }
 
 // applySummaryConfigForProvider uses the execution provider identity for Chat
