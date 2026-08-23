@@ -107,51 +107,15 @@ func (b *Builder) WithConfigPath(path string) *Builder {
 	return b
 }
 
-// WithTokenClientProvider overrides the provider responsible for token-backed clients.
-func (b *Builder) WithTokenClientProvider(provider TokenClientProvider) *Builder {
-	b.tokenProvider = provider
-	return b
-}
-
-// WithAPIKeyClientProvider overrides the provider responsible for API key-backed clients.
-func (b *Builder) WithAPIKeyClientProvider(provider APIKeyClientProvider) *Builder {
-	b.apiKeyProvider = provider
-	return b
-}
-
-// WithWatcherFactory allows customizing the watcher factory that handles reloads.
-func (b *Builder) WithWatcherFactory(factory WatcherFactory) *Builder {
-	b.watcherFactory = factory
-	return b
-}
-
 // WithHooks registers lifecycle hooks executed around service startup.
 func (b *Builder) WithHooks(h Hooks) *Builder {
 	b.hooks = h
 	return b
 }
 
-// WithAuthManager overrides the authentication manager used for token lifecycle operations.
-func (b *Builder) WithAuthManager(mgr *sdkAuth.Manager) *Builder {
-	b.authManager = mgr
-	return b
-}
-
-// WithRequestAccessManager overrides the request authentication manager.
-func (b *Builder) WithRequestAccessManager(mgr *sdkaccess.Manager) *Builder {
-	b.accessManager = mgr
-	return b
-}
-
 // WithCoreAuthManager overrides the runtime auth manager responsible for request execution.
 func (b *Builder) WithCoreAuthManager(mgr *coreauth.Manager) *Builder {
 	b.coreManager = mgr
-	return b
-}
-
-// WithCooldownStateStore overrides the store used for runtime cooldown persistence.
-func (b *Builder) WithCooldownStateStore(store coreauth.CooldownStateStore) *Builder {
-	b.cooldownStateStore = store
 	return b
 }
 
@@ -173,16 +137,6 @@ func (b *Builder) WithLocalManagementPassword(password string) *Builder {
 		return b
 	}
 	b.serverOptions = append(b.serverOptions, api.WithLocalManagementPassword(password))
-	return b
-}
-
-// WithPostAuthHook registers a hook to be called after an Auth record is created
-// but before it is persisted to storage.
-func (b *Builder) WithPostAuthHook(hook coreauth.PostAuthHook) *Builder {
-	if hook == nil {
-		return b
-	}
-	b.postAuthHook = hook
 	return b
 }
 

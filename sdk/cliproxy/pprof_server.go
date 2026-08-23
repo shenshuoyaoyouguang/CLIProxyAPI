@@ -49,10 +49,6 @@ func (s *Service) shutdownPprof(ctx context.Context) error {
 	return s.pprofServer.Shutdown(ctx)
 }
 
-func (p *pprofServer) Apply(cfg *config.Config) {
-	p.ApplyContext(context.Background(), cfg)
-}
-
 func (p *pprofServer) ApplyContext(ctx context.Context, cfg *config.Config) bool {
 	if p == nil || cfg == nil {
 		return false
@@ -169,10 +165,6 @@ func (p *pprofServer) clearFailedServer(server *http.Server) {
 		p.server = nil
 	}
 	p.mu.Unlock()
-}
-
-func (p *pprofServer) stopServer(server *http.Server, addr string, reason string) {
-	_ = p.stopServerWithContext(context.Background(), server, addr, reason)
 }
 
 func (p *pprofServer) stopOwnedServerWithContext(ctx context.Context, server *http.Server, addr string, reason string, owner uint64) error {
