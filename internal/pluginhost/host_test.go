@@ -176,7 +176,7 @@ func TestHostApplyConfig_DefaultDisabledPluginSkipsLoad(t *testing.T) {
 	}
 }
 
-func TestPluginLoadedTracksLoadedPluginAfterDisabled(t *testing.T) {
+func TestPluginBusyTracksLoadedPluginAfterDisabled(t *testing.T) {
 	disabled := false
 	loader := newTestSymbolLoader()
 	plugin := &testPlugin{
@@ -196,8 +196,8 @@ func TestPluginLoadedTracksLoadedPluginAfterDisabled(t *testing.T) {
 		},
 	})
 
-	if !h.PluginLoaded("alpha") {
-		t.Fatal("PluginLoaded(alpha) = false, want true after load")
+	if !h.PluginBusy("alpha") {
+		t.Fatal("PluginBusy(alpha) = false, want true after load")
 	}
 	if !h.PluginRegistered("alpha") {
 		t.Fatal("PluginRegistered(alpha) = false, want true after load")
@@ -222,13 +222,13 @@ func TestPluginLoadedTracksLoadedPluginAfterDisabled(t *testing.T) {
 	if h.PluginRegistered("alpha") {
 		t.Fatal("PluginRegistered(alpha) = true, want false after disable")
 	}
-	if !h.PluginLoaded("alpha") {
-		t.Fatal("PluginLoaded(alpha) = false, want true while library remains loaded")
+	if !h.PluginBusy("alpha") {
+		t.Fatal("PluginBusy(alpha) = false, want true while library remains loaded")
 	}
 
 	h.ShutdownAll()
-	if h.PluginLoaded("alpha") {
-		t.Fatal("PluginLoaded(alpha) = true, want false after ShutdownAll")
+	if h.PluginBusy("alpha") {
+		t.Fatal("PluginBusy(alpha) = true, want false after ShutdownAll")
 	}
 }
 
@@ -261,11 +261,11 @@ func TestHostUnloadPluginTargetsOnlyRequestedPlugin(t *testing.T) {
 	if !h.UnloadPlugin("alpha") {
 		t.Fatal("UnloadPlugin(alpha) = false, want true")
 	}
-	if h.PluginLoaded("alpha") {
-		t.Fatal("PluginLoaded(alpha) = true, want false after targeted unload")
+	if h.PluginBusy("alpha") {
+		t.Fatal("PluginBusy(alpha) = true, want false after targeted unload")
 	}
-	if !h.PluginLoaded("bravo") {
-		t.Fatal("PluginLoaded(bravo) = false, want true after alpha unload")
+	if !h.PluginBusy("bravo") {
+		t.Fatal("PluginBusy(bravo) = false, want true after alpha unload")
 	}
 	if alphaLookup.shutdownCalls != 1 {
 		t.Fatalf("alpha shutdown calls = %d, want 1", alphaLookup.shutdownCalls)
@@ -1075,18 +1075,13 @@ func TestHostPluginBusyReportsLoadingPlugin(t *testing.T) {
 	}()
 
 	waitForHostTestSignal(t, openStarted, "plugin open start")
-	if h.PluginLoaded("alpha") {
-		t.Fatal("PluginLoaded(alpha) = true, want false while plugin is still loading")
-	}
+	// PluginLoaded's not-yet-loaded distinction has no surviving API; loading state is covered by PluginBusy below.
 	if !h.PluginBusy("alpha") {
 		t.Fatal("PluginBusy(alpha) = false, want true while plugin is loading")
 	}
 
 	releaseOpen()
 	waitForHostTestSignal(t, applyDone, "ApplyConfig completion")
-	if !h.PluginLoaded("alpha") {
-		t.Fatal("PluginLoaded(alpha) = false, want true after load")
-	}
 	if !h.PluginBusy("alpha") {
 		t.Fatal("PluginBusy(alpha) = false, want true after load")
 	}
@@ -1113,7 +1108,7 @@ func TestHostCanceledInitializationDiscardsBlockedClient(t *testing.T) {
 	waitForHostTestSignal(t, client.started, "plugin initialization")
 	cancel()
 	waitForHostTestSignal(t, applyDone, "canceled plugin initialization")
-	if !h.PluginBusy("alpha") || h.PluginLoaded("alpha") {
+	if !h.PluginBusy("alpha") {
 		t.Fatal("canceled initialization did not retain only its in-flight load token")
 	}
 
@@ -1125,7 +1120,7 @@ func TestHostCanceledInitializationDiscardsBlockedClient(t *testing.T) {
 	if got := client.shutdown.Load(); got != 1 {
 		t.Fatalf("blocked initialization client shutdown calls = %d, want 1", got)
 	}
-	if h.PluginBusy("alpha") || h.PluginLoaded("alpha") {
+	if h.PluginBusy("alpha") {
 		t.Fatal("canceled initialization remained in the host after late cleanup")
 	}
 }
@@ -1165,7 +1160,7 @@ func TestHostCancellationUnderMutationLockDoesNotInsertLoadedPlugin(t *testing.T
 	if got := client.shutdown.Load(); got != 1 {
 		t.Fatalf("late client shutdown calls = %d, want 1", got)
 	}
-	if h.PluginLoaded("alpha") || h.PluginBusy("alpha") {
+	if h.PluginBusy("alpha") {
 		t.Fatal("canceled load inserted or retained a completed plugin")
 	}
 }
@@ -1222,7 +1217,7 @@ func TestHostCanceledLoadDiscardsLateClientWithoutReplacingCurrentPlugin(t *test
 	if got := first.shutdown.Load(); got != 1 {
 		t.Fatalf("late client shutdown calls = %d, want 1", got)
 	}
-	if h.PluginBusy("alpha") || h.PluginLoaded("alpha") {
+	if h.PluginBusy("alpha") {
 		t.Fatal("late canceled client remained in the host")
 	}
 	h.ShutdownAll()
@@ -1361,8 +1356,8 @@ func TestHostUnloadAndShutdownWaitForBlockingRegister(t *testing.T) {
 			},
 			assertDone: func(t *testing.T, h *Host) {
 				t.Helper()
-				if h.PluginLoaded("alpha") {
-					t.Fatal("PluginLoaded(alpha) = true, want false after unload")
+				if h.PluginBusy("alpha") {
+					t.Fatal("PluginBusy(alpha) = true, want false after unload")
 				}
 			},
 		},
@@ -1374,8 +1369,8 @@ func TestHostUnloadAndShutdownWaitForBlockingRegister(t *testing.T) {
 			},
 			assertDone: func(t *testing.T, h *Host) {
 				t.Helper()
-				if h.PluginLoaded("alpha") {
-					t.Fatal("PluginLoaded(alpha) = true, want false after shutdown")
+				if h.PluginBusy("alpha") {
+					t.Fatal("PluginBusy(alpha) = true, want false after shutdown")
 				}
 			},
 		},

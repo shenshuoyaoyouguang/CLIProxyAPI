@@ -11,7 +11,6 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
-
 	"strings"
 
 	log "github.com/sirupsen/logrus"
