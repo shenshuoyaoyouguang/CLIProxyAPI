@@ -741,11 +741,6 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
 	}
-	if h.postAuthHook != nil {
-		if err := h.postAuthHook(ctx, record); err != nil {
-			return "", fmt.Errorf("post-auth hook failed: %w", err)
-		}
-	}
 	savedPath, errSave := store.Save(ctx, record)
 	if errSave != nil {
 		return savedPath, errSave

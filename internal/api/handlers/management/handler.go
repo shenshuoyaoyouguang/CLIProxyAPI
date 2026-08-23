@@ -52,7 +52,6 @@ type Handler struct {
 	allowRemoteOverride     bool
 	envSecret               string
 	logDir                  string
-	postAuthHook            coreauth.PostAuthHook
 	postAuthPersistHook     coreauth.PostAuthHook
 	pluginHost              *pluginhost.Host
 	configReloadHook        func(context.Context, *config.Config)
@@ -247,11 +246,6 @@ func (h *Handler) SetLogDirectory(dir string) {
 		}
 	}
 	h.logDir = dir
-}
-
-// SetPostAuthHook registers a hook to be called after auth record creation but before persistence.
-func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
-	h.postAuthHook = hook
 }
 
 // SetPostAuthPersistHook registers a hook to be called after auth persistence.
