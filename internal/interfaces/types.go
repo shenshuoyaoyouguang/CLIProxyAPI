@@ -8,8 +8,4 @@ import sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 // Backwards compatible aliases for translator function types.
 type TranslateRequestFunc = sdktranslator.RequestTransform
 
-type TranslateResponseFunc = sdktranslator.ResponseStreamTransform
-
-type TranslateResponseNonStreamFunc = sdktranslator.ResponseNonStreamTransform
-
 type TranslateResponse = sdktranslator.ResponseTransform
