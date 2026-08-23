@@ -29,13 +29,7 @@ var codexCacheCleanupOnce sync.Once
 // startCodexCacheCleanup launches a background goroutine that periodically
 // removes expired entries from codexCacheMap to prevent memory leaks.
 func startCodexCacheCleanup() {
-	go func() {
-		ticker := time.NewTicker(codexCacheCleanupInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			purgeExpiredCodexCache()
-		}
-	}()
+	startStableCacheCleanup(&codexCacheCleanupOnce, codexCacheCleanupInterval, purgeExpiredCodexCache)
 }
 
 // purgeExpiredCodexCache removes entries that have expired.

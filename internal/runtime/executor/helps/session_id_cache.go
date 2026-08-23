@@ -2,10 +2,7 @@ package helps
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
-	"strings"
+	"errors"
 	"sync"
 	"time"
 
@@ -13,57 +10,36 @@ import (
 	homekv "github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 )
 
-type sessionIDCacheEntry struct {
-	value  string
-	expire time.Time
-}
+// sessionIDTTL is the TTL for a cached stable session ID.
+const sessionIDTTL = time.Hour
+
+// sessionIDCacheCleanupPeriod is how often expired session IDs are purged.
+const sessionIDCacheCleanupPeriod = 15 * time.Minute
+
+// sessionIDCacheEntry is kept as an alias so tests can keep injecting state.
+type sessionIDCacheEntry = stableValueCacheEntry
 
 var (
-	sessionIDCache            = make(map[string]sessionIDCacheEntry)
-	sessionIDCacheMu          sync.RWMutex
-	sessionIDCacheCleanupOnce sync.Once
+	sessionIDCache   = make(map[string]sessionIDCacheEntry)
+	sessionIDCacheMu sync.RWMutex
 )
 
-type claudeIDKVClient interface {
-	KVGet(ctx context.Context, key string) ([]byte, bool, error)
-	KVSetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
-	KVExpire(ctx context.Context, key string, ttl time.Duration) (bool, error)
-}
-
-var currentClaudeIDKVClient = func() (claudeIDKVClient, bool, error) {
-	return homekv.CurrentKVClient()
-}
-
-const (
-	sessionIDTTL                = time.Hour
-	sessionIDCacheCleanupPeriod = 15 * time.Minute
-)
-
-func startSessionIDCacheCleanup() {
-	go func() {
-		ticker := time.NewTicker(sessionIDCacheCleanupPeriod)
-		defer ticker.Stop()
-		for range ticker.C {
-			purgeExpiredSessionIDs()
-		}
-	}()
-}
-
-func purgeExpiredSessionIDs() {
-	now := time.Now()
-	sessionIDCacheMu.Lock()
-	for key, entry := range sessionIDCache {
-		if !entry.expire.After(now) {
-			delete(sessionIDCache, key)
-		}
-	}
-	sessionIDCacheMu.Unlock()
-}
-
-func sessionIDCacheKey(apiKey string) string {
-	sum := sha256.Sum256([]byte(apiKey))
-	return hex.EncodeToString(sum[:])
-}
+var sessionIDCacheEngine = newStableValueCache(stableValueCacheConfig{
+	ttl:           sessionIDTTL,
+	cleanupPeriod: sessionIDCacheCleanupPeriod,
+	kvClient: func() (stableValueKV, bool, error) {
+		return currentClaudeIDKVClient()
+	},
+	kvKey:    claudeSessionIDKVKey,
+	localKey: stableValueLocalKey,
+	validate: func(value string) bool { return value != "" },
+	generate: func(context.Context, string) (string, error) {
+		return uuid.New().String(), nil
+	},
+	missingAfter: errors.New("home kv session id missing after set"),
+	entries:      &sessionIDCache,
+	mu:           &sessionIDCacheMu,
+})
 
 // CachedSessionID returns a stable session UUID per apiKey, refreshing the TTL on each access.
 func CachedSessionID(apiKey string) string {
@@ -76,71 +52,7 @@ func CachedSessionID(apiKey string) string {
 
 // CachedSessionIDRequired returns a stable session UUID per apiKey for request-time paths.
 func CachedSessionIDRequired(ctx context.Context, apiKey string) (string, error) {
-	if apiKey == "" {
-		return uuid.New().String(), nil
-	}
-	client, homeMode, errClient := currentClaudeIDKVClient()
-	if homeMode {
-		if errClient != nil {
-			return "", errClient
-		}
-		key := claudeSessionIDKVKey(apiKey)
-		raw, found, errGet := client.KVGet(ctx, key)
-		if errGet != nil {
-			return "", errGet
-		}
-		if found && strings.TrimSpace(string(raw)) != "" {
-			if _, errExpire := client.KVExpire(ctx, key, sessionIDTTL); errExpire != nil {
-				return "", errExpire
-			}
-			return strings.TrimSpace(string(raw)), nil
-		}
-		newID := uuid.New().String()
-		if _, errSet := client.KVSetNX(ctx, key, []byte(newID), sessionIDTTL); errSet != nil {
-			return "", errSet
-		}
-		raw, found, errGet = client.KVGet(ctx, key)
-		if errGet != nil {
-			return "", errGet
-		}
-		if found && strings.TrimSpace(string(raw)) != "" {
-			return strings.TrimSpace(string(raw)), nil
-		}
-		return "", fmt.Errorf("home kv session id missing after set")
-	}
-
-	sessionIDCacheCleanupOnce.Do(startSessionIDCacheCleanup)
-
-	key := sessionIDCacheKey(apiKey)
-	now := time.Now()
-
-	sessionIDCacheMu.RLock()
-	entry, ok := sessionIDCache[key]
-	valid := ok && entry.value != "" && entry.expire.After(now)
-	sessionIDCacheMu.RUnlock()
-	if valid {
-		sessionIDCacheMu.Lock()
-		entry = sessionIDCache[key]
-		if entry.value != "" && entry.expire.After(now) {
-			entry.expire = now.Add(sessionIDTTL)
-			sessionIDCache[key] = entry
-			sessionIDCacheMu.Unlock()
-			return entry.value, nil
-		}
-		sessionIDCacheMu.Unlock()
-	}
-
-	newID := uuid.New().String()
-
-	sessionIDCacheMu.Lock()
-	entry, ok = sessionIDCache[key]
-	if !ok || entry.value == "" || !entry.expire.After(now) {
-		entry.value = newID
-	}
-	entry.expire = now.Add(sessionIDTTL)
-	sessionIDCache[key] = entry
-	sessionIDCacheMu.Unlock()
-	return entry.value, nil
+	return sessionIDCacheEngine.Get(ctx, apiKey)
 }
 
 func claudeSessionIDKVKey(apiKey string) string {
