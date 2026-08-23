@@ -1,4 +1,8 @@
-package codex
+// Package oauthcommon holds the OAuth callback server and PKCE helpers shared
+// by the per-provider auth packages. Provider-specific behavior (callback
+// route, default platform URL, success-page branding) is injected via Options;
+// nothing else differs between providers.
+package oauthcommon
 
 import (
 	"context"
@@ -13,16 +17,31 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// OAuthServer handles the local HTTP server for OAuth callbacks.
+// Options carries the provider-specific wiring for an OAuth callback server.
+type Options struct {
+	// CallbackPath is the route the provider's authorization server redirects to.
+	CallbackPath string
+	// DefaultPlatformURL is used for the setup link when the callback omits platform_url.
+	DefaultPlatformURL string
+	// SuccessTemplate is the full success-page template (may contain
+	// {{PLATFORM_URL}} and {{SETUP_NOTICE}} placeholders).
+	SuccessTemplate string
+	// SetupNoticeTemplate is embedded into SuccessTemplate when setup is required.
+	SetupNoticeTemplate string
+}
+
+// Server handles the local HTTP server for OAuth callbacks.
 // It listens for the authorization code response from the OAuth provider
 // and captures the necessary parameters to complete the authentication flow.
-type OAuthServer struct {
+type Server struct {
 	// server is the underlying HTTP server instance
 	server *http.Server
 	// port is the port number on which the server listens
 	port int
+	// opts carries the provider-specific wiring
+	opts Options
 	// resultChan is a channel for sending OAuth results
-	resultChan chan *OAuthResult
+	resultChan chan *Result
 	// errorChan is a channel for sending OAuth errors
 	errorChan chan error
 	// mu is a mutex for protecting server state
@@ -31,10 +50,10 @@ type OAuthServer struct {
 	running bool
 }
 
-// OAuthResult contains the result of the OAuth callback.
+// Result contains the result of the OAuth callback.
 // It holds either the authorization code and state for successful authentication
 // or an error message if the authentication failed.
-type OAuthResult struct {
+type Result struct {
 	// Code is the authorization code received from the OAuth provider
 	Code string
 	// State is the state parameter used to prevent CSRF attacks
@@ -43,19 +62,14 @@ type OAuthResult struct {
 	Error string
 }
 
-// NewOAuthServer creates a new OAuth callback server.
-// It initializes the server with the specified port and creates channels
-// for handling OAuth results and errors.
-//
-// Parameters:
-//   - port: The port number on which the server should listen
-//
-// Returns:
-//   - *OAuthServer: A new OAuthServer instance
-func NewOAuthServer(port int) *OAuthServer {
-	return &OAuthServer{
+// NewServer creates a new OAuth callback server.
+// It initializes the server with the specified port and provider options and
+// creates channels for handling OAuth results and errors.
+func NewServer(port int, opts Options) *Server {
+	return &Server{
 		port:       port,
-		resultChan: make(chan *OAuthResult, 1),
+		opts:       opts,
+		resultChan: make(chan *Result, 1),
 		errorChan:  make(chan error, 1),
 	}
 }
@@ -66,7 +80,7 @@ func NewOAuthServer(port int) *OAuthServer {
 //
 // Returns:
 //   - error: An error if the server fails to start
-func (s *OAuthServer) Start() error {
+func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -80,7 +94,7 @@ func (s *OAuthServer) Start() error {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth/callback", s.handleCallback)
+	mux.HandleFunc(s.opts.CallbackPath, s.handleCallback)
 	mux.HandleFunc("/success", s.handleSuccess)
 
 	s.server = &http.Server{
@@ -113,7 +127,7 @@ func (s *OAuthServer) Start() error {
 //
 // Returns:
 //   - error: An error if the server fails to stop gracefully
-func (s *OAuthServer) Stop(ctx context.Context) error {
+func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -142,9 +156,9 @@ func (s *OAuthServer) Stop(ctx context.Context) error {
 //   - timeout: The maximum time to wait for the callback
 //
 // Returns:
-//   - *OAuthResult: The OAuth result if successful
+//   - *Result: The OAuth result if successful
 //   - error: An error if the callback times out or an error occurs
-func (s *OAuthServer) WaitForCallback(timeout time.Duration) (*OAuthResult, error) {
+func (s *Server) WaitForCallback(timeout time.Duration) (*Result, error) {
 	select {
 	case result := <-s.resultChan:
 		return result, nil
@@ -158,11 +172,7 @@ func (s *OAuthServer) WaitForCallback(timeout time.Duration) (*OAuthResult, erro
 // handleCallback handles the OAuth callback endpoint.
 // It extracts the authorization code and state from the callback URL,
 // validates the parameters, and sends the result to the waiting channel.
-//
-// Parameters:
-//   - w: The HTTP response writer
-//   - r: The HTTP request
-func (s *OAuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	log.Debug("Received OAuth callback")
 
 	// Validate request method
@@ -180,7 +190,7 @@ func (s *OAuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 	// Validate required parameters
 	if errorParam != "" {
 		log.Errorf("OAuth error received: %s", errorParam)
-		result := &OAuthResult{
+		result := &Result{
 			Error: errorParam,
 		}
 		s.sendResult(result)
@@ -190,7 +200,7 @@ func (s *OAuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	if code == "" {
 		log.Error("No authorization code received")
-		result := &OAuthResult{
+		result := &Result{
 			Error: "no_code",
 		}
 		s.sendResult(result)
@@ -200,7 +210,7 @@ func (s *OAuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	if state == "" {
 		log.Error("No state parameter received")
-		result := &OAuthResult{
+		result := &Result{
 			Error: "no_state",
 		}
 		s.sendResult(result)
@@ -209,7 +219,7 @@ func (s *OAuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send successful result
-	result := &OAuthResult{
+	result := &Result{
 		Code:  code,
 		State: state,
 	}
@@ -221,11 +231,7 @@ func (s *OAuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 // handleSuccess handles the success page endpoint.
 // It serves a user-friendly HTML page indicating that authentication was successful.
-//
-// Parameters:
-//   - w: The HTTP response writer
-//   - r: The HTTP request
-func (s *OAuthServer) handleSuccess(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSuccess(w http.ResponseWriter, r *http.Request) {
 	log.Debug("Serving success page")
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -236,7 +242,7 @@ func (s *OAuthServer) handleSuccess(w http.ResponseWriter, r *http.Request) {
 	setupRequired := query.Get("setup_required") == "true"
 	platformURL := query.Get("platform_url")
 	if platformURL == "" {
-		platformURL = "https://platform.openai.com"
+		platformURL = s.opts.DefaultPlatformURL
 	}
 
 	// Generate success page HTML with dynamic content
@@ -251,22 +257,15 @@ func (s *OAuthServer) handleSuccess(w http.ResponseWriter, r *http.Request) {
 // generateSuccessHTML creates the HTML content for the success page.
 // It customizes the page based on whether additional setup is required
 // and includes a link to the platform.
-//
-// Parameters:
-//   - setupRequired: Whether additional setup is required after authentication
-//   - platformURL: The URL to the platform for additional setup
-//
-// Returns:
-//   - string: The HTML content for the success page
-func (s *OAuthServer) generateSuccessHTML(setupRequired bool, platformURL string) string {
-	html := LoginSuccessHtml
+func (s *Server) generateSuccessHTML(setupRequired bool, platformURL string) string {
+	html := s.opts.SuccessTemplate
 
 	// Replace platform URL placeholder
 	html = strings.Replace(html, "{{PLATFORM_URL}}", platformURL, -1)
 
 	// Add setup notice if required
 	if setupRequired {
-		setupNotice := strings.Replace(SetupNoticeHtml, "{{PLATFORM_URL}}", platformURL, -1)
+		setupNotice := strings.Replace(s.opts.SetupNoticeTemplate, "{{PLATFORM_URL}}", platformURL, -1)
 		html = strings.Replace(html, "{{SETUP_NOTICE}}", setupNotice, 1)
 	} else {
 		html = strings.Replace(html, "{{SETUP_NOTICE}}", "", 1)
@@ -277,10 +276,7 @@ func (s *OAuthServer) generateSuccessHTML(setupRequired bool, platformURL string
 
 // sendResult sends the OAuth result to the waiting channel.
 // It ensures that the result is sent without blocking the handler.
-//
-// Parameters:
-//   - result: The OAuth result to send
-func (s *OAuthServer) sendResult(result *OAuthResult) {
+func (s *Server) sendResult(result *Result) {
 	select {
 	case s.resultChan <- result:
 		log.Debug("OAuth result sent to channel")
@@ -291,10 +287,7 @@ func (s *OAuthServer) sendResult(result *OAuthResult) {
 
 // isPortAvailable checks if the specified port is available.
 // It attempts to listen on the port to determine availability.
-//
-// Returns:
-//   - bool: True if the port is available, false otherwise
-func (s *OAuthServer) isPortAvailable() bool {
+func (s *Server) isPortAvailable() bool {
 	addr := fmt.Sprintf(":%d", s.port)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -310,7 +303,7 @@ func (s *OAuthServer) isPortAvailable() bool {
 //
 // Returns:
 //   - bool: True if the server is running, false otherwise
-func (s *OAuthServer) IsRunning() bool {
+func (s *Server) IsRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.running

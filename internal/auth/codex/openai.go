@@ -1,14 +1,12 @@
 package codex
 
+import (
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/oauthcommon"
+)
+
 // PKCECodes holds the verification codes for the OAuth2 PKCE (Proof Key for Code Exchange) flow.
 // PKCE is an extension to the Authorization Code flow to prevent CSRF and authorization code injection attacks.
-type PKCECodes struct {
-	// CodeVerifier is the cryptographically random string used to correlate
-	// the authorization request to the token request
-	CodeVerifier string `json:"code_verifier"`
-	// CodeChallenge is the SHA256 hash of the code verifier, base64url-encoded
-	CodeChallenge string `json:"code_challenge"`
-}
+type PKCECodes = oauthcommon.PKCECodes
 
 // CodexTokenData holds the OAuth token information obtained from OpenAI.
 // It includes the ID token, access token, refresh token, and associated user details.

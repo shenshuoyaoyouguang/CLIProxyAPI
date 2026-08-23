@@ -1,13 +1,11 @@
 package claude
 
+import (
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/oauthcommon"
+)
+
 // PKCECodes holds PKCE verification codes for OAuth2 PKCE flow
-type PKCECodes struct {
-	// CodeVerifier is the cryptographically random string used to correlate
-	// the authorization request to the token request
-	CodeVerifier string `json:"code_verifier"`
-	// CodeChallenge is the SHA256 hash of the code verifier, base64url-encoded
-	CodeChallenge string `json:"code_challenge"`
-}
+type PKCECodes = oauthcommon.PKCECodes
 
 // ClaudeTokenData holds OAuth token information from Anthropic
 type ClaudeTokenData struct {
