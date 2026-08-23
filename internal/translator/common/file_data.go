@@ -41,3 +41,17 @@ func NormalizeOpenAIFileData(filename, fallbackMIMEType, fileData string) (mimeT
 	}
 	return "", "", false
 }
+
+// SplitBase64DataURL parses a "data:<mime>;base64,<data>" URL into its mime
+// type and payload. It reports ok=false for anything that is not a data URL
+// with a base64 payload.
+func SplitBase64DataURL(dataURL string) (mimeType, data string, ok bool) {
+	if !strings.HasPrefix(dataURL, "data:") {
+		return "", "", false
+	}
+	pieces := strings.SplitN(dataURL[5:], ";", 2)
+	if len(pieces) != 2 || !strings.HasPrefix(pieces[1], "base64,") {
+		return "", "", false
+	}
+	return pieces[0], pieces[1][len("base64,"):], true
+}

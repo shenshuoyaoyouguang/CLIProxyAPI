@@ -1,6 +1,7 @@
 package interactions
 
 import (
+	interactionscommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/interactionscommon"
 	"strings"
 	"testing"
 
@@ -24,7 +25,7 @@ func TestGoldenAntigravityInlineDataPartJSON(t *testing.T) {
 		{"missing data", `{"mimeType":"image/png"}`, ``},
 	}
 	for _, tc := range cases {
-		if got := string(antigravityInlineDataPartJSON(gjson.Parse(tc.input))); got != tc.want {
+		if got := string(interactionscommon.InlineDataPartJSON(gjson.Parse(tc.input))); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
@@ -41,7 +42,7 @@ func TestGoldenAntigravityFileDataPartJSON(t *testing.T) {
 		{"missing uri", `{"mimeType":"application/pdf"}`, ``},
 	}
 	for _, tc := range cases {
-		if got := string(antigravityFileDataPartJSON(gjson.Parse(tc.input))); got != tc.want {
+		if got := string(interactionscommon.FileDataPartJSON(gjson.Parse(tc.input))); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
@@ -58,7 +59,7 @@ func TestGoldenAntigravityInlineDataPartFromDataURL(t *testing.T) {
 		{"not base64", "data:text/plain,hello", ""},
 	}
 	for _, tc := range cases {
-		if got := string(antigravityInlineDataPartFromDataURL(tc.in)); got != tc.want {
+		if got := string(interactionscommon.InlineDataPartFromDataURL(tc.in)); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
@@ -79,7 +80,7 @@ func TestGoldenInteractionsNativeAntigravityPart(t *testing.T) {
 		{"unknown", `{"other":1}`, ``},
 	}
 	for _, tc := range cases {
-		if got := string(interactionsNativeAntigravityPart(gjson.Parse(tc.input))); got != tc.want {
+		if got := string(interactionscommon.NativePart(gjson.Parse(tc.input))); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
@@ -95,7 +96,7 @@ func TestGoldenAntigravityContentRole(t *testing.T) {
 		{"other", "", "user"},
 	}
 	for _, tc := range cases {
-		if got := antigravityContentRole(tc.role, tc.def); got != tc.want {
+		if got := interactionscommon.ContentRole(tc.role, tc.def); got != tc.want {
 			t.Errorf("role=%q def=%q: got %q want %q", tc.role, tc.def, got, tc.want)
 		}
 	}
@@ -107,7 +108,7 @@ func TestGoldenAntigravityInputAudioMimeType(t *testing.T) {
 		{"opus", "audio/opus"}, {"pcm16", "audio/pcm"}, {"unknown", "audio/mpeg"},
 	}
 	for _, tc := range cases {
-		if got := antigravityInputAudioMimeType(tc.in); got != tc.want {
+		if got := interactionscommon.InputAudioMimeType(tc.in); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.in, got, tc.want)
 		}
 	}
@@ -124,7 +125,7 @@ func TestGoldenAntigravityThinkingSummariesIncludeThoughts(t *testing.T) {
 		{"123", false, false},
 	}
 	for _, tc := range cases {
-		v, ok := antigravityThinkingSummariesIncludeThoughts(gjson.Parse(tc.in))
+		v, ok := interactionscommon.ThinkingSummariesIncludeThoughts(gjson.Parse(tc.in))
 		if v != tc.wantV || ok != tc.wantOK {
 			t.Errorf("%s: got (%v,%v) want (%v,%v)", tc.in, v, ok, tc.wantV, tc.wantOK)
 		}
@@ -132,13 +133,13 @@ func TestGoldenAntigravityThinkingSummariesIncludeThoughts(t *testing.T) {
 }
 
 func TestGoldenAntigravityFunctionPartIDAndThoughtSignature(t *testing.T) {
-	if got := antigravityFunctionPartID(gjson.Parse(`{"id":"x"}`)); got != "x" {
+	if got := interactionscommon.FunctionPartID(gjson.Parse(`{"id":"x"}`)); got != "x" {
 		t.Errorf("id: got %q", got)
 	}
-	if got := antigravityFunctionPartID(gjson.Parse(`{"call_id":"c"}`)); got != "c" {
+	if got := interactionscommon.FunctionPartID(gjson.Parse(`{"call_id":"c"}`)); got != "c" {
 		t.Errorf("call_id: got %q", got)
 	}
-	if got := antigravityFunctionPartID(gjson.Parse(`{}`)); got != "" {
+	if got := interactionscommon.FunctionPartID(gjson.Parse(`{}`)); got != "" {
 		t.Errorf("empty: got %q", got)
 	}
 	sigCases := []struct{ in, want string }{
@@ -148,30 +149,30 @@ func TestGoldenAntigravityFunctionPartIDAndThoughtSignature(t *testing.T) {
 		{`{}`, ""},
 	}
 	for _, tc := range sigCases {
-		if got := antigravityThoughtSignature(gjson.Parse(tc.in)); got != tc.want {
+		if got := interactionscommon.ThoughtSignature(gjson.Parse(tc.in)); got != tc.want {
 			t.Errorf("sig %s: got %q want %q", tc.in, got, tc.want)
 		}
 	}
 }
 
 func TestGoldenJoinAndCamelCaseHelpers(t *testing.T) {
-	if got := joinAntigravityJSONPath("a.b", "c"); got != "a.b.c" {
+	if got := interactionscommon.JoinJSONPath("a.b", "c"); got != "a.b.c" {
 		t.Errorf("join: got %q", got)
 	}
-	if got := convertSnakeCaseKeysToCamelCaseForAntigravity([]byte(`{"prompt_token_count":1,"nested_key":{"inner_value":2}}`)); string(got) != `{"promptTokenCount":1,"nestedKey":{"innerValue":2}}` {
+	if got := interactionscommon.ConvertSnakeCaseKeysToCamelCase([]byte(`{"prompt_token_count":1,"nested_key":{"inner_value":2}}`)); string(got) != `{"promptTokenCount":1,"nestedKey":{"innerValue":2}}` {
 		t.Errorf("walker: got %s", got)
 	}
 }
 
 func TestGoldenAntigravityStreamAppends(t *testing.T) {
-	st := &antigravityToInteractionsStreamState{ID: "i-1"}
-	out := appendAntigravityInteractionsCreated(nil, st, "m1")
+	st := &antigravityToInteractionsStreamState{StreamState: interactionscommon.StreamState{ID: "i-1"}}
+	out := interactionscommon.AppendCreated(nil, &st.StreamState, "m1")
 	if len(out) != 1 || !strings.Contains(string(out[0]), `"id":"i-1"`) ||
 		!strings.Contains(string(out[0]), `"model":"m1"`) ||
 		!strings.Contains(string(out[0]), "event: interaction.created") {
 		t.Fatalf("created: unexpected %s", out[0])
 	}
-	out = appendAntigravityInteractionsStatusUpdate(out, st)
+	out = interactionscommon.AppendStatusUpdate(out, &st.StreamState)
 	if !strings.Contains(string(out[1]), `"interaction_id":"i-1"`) ||
 		!strings.Contains(string(out[1]), "event: interaction.status_update") {
 		t.Fatalf("status: unexpected %s", out[1])
@@ -184,11 +185,11 @@ func TestGoldenAntigravityStreamAppends(t *testing.T) {
 		t.Fatalf("completed: unexpected %s st=%v", out[2], st)
 	}
 	n := len(out)
-	out = appendAntigravityInteractionsDone(out, st)
+	out = interactionscommon.AppendDone(out, &st.StreamState)
 	if len(out) != n+1 || !strings.Contains(string(out[n]), "[DONE]") {
 		t.Fatalf("done: unexpected %v", out)
 	}
-	if out2 := appendAntigravityInteractionsDone(out, st); len(out2) != len(out) {
+	if out2 := interactionscommon.AppendDone(out, &st.StreamState); len(out2) != len(out) {
 		t.Fatal("done not idempotent")
 	}
 }

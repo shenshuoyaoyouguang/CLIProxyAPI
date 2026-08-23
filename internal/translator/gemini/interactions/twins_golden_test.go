@@ -1,6 +1,7 @@
 package interactions
 
 import (
+	interactionscommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/interactionscommon"
 	"strings"
 	"testing"
 
@@ -21,7 +22,7 @@ func TestGoldenGeminiInlineDataPartJSON(t *testing.T) {
 		{"missing mime", `{"data":"QUJD"}`, ``},
 	}
 	for _, tc := range cases {
-		if got := string(geminiInlineDataPartJSON(gjson.Parse(tc.input))); got != tc.want {
+		if got := string(interactionscommon.InlineDataPartJSON(gjson.Parse(tc.input))); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
@@ -37,7 +38,7 @@ func TestGoldenGeminiFileDataPartJSON(t *testing.T) {
 		{"snake", `{"mime_type":"application/pdf","file_uri":"gs://b/f.pdf"}`, `{"fileData":{"mimeType":"application/pdf","fileUri":"gs://b/f.pdf"}}`},
 	}
 	for _, tc := range cases {
-		if got := string(geminiFileDataPartJSON(gjson.Parse(tc.input))); got != tc.want {
+		if got := string(interactionscommon.FileDataPartJSON(gjson.Parse(tc.input))); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
@@ -54,7 +55,7 @@ func TestGoldenGeminiInlineDataPartFromDataURL(t *testing.T) {
 		{"not base64", "data:text/plain,hello", ""},
 	}
 	for _, tc := range cases {
-		if got := string(geminiInlineDataPartFromDataURL(tc.in)); got != tc.want {
+		if got := string(interactionscommon.InlineDataPartFromDataURL(tc.in)); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
@@ -73,7 +74,7 @@ func TestGoldenInteractionsNativeGeminiPart(t *testing.T) {
 		{"unknown", `{"other":1}`, ``},
 	}
 	for _, tc := range cases {
-		if got := string(interactionsNativeGeminiPart(gjson.Parse(tc.input))); got != tc.want {
+		if got := string(interactionscommon.NativePart(gjson.Parse(tc.input))); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
@@ -88,7 +89,7 @@ func TestGoldenInteractionsGeminiContentRole(t *testing.T) {
 		{"other", "", "user"},
 	}
 	for _, tc := range cases {
-		if got := interactionsGeminiContentRole(tc.role, tc.def); got != tc.want {
+		if got := interactionscommon.ContentRole(tc.role, tc.def); got != tc.want {
 			t.Errorf("role=%q def=%q: got %q want %q", tc.role, tc.def, got, tc.want)
 		}
 	}
@@ -100,7 +101,7 @@ func TestGoldenInteractionsInputAudioMimeType(t *testing.T) {
 		{"opus", "audio/opus"}, {"pcm16", "audio/pcm"}, {"unknown", "audio/mpeg"},
 	}
 	for _, tc := range cases {
-		if got := interactionsInputAudioMimeType(tc.in); got != tc.want {
+		if got := interactionscommon.InputAudioMimeType(tc.in); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.in, got, tc.want)
 		}
 	}
@@ -117,7 +118,7 @@ func TestGoldenInteractionsThinkingSummariesIncludeThoughts(t *testing.T) {
 		{"123", false, false},
 	}
 	for _, tc := range cases {
-		v, ok := interactionsThinkingSummariesIncludeThoughts(gjson.Parse(tc.in))
+		v, ok := interactionscommon.ThinkingSummariesIncludeThoughts(gjson.Parse(tc.in))
 		if v != tc.wantV || ok != tc.wantOK {
 			t.Errorf("%s: got (%v,%v) want (%v,%v)", tc.in, v, ok, tc.wantV, tc.wantOK)
 		}
@@ -125,10 +126,10 @@ func TestGoldenInteractionsThinkingSummariesIncludeThoughts(t *testing.T) {
 }
 
 func TestGoldenInteractionsFunctionPartIDAndThoughtSignature(t *testing.T) {
-	if got := interactionsFunctionPartID(gjson.Parse(`{"call_id":"c"}`)); got != "c" {
+	if got := interactionscommon.FunctionPartID(gjson.Parse(`{"call_id":"c"}`)); got != "c" {
 		t.Errorf("call_id: got %q", got)
 	}
-	if got := interactionsFunctionPartID(gjson.Parse(`{}`)); got != "" {
+	if got := interactionscommon.FunctionPartID(gjson.Parse(`{}`)); got != "" {
 		t.Errorf("empty: got %q", got)
 	}
 	sigCases := []struct{ in, want string }{
@@ -138,36 +139,36 @@ func TestGoldenInteractionsFunctionPartIDAndThoughtSignature(t *testing.T) {
 		{`{}`, ""},
 	}
 	for _, tc := range sigCases {
-		if got := interactionsThoughtSignature(gjson.Parse(tc.in)); got != tc.want {
+		if got := interactionscommon.ThoughtSignature(gjson.Parse(tc.in)); got != tc.want {
 			t.Errorf("sig %s: got %q want %q", tc.in, got, tc.want)
 		}
 	}
 }
 
 func TestGoldenJoinAndCaseHelpers(t *testing.T) {
-	if got := joinJSONPath("a.b", "c"); got != "a.b.c" {
+	if got := interactionscommon.JoinJSONPath("a.b", "c"); got != "a.b.c" {
 		t.Errorf("join: got %q", got)
 	}
-	if got := convertSnakeCaseKeysToCamelCase([]byte(`{"prompt_token_count":1,"nested_key":{"inner_value":2}}`)); string(got) != `{"promptTokenCount":1,"nestedKey":{"innerValue":2}}` {
+	if got := interactionscommon.ConvertSnakeCaseKeysToCamelCase([]byte(`{"prompt_token_count":1,"nested_key":{"inner_value":2}}`)); string(got) != `{"promptTokenCount":1,"nestedKey":{"innerValue":2}}` {
 		t.Errorf("walker: got %s", got)
 	}
 	if got := convertCamelCaseKeysToSnakeCase([]byte(`{"promptTokenCount":1,"nestedKey":{"innerValue":2}}`)); string(got) != `{"prompt_token_count":1,"nested_key":{"inner_value":2}}` {
 		t.Errorf("inverse walker: got %s", got)
 	}
-	if toSnakeCase("promptTokenCount") != "prompt_token_count" {
-		t.Errorf("toSnakeCase: got %q", toSnakeCase("promptTokenCount"))
+	if interactionscommon.ToSnakeCase("promptTokenCount") != "prompt_token_count" {
+		t.Errorf("toSnakeCase: got %q", interactionscommon.ToSnakeCase("promptTokenCount"))
 	}
 }
 
 func TestGoldenStreamAppends(t *testing.T) {
 	st := &StreamState{ID: "i-1"}
-	out := appendInteractionsCreated(nil, st, "m1")
+	out := interactionscommon.AppendCreated(nil, st, "m1")
 	if len(out) != 1 || !strings.Contains(string(out[0]), `"id":"i-1"`) ||
 		!strings.Contains(string(out[0]), `"model":"m1"`) ||
 		!strings.Contains(string(out[0]), "event: interaction.created") {
 		t.Fatalf("created: unexpected %s", out[0])
 	}
-	out = appendInteractionsStatusUpdate(out, st)
+	out = interactionscommon.AppendStatusUpdate(out, st)
 	if !strings.Contains(string(out[1]), `"interaction_id":"i-1"`) ||
 		!strings.Contains(string(out[1]), "event: interaction.status_update") {
 		t.Fatalf("status: unexpected %s", out[1])
@@ -180,11 +181,11 @@ func TestGoldenStreamAppends(t *testing.T) {
 		t.Fatalf("completed: unexpected %s st=%v", out[2], st)
 	}
 	n := len(out)
-	out = appendInteractionsDone(out, st)
+	out = interactionscommon.AppendDone(out, st)
 	if len(out) != n+1 || !strings.Contains(string(out[n]), "[DONE]") {
 		t.Fatalf("done: unexpected %v", out)
 	}
-	if out2 := appendInteractionsDone(out, st); len(out2) != len(out) {
+	if out2 := interactionscommon.AppendDone(out, st); len(out2) != len(out) {
 		t.Fatal("done not idempotent")
 	}
 }

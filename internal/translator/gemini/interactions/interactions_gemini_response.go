@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	interactionscommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/interactionscommon"
 	"strings"
 	"time"
 
@@ -145,20 +146,20 @@ func interactionsStepDeltaToGeminiChunk(modelName string, root gjson.Result, st 
 		if text == "" {
 			return nil
 		}
-		return buildInteractionsGeminiChunk(st, modelName, [][]byte{geminiTextPartJSON(text, false)}, "", gjson.Result{}, false)
+		return buildInteractionsGeminiChunk(st, modelName, [][]byte{interactionscommon.TextPartJSON(text, false)}, "", gjson.Result{}, false)
 	case "thought_summary":
 		text := firstNonEmptyInteractionString(delta.Get("content.text").String(), delta.Get("text").String())
 		if text == "" {
 			return nil
 		}
-		return buildInteractionsGeminiChunk(st, modelName, [][]byte{geminiTextPartJSON(text, true)}, "", gjson.Result{}, false)
+		return buildInteractionsGeminiChunk(st, modelName, [][]byte{interactionscommon.TextPartJSON(text, true)}, "", gjson.Result{}, false)
 	case "thought_signature":
 		signature := firstNonEmptyInteractionString(delta.Get("signature").String(), delta.Get("thought_signature").String(), delta.Get("thoughtSignature").String())
 		if signature == "" {
 			return nil
 		}
 		st.StepSignatures[index] = signature
-		part := geminiTextPartJSON("", true)
+		part := interactionscommon.TextPartJSON("", true)
 		part, _ = sjson.SetBytes(part, "thoughtSignature", signature)
 		return buildInteractionsGeminiChunk(st, modelName, [][]byte{part}, "", gjson.Result{}, false)
 	}
@@ -184,7 +185,7 @@ func interactionsContentToGeminiParts(content gjson.Result, thought bool) [][]by
 		return parts
 	}
 	if content.Type == gjson.String {
-		return [][]byte{geminiTextPartJSON(content.String(), thought)}
+		return [][]byte{interactionscommon.TextPartJSON(content.String(), thought)}
 	}
 	if content.IsObject() {
 		if part := interactionsContentPartToGeminiPart(content, thought); len(part) > 0 {
@@ -229,7 +230,7 @@ func interactionsFunctionResponseStepToGeminiPart(step gjson.Result) []byte {
 func buildInteractionsGeminiChunk(st *interactionsToGeminiStreamState, modelName string, parts [][]byte, finishReason string, usage gjson.Result, includeEmptyPart bool) []byte {
 	out := []byte(`{"candidates":[{"content":{"parts":[],"role":"model"},"index":0}]}`)
 	if len(parts) == 0 && includeEmptyPart {
-		parts = append(parts, geminiTextPartJSON("", false))
+		parts = append(parts, interactionscommon.TextPartJSON("", false))
 	}
 	validParts := make([][]byte, 0, len(parts))
 	for _, part := range parts {

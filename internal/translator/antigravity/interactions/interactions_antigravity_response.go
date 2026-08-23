@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	interactionscommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/interactionscommon"
 	"strings"
 	"time"
 
@@ -14,17 +15,8 @@ import (
 )
 
 type antigravityToInteractionsStreamState struct {
-	Started         bool
-	Finished        bool
-	Completed       bool
-	Done            bool
-	ActiveStepOpen  bool
-	ID              string
-	StepID          string
-	ActiveStepType  string
-	ActiveStepIndex int
-	StepIndex       int
-	ToolNameMap     map[string]string
+	interactionscommon.StreamState
+	ToolNameMap map[string]string
 }
 
 func ConvertAntigravityResponseToInteractions(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
@@ -37,7 +29,9 @@ func ConvertAntigravityResponseToInteractions(ctx context.Context, modelName str
 	}
 	if *param == nil {
 		*param = &antigravityToInteractionsStreamState{
-			ID:          fmt.Sprintf("interaction_%d", time.Now().UnixNano()),
+			StreamState: interactionscommon.StreamState{
+				ID: fmt.Sprintf("interaction_%d", time.Now().UnixNano()),
+			},
 			ToolNameMap: util.DisambiguatedToolNameMap(originalRequestRawJSON),
 		}
 	}
@@ -50,7 +44,7 @@ func ConvertAntigravityResponseToInteractions(ctx context.Context, modelName str
 				out = appendAntigravityInteractionsStepStop(out, st)
 				out = appendAntigravityInteractionsCompleted(out, st, modelName, gjson.Result{})
 			}
-			out = appendAntigravityInteractionsDone(out, st)
+			out = interactionscommon.AppendDone(out, &st.StreamState)
 			continue
 		}
 		root := unwrapAntigravityResponse(gjson.ParseBytes(payload))
@@ -59,8 +53,8 @@ func ConvertAntigravityResponseToInteractions(ctx context.Context, modelName str
 			continue
 		}
 		if !st.Started {
-			out = appendAntigravityInteractionsCreated(out, st, modelName)
-			out = appendAntigravityInteractionsStatusUpdate(out, st)
+			out = interactionscommon.AppendCreated(out, &st.StreamState, modelName)
+			out = interactionscommon.AppendStatusUpdate(out, &st.StreamState)
 			st.Started = true
 		}
 		root.Get("candidates.0.content.parts").ForEach(func(_, part gjson.Result) bool {
@@ -175,41 +169,8 @@ func restoreAntigravityUsageMetadata(root gjson.Result) gjson.Result {
 	return root
 }
 
-func appendAntigravityInteractionsCreated(out [][]byte, st *antigravityToInteractionsStreamState, modelName string) [][]byte {
-	created := []byte(`{"interaction":{"id":"","status":"in_progress","object":"interaction","model":""},"event_type":"interaction.created"}`)
-	created, _ = sjson.SetBytes(created, "interaction.id", st.ID)
-	created, _ = sjson.SetBytes(created, "interaction.model", modelName)
-	return append(out, translatorcommon.SSEEventData("interaction.created", created))
-}
-
-func appendAntigravityInteractionsStatusUpdate(out [][]byte, st *antigravityToInteractionsStreamState) [][]byte {
-	statusUpdate := []byte(`{"interaction_id":"","status":"in_progress","event_type":"interaction.status_update"}`)
-	statusUpdate, _ = sjson.SetBytes(statusUpdate, "interaction_id", st.ID)
-	return append(out, translatorcommon.SSEEventData("interaction.status_update", statusUpdate))
-}
-
 func appendAntigravityInteractionsCompleted(out [][]byte, st *antigravityToInteractionsStreamState, modelName string, root gjson.Result) [][]byte {
-	now := time.Now().UTC().Format(time.RFC3339)
-	completed := []byte(`{"interaction":{"id":"","status":"completed","usage":{},"created":"","updated":"","service_tier":"standard","object":"interaction","model":""},"event_type":"interaction.completed"}`)
-	completed, _ = sjson.SetBytes(completed, "interaction.id", st.ID)
-	completed, _ = sjson.SetBytes(completed, "interaction.created", now)
-	completed, _ = sjson.SetBytes(completed, "interaction.updated", now)
-	completed, _ = sjson.SetBytes(completed, "interaction.model", modelName)
-	if root.Exists() {
-		completed = setInteractionsStreamUsageFromAntigravity(completed, "interaction.usage", root)
-	}
-	out = append(out, translatorcommon.SSEEventData("interaction.completed", completed))
-	st.Completed = true
-	return out
-}
-
-func appendAntigravityInteractionsDone(out [][]byte, st *antigravityToInteractionsStreamState) [][]byte {
-	if st.Done {
-		return out
-	}
-	out = append(out, translatorcommon.SSEEventData("done", []byte("[DONE]")))
-	st.Done = true
-	return out
+	return interactionscommon.AppendCompleted(out, &st.StreamState, modelName, root, setInteractionsStreamUsageFromAntigravity)
 }
 
 func appendAntigravityInteractionsStepStart(out [][]byte, st *antigravityToInteractionsStreamState, stepType string, part gjson.Result) [][]byte {
@@ -222,7 +183,7 @@ func appendAntigravityInteractionsStepStart(out [][]byte, st *antigravityToInter
 	stepStart, _ = sjson.SetBytes(stepStart, "index", st.ActiveStepIndex)
 	stepStart, _ = sjson.SetBytes(stepStart, "step.type", stepType)
 	if stepType == "function_call" {
-		id := antigravityFunctionPartID(part)
+		id := interactionscommon.FunctionPartID(part)
 		if id == "" {
 			id = st.StepID
 		}
@@ -298,7 +259,7 @@ func appendAntigravityPartToInteractionsStream(out [][]byte, st *antigravityToIn
 }
 
 func appendAntigravityThoughtSignature(out [][]byte, st *antigravityToInteractionsStreamState, part gjson.Result) [][]byte {
-	if signature := antigravityThoughtSignature(part); signature != "" {
+	if signature := interactionscommon.ThoughtSignature(part); signature != "" {
 		out = ensureAntigravityInteractionsStep(out, st, "thought", gjson.Result{})
 		signatureDelta := []byte(`{"index":0,"delta":{"signature":"","type":"thought_signature"},"event_type":"step.delta"}`)
 		signatureDelta, _ = sjson.SetBytes(signatureDelta, "index", st.ActiveStepIndex)
@@ -472,23 +433,4 @@ func antigravityUsagePathExists(usage gjson.Result, paths ...string) bool {
 		}
 	}
 	return false
-}
-
-func antigravityFunctionPartID(part gjson.Result) string {
-	if id := part.Get("id"); id.Exists() {
-		return id.String()
-	}
-	if callID := part.Get("call_id"); callID.Exists() {
-		return callID.String()
-	}
-	return ""
-}
-
-func antigravityThoughtSignature(part gjson.Result) string {
-	for _, path := range []string{"thoughtSignature", "thought_signature", "extra_content.google.thought_signature"} {
-		if signature := strings.TrimSpace(part.Get(path).String()); signature != "" {
-			return signature
-		}
-	}
-	return ""
 }

@@ -3,6 +3,7 @@ package interactions
 import (
 	"encoding/json"
 	"fmt"
+	interactionscommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/interactionscommon"
 	"strings"
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
@@ -149,7 +150,7 @@ func copyInteractionsSystemToAntigravity(out []byte, root gjson.Result) []byte {
 
 func copyInteractionsGenerationConfigToAntigravity(out []byte, root gjson.Result) []byte {
 	if cfg := root.Get("generation_config"); cfg.Exists() {
-		out, _ = sjson.SetRawBytes(out, "request.generationConfig", convertSnakeCaseKeysToCamelCaseForAntigravity([]byte(cfg.Raw)))
+		out, _ = sjson.SetRawBytes(out, "request.generationConfig", interactionscommon.ConvertSnakeCaseKeysToCamelCase([]byte(cfg.Raw)))
 	} else if cfg := root.Get("generationConfig"); cfg.Exists() {
 		out, _ = sjson.SetRawBytes(out, "request.generationConfig", []byte(cfg.Raw))
 	}
@@ -174,7 +175,7 @@ func normalizeInteractionsGenerationConfigForAntigravity(out []byte) []byte {
 		out, _ = sjson.DeleteBytes(out, "request.generationConfig.includeThoughts")
 	}
 	if summaries := gjson.GetBytes(out, "request.generationConfig.thinkingSummaries"); summaries.Exists() {
-		if includeThoughts, ok := antigravityThinkingSummariesIncludeThoughts(summaries); ok {
+		if includeThoughts, ok := interactionscommon.ThinkingSummariesIncludeThoughts(summaries); ok {
 			out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts", includeThoughts)
 		}
 		out, _ = sjson.DeleteBytes(out, "request.generationConfig.thinkingSummaries")
@@ -205,7 +206,7 @@ func copyInteractionsReasoningToAntigravity(out []byte, root gjson.Result) []byt
 		}
 	}
 	if summary := reasoning.Get("summary"); summary.Exists() {
-		if includeThoughts, ok := antigravityThinkingSummariesIncludeThoughts(summary); ok {
+		if includeThoughts, ok := interactionscommon.ThinkingSummariesIncludeThoughts(summary); ok {
 			out, _ = sjson.SetBytes(out, "request.generationConfig.thinkingConfig.includeThoughts", includeThoughts)
 		}
 	}
@@ -370,14 +371,14 @@ func appendInteractionsNativeContentToAntigravity(items *[][]byte, step gjson.Re
 	}
 	partItems := make([][]byte, 0, 4)
 	parts.ForEach(func(_, part gjson.Result) bool {
-		if partJSON := interactionsNativeAntigravityPart(part); len(partJSON) > 0 {
+		if partJSON := interactionscommon.NativePart(part); len(partJSON) > 0 {
 			partItems = append(partItems, partJSON)
 		}
 		return true
 	})
 	if len(partItems) > 0 {
-		role := antigravityContentRole(step.Get("role").String(), defaultRole)
-		*items = append(*items, antigravityContent(role, partItems))
+		role := interactionscommon.ContentRole(step.Get("role").String(), defaultRole)
+		*items = append(*items, interactionscommon.Content(role, partItems))
 	}
 }
 
@@ -399,10 +400,10 @@ func appendInteractionsStepContentToAntigravity(items *[][]byte, role string, st
 			partItems = append(partItems, partJSON)
 		}
 	} else if content.Type == gjson.String {
-		partItems = append(partItems, antigravityTextPartJSON(content.String(), thought))
+		partItems = append(partItems, interactionscommon.TextPartJSON(content.String(), thought))
 	}
 	if len(partItems) > 0 {
-		*items = append(*items, antigravityContent(role, partItems))
+		*items = append(*items, interactionscommon.Content(role, partItems))
 	}
 }
 
@@ -427,24 +428,24 @@ func appendInteractionsContentListToAntigravity(items *[][]byte, role string, co
 func appendInteractionsContentPartToAntigravity(items *[][]byte, role string, part gjson.Result) {
 	partJSON := appendInteractionsContentToAntigravityPart(nil, part, false)
 	if len(partJSON) > 0 {
-		*items = append(*items, antigravityContent(role, [][]byte{partJSON}))
+		*items = append(*items, interactionscommon.Content(role, [][]byte{partJSON}))
 	}
 }
 
 func appendInteractionsContentToAntigravityPart(_ []byte, content gjson.Result, thought bool) []byte {
 	if text := content.Get("text"); text.Exists() {
-		return antigravityTextPartJSON(text.String(), thought)
+		return interactionscommon.TextPartJSON(text.String(), thought)
 	}
 	if inline := content.Get("inline_data"); inline.Exists() {
-		return antigravityInlineDataPartJSON(inline)
+		return interactionscommon.InlineDataPartJSON(inline)
 	}
 	if inline := content.Get("inlineData"); inline.Exists() {
-		return antigravityInlineDataPartJSON(inline)
+		return interactionscommon.InlineDataPartJSON(inline)
 	}
 	switch strings.ToLower(strings.TrimSpace(content.Get("type").String())) {
 	case "text":
 		if text := content.Get("text"); text.Exists() {
-			return antigravityTextPartJSON(text.String(), thought)
+			return interactionscommon.TextPartJSON(text.String(), thought)
 		}
 	case "image", "audio", "video", "document":
 		if mime := content.Get("mime_type"); mime.Exists() || content.Get("mimeType").Exists() {
@@ -453,7 +454,7 @@ func appendInteractionsContentToAntigravityPart(_ []byte, content gjson.Result, 
 				mimeType = content.Get("mimeType").String()
 			}
 			if data := content.Get("data").String(); data != "" {
-				return antigravityInlineDataPartJSON(gjson.Parse(fmt.Sprintf(`{"mime_type":%q,"data":%q}`, mimeType, data)))
+				return interactionscommon.InlineDataPartJSON(gjson.Parse(fmt.Sprintf(`{"mime_type":%q,"data":%q}`, mimeType, data)))
 			}
 		}
 		if uri := content.Get("file_uri"); uri.Exists() || content.Get("fileUri").Exists() {
@@ -465,21 +466,21 @@ func appendInteractionsContentToAntigravityPart(_ []byte, content gjson.Result, 
 			if mimeType == "" {
 				mimeType = content.Get("mimeType").String()
 			}
-			return antigravityFileDataPartJSON(gjson.Parse(fmt.Sprintf(`{"mimeType":%q,"fileUri":%q}`, mimeType, fileURI)))
+			return interactionscommon.FileDataPartJSON(gjson.Parse(fmt.Sprintf(`{"mimeType":%q,"fileUri":%q}`, mimeType, fileURI)))
 		}
 		if url := content.Get("url"); url.Exists() {
-			return antigravityInlineDataPartFromDataURL(url.String())
+			return interactionscommon.InlineDataPartFromDataURL(url.String())
 		}
 	case "image_url":
-		return antigravityInlineDataPartFromDataURL(content.Get("image_url.url").String())
+		return interactionscommon.InlineDataPartFromDataURL(content.Get("image_url.url").String())
 	case "input_audio":
-		mimeType := antigravityInputAudioMimeType(content.Get("input_audio.format").String())
-		return antigravityInlineDataPartJSON(gjson.Parse(fmt.Sprintf(`{"mime_type":%q,"data":%q}`, mimeType, content.Get("input_audio.data").String())))
+		mimeType := interactionscommon.InputAudioMimeType(content.Get("input_audio.format").String())
+		return interactionscommon.InlineDataPartJSON(gjson.Parse(fmt.Sprintf(`{"mime_type":%q,"data":%q}`, mimeType, content.Get("input_audio.data").String())))
 	case "file":
 		filename := content.Get("file.filename").String()
 		fileData := content.Get("file.file_data").String()
 		if mimeType, data, ok := translatorcommon.NormalizeOpenAIFileData(filename, "", fileData); ok {
-			return antigravityInlineDataPartJSON(gjson.Parse(fmt.Sprintf(`{"mime_type":%q,"data":%q}`, mimeType, data)))
+			return interactionscommon.InlineDataPartJSON(gjson.Parse(fmt.Sprintf(`{"mime_type":%q,"data":%q}`, mimeType, data)))
 		}
 	}
 	return nil
@@ -496,7 +497,7 @@ func appendInteractionsFunctionCallToAntigravity(items *[][]byte, step gjson.Res
 	if args := step.Get("arguments"); args.Exists() {
 		part, _ = sjson.SetRawBytes(part, "functionCall.args", []byte(args.Raw))
 	}
-	*items = append(*items, antigravityContent("model", [][]byte{part}))
+	*items = append(*items, interactionscommon.Content("model", [][]byte{part}))
 }
 
 func appendInteractionsFunctionResultToAntigravity(items *[][]byte, step gjson.Result) {
@@ -510,7 +511,7 @@ func appendInteractionsFunctionResultToAntigravity(items *[][]byte, step gjson.R
 	if result := step.Get("result"); result.Exists() {
 		part, _ = sjson.SetRawBytes(part, "functionResponse.response", []byte(result.Raw))
 	}
-	*items = append(*items, antigravityContent("user", [][]byte{part}))
+	*items = append(*items, interactionscommon.Content("user", [][]byte{part}))
 }
 
 func copyInteractionsToolsToAntigravity(out []byte, root gjson.Result, functionNameMap map[string]string) []byte {
@@ -595,182 +596,9 @@ func antigravityFunctionDeclarationJSON(decl gjson.Result, functionNameMap map[s
 	return out
 }
 
-func interactionsNativeAntigravityPart(part gjson.Result) []byte {
-	switch {
-	case part.Get("text").Exists(), part.Get("functionCall").Exists(), part.Get("functionResponse").Exists():
-		return []byte(part.Raw)
-	case part.Get("inlineData").Exists():
-		return antigravityInlineDataPartJSON(part.Get("inlineData"))
-	case part.Get("fileData").Exists():
-		return antigravityFileDataPartJSON(part.Get("fileData"))
-	case part.Get("inline_data").Exists():
-		return antigravityInlineDataPartJSON(part.Get("inline_data"))
-	case part.Get("file_data").Exists():
-		return antigravityFileDataPartJSON(part.Get("file_data"))
-	}
-	return nil
-}
-
-func antigravityTextPartJSON(text string, thought bool) []byte {
-	partJSON := []byte(`{"text":""}`)
-	partJSON, _ = sjson.SetBytes(partJSON, "text", text)
-	if thought {
-		partJSON, _ = sjson.SetBytes(partJSON, "thought", true)
-	}
-	return partJSON
-}
-
-func antigravityInlineDataPartJSON(inline gjson.Result) []byte {
-	mimeType := inline.Get("mimeType").String()
-	if mimeType == "" {
-		mimeType = inline.Get("mime_type").String()
-	}
-	data := inline.Get("data").String()
-	if mimeType == "" || data == "" {
-		return nil
-	}
-	partJSON := []byte(`{"inlineData":{"mimeType":"","data":""}}`)
-	partJSON, _ = sjson.SetBytes(partJSON, "inlineData.mimeType", mimeType)
-	partJSON, _ = sjson.SetBytes(partJSON, "inlineData.data", data)
-	return partJSON
-}
-
-func antigravityFileDataPartJSON(fileData gjson.Result) []byte {
-	mimeType := fileData.Get("mimeType").String()
-	if mimeType == "" {
-		mimeType = fileData.Get("mime_type").String()
-	}
-	fileURI := fileData.Get("fileUri").String()
-	if fileURI == "" {
-		fileURI = fileData.Get("file_uri").String()
-	}
-	if mimeType == "" || fileURI == "" {
-		return nil
-	}
-	partJSON := []byte(`{"fileData":{"mimeType":"","fileUri":""}}`)
-	partJSON, _ = sjson.SetBytes(partJSON, "fileData.mimeType", mimeType)
-	partJSON, _ = sjson.SetBytes(partJSON, "fileData.fileUri", fileURI)
-	return partJSON
-}
-
-func antigravityInlineDataPartFromDataURL(dataURL string) []byte {
-	if !strings.HasPrefix(dataURL, "data:") {
-		return nil
-	}
-	payload := dataURL[5:]
-	pieces := strings.SplitN(payload, ";", 2)
-	if len(pieces) != 2 || !strings.HasPrefix(pieces[1], "base64,") {
-		return nil
-	}
-	return antigravityInlineDataPartJSON(gjson.Parse(fmt.Sprintf(`{"mime_type":%q,"data":%q}`, pieces[0], pieces[1][7:])))
-}
-
 func appendAntigravityTextContent(items *[][]byte, role, text string) {
-	part := antigravityTextPartJSON(text, false)
-	*items = append(*items, antigravityContent(antigravityContentRole(role, "user"), [][]byte{part}))
-}
-
-func antigravityContent(role string, parts [][]byte) []byte {
-	content := []byte(`{"role":"","parts":[]}`)
-	content, _ = sjson.SetBytes(content, "role", role)
-	content, _ = sjson.SetRawBytes(content, "parts", translatorcommon.JoinRawArray(parts))
-	return content
-}
-
-func antigravityContentRole(role, defaultRole string) string {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "model", "assistant":
-		return "model"
-	case "user":
-		return "user"
-	}
-	if defaultRole == "model" {
-		return "model"
-	}
-	return "user"
-}
-
-func antigravityInputAudioMimeType(format string) string {
-	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "wav":
-		return "audio/wav"
-	case "mp3":
-		return "audio/mpeg"
-	case "flac":
-		return "audio/flac"
-	case "opus":
-		return "audio/opus"
-	case "pcm16":
-		return "audio/pcm"
-	default:
-		return "audio/mpeg"
-	}
-}
-
-func antigravityThinkingSummariesIncludeThoughts(summary gjson.Result) (bool, bool) {
-	if summary.Type != gjson.String {
-		return false, false
-	}
-	switch strings.ToLower(strings.TrimSpace(summary.String())) {
-	case "auto":
-		return true, true
-	case "none":
-		return false, true
-	default:
-		return false, false
-	}
-}
-
-func convertSnakeCaseKeysToCamelCaseForAntigravity(raw []byte) []byte {
-	root := gjson.ParseBytes(raw)
-	if !root.Exists() {
-		return raw
-	}
-	out := []byte(`{}`)
-	out = copySnakeCaseValueToCamelCaseForAntigravity(out, "", root)
-	return out
-}
-
-func copySnakeCaseValueToCamelCaseForAntigravity(out []byte, path string, node gjson.Result) []byte {
-	if node.IsObject() {
-		node.ForEach(func(key, value gjson.Result) bool {
-			childPath := joinAntigravityJSONPath(path, toAntigravityCamelCase(key.String()))
-			out = copySnakeCaseValueToCamelCaseForAntigravity(out, childPath, value)
-			return true
-		})
-		return out
-	}
-	if node.IsArray() {
-		node.ForEach(func(_, value gjson.Result) bool {
-			out = copySnakeCaseValueToCamelCaseForAntigravity(out, path+".-1", value)
-			return true
-		})
-		return out
-	}
-	out, _ = sjson.SetRawBytes(out, path, []byte(node.Raw))
-	return out
-}
-
-func joinAntigravityJSONPath(path, key string) string {
-	if path == "" {
-		return key
-	}
-	return path + "." + key
-}
-
-func toAntigravityCamelCase(s string) string {
-	parts := strings.Split(s, "_")
-	if len(parts) == 0 {
-		return s
-	}
-	out := parts[0]
-	for _, part := range parts[1:] {
-		if part == "" {
-			continue
-		}
-		out += strings.ToUpper(part[:1]) + part[1:]
-	}
-	return out
+	part := interactionscommon.TextPartJSON(text, false)
+	*items = append(*items, interactionscommon.Content(interactionscommon.ContentRole(role, "user"), [][]byte{part}))
 }
 
 func attachDefaultAntigravitySafetySettings(out []byte) []byte {
