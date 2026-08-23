@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -517,9 +518,7 @@ func generateImageGenRequestID() string {
 }
 
 func generateSessionID() string {
-	randSourceMutex.Lock()
-	n := randSource.Int63n(9_000_000_000_000_000_000)
-	randSourceMutex.Unlock()
+	n := rand.Int64N(9_000_000_000_000_000_000)
 	return "-" + strconv.FormatInt(n, 10)
 }
 

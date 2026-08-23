@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -50,8 +49,6 @@ type antigravity429Decision struct {
 }
 
 var (
-	randSource                        = rand.New(rand.NewSource(time.Now().UnixNano()))
-	randSourceMutex                   sync.Mutex
 	antigravityCreditsFailureByAuth   sync.Map
 	antigravityShortCooldownByAuth    sync.Map
 	antigravityCreditsBalanceByAuth   sync.Map // auth.ID → antigravityCreditsBalance
