@@ -12,24 +12,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func normalizeHTTPServeError(err error) error {
+func normalizeServerError(err error, isHTTPServe bool) error {
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, net.ErrClosed) {
 		return nil
 	}
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
-}
-
-func normalizeListenerError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, net.ErrClosed) {
+	if isHTTPServe && errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err

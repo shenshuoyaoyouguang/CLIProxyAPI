@@ -46,7 +46,7 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 	callbackForwardersMu.Unlock()
 
 	if prev != nil {
-		stopForwarderInstance(port, prev)
+		stopForwarder(port, prev)
 	}
 
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
@@ -97,7 +97,7 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 	return forwarder, nil
 }
 
-func stopCallbackForwarderInstance(port int, forwarder *callbackForwarder) {
+func stopForwarder(port int, forwarder *callbackForwarder) {
 	if forwarder == nil {
 		return
 	}
@@ -107,11 +107,7 @@ func stopCallbackForwarderInstance(port int, forwarder *callbackForwarder) {
 	}
 	callbackForwardersMu.Unlock()
 
-	stopForwarderInstance(port, forwarder)
-}
-
-func stopForwarderInstance(port int, forwarder *callbackForwarder) {
-	if forwarder == nil || forwarder.server == nil {
+	if forwarder.server == nil {
 		return
 	}
 

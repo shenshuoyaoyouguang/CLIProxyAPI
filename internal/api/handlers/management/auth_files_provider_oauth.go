@@ -87,7 +87,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(anthropicCallbackPort, forwarder)
+			defer stopForwarder(anthropicCallbackPort, forwarder)
 		}
 
 		fmt.Println("Waiting for authentication callback...")
@@ -224,7 +224,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(codexCallbackPort, forwarder)
+			defer stopForwarder(codexCallbackPort, forwarder)
 		}
 
 		// Wait for callback file
@@ -345,7 +345,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(antigravity.CallbackPort, forwarder)
+			defer stopForwarder(antigravity.CallbackPort, forwarder)
 		}
 
 		resultMap, errWait := waitForOAuthCallbackFile(state, "antigravity", h.cfg.AuthDir, 5*time.Minute, "OAuth flow timed out")

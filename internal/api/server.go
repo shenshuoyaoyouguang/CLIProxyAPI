@@ -316,8 +316,8 @@ func (s *Server) Start() error {
 			_ = s.muxHTTPListener.Close()
 		}
 		errAccept := <-acceptErrCh
-		errServe = normalizeHTTPServeError(errServe)
-		errAccept = normalizeListenerError(errAccept)
+		errServe = normalizeServerError(errServe, true)
+		errAccept = normalizeServerError(errAccept, false)
 		if errServe != nil {
 			return fmt.Errorf("failed to start HTTP server: %v", errServe)
 		}
@@ -335,8 +335,8 @@ func (s *Server) Start() error {
 			}
 		}
 		errServe := <-httpErrCh
-		errServe = normalizeHTTPServeError(errServe)
-		errAccept = normalizeListenerError(errAccept)
+		errServe = normalizeServerError(errServe, true)
+		errAccept = normalizeServerError(errAccept, false)
 		if errAccept != nil {
 			return fmt.Errorf("failed to start HTTP server: %v", errAccept)
 		}
