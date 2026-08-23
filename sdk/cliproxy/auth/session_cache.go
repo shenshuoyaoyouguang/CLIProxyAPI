@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -143,7 +144,7 @@ func (c *SessionCache) removeAliasGroupLocked(entry sessionEntry) {
 	for _, alias := range entry.aliases {
 		current, ok := c.entries[alias]
 		if !ok || current.authID != entry.authID || !current.expiresAt.Equal(entry.expiresAt) ||
-			!equalSessionAliases(current.aliases, entry.aliases) {
+			!slices.Equal(current.aliases, entry.aliases) {
 			continue
 		}
 		delete(c.entries, alias)
@@ -187,18 +188,6 @@ func isLocalPromptCacheSessionAlias(alias string) bool {
 	}
 	_, sessionAndModel, ok := strings.Cut(alias, "::")
 	return ok && strings.HasPrefix(sessionAndModel, "pck:")
-}
-
-func equalSessionAliases(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
 }
 
 func mergeSessionAliases(existing []string, candidates ...string) []string {

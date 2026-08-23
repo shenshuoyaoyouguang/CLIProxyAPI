@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -461,7 +462,7 @@ func (a *executorAdapter) selectExecutorInputFormat(requested sdktranslator.Form
 	if len(a.inputFormats) == 0 {
 		return "", fmt.Errorf("plugin executor %s declares no input formats", a.Identifier())
 	}
-	if executorFormatContains(a.inputFormats, requested) {
+	if requested != "" && slices.Contains(a.inputFormats, requested) {
 		return requested, nil
 	}
 	for _, format := range a.inputFormats {
@@ -476,10 +477,10 @@ func (a *executorAdapter) selectExecutorOutputFormat(requested, inputFormat sdkt
 	if len(a.outputFormats) == 0 {
 		return "", fmt.Errorf("plugin executor %s declares no output formats", a.Identifier())
 	}
-	if executorFormatContains(a.outputFormats, requested) {
+	if requested != "" && slices.Contains(a.outputFormats, requested) {
 		return requested, nil
 	}
-	if executorFormatContains(a.outputFormats, inputFormat) && a.executorResponseTranslationAvailable(inputFormat, requested) {
+	if inputFormat != "" && slices.Contains(a.outputFormats, inputFormat) && a.executorResponseTranslationAvailable(inputFormat, requested) {
 		return inputFormat, nil
 	}
 	for _, format := range a.outputFormats {

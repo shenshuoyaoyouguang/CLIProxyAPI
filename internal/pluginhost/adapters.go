@@ -97,18 +97,6 @@ func normalizeExecutorFormatName(raw string) sdktranslator.Format {
 	}
 }
 
-func executorFormatContains(formats []sdktranslator.Format, target sdktranslator.Format) bool {
-	if target == "" {
-		return false
-	}
-	for _, format := range formats {
-		if format == target {
-			return true
-		}
-	}
-	return false
-}
-
 type AuthModelResult struct {
 	Provider string
 	Models   []*registry.ModelInfo

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -304,7 +305,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	}
 	if pinnedAuthID != "" {
 		providerKey := s.authProviders[pinnedAuthID]
-		if providerKey == "" || !containsProvider(normalized, providerKey) {
+		if providerKey == "" || !slices.Contains(normalized, providerKey) {
 			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
 		providerState := s.providers[providerKey]
@@ -525,16 +526,6 @@ func normalizeProviderKeys(providers []string) []string {
 		out = append(out, providerKey)
 	}
 	return out
-}
-
-// containsProvider reports whether provider is present in the normalized provider list.
-func containsProvider(providers []string, provider string) bool {
-	for _, candidate := range providers {
-		if candidate == provider {
-			return true
-		}
-	}
-	return false
 }
 
 // upsertAuthLocked updates one auth in-place while the scheduler mutex is held.

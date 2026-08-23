@@ -2,6 +2,7 @@ package auth
 
 import (
 	"container/list"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -177,7 +178,7 @@ func (c *homeSessionAliasCache) removeGroupLocked(entry homeSessionAliasEntry) {
 
 func sameHomeSessionAliasGroup(left, right homeSessionAliasEntry) bool {
 	return left.canonical == right.canonical && left.expiresAt.Equal(right.expiresAt) &&
-		equalSessionAliases(left.aliases, right.aliases)
+		slices.Equal(left.aliases, right.aliases)
 }
 
 func (c *homeSessionAliasCache) enforceLimitLocked(limit int) {

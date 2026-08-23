@@ -1,6 +1,7 @@
 package pluginstore
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -117,7 +118,7 @@ func ValidateResolvedAuthConfig(item ResolvedAuthConfig) error {
 		if strings.TrimSpace(item.HeaderName) == "" || strings.ContainsAny(item.HeaderName, "\r\n:") {
 			return fmt.Errorf("plugin store resolved auth header name is invalid")
 		}
-		if len(item.HeaderValue) == 0 || secretContainsCRLF(item.HeaderValue) {
+		if len(item.HeaderValue) == 0 || bytes.ContainsAny(item.HeaderValue, "\r\n") {
 			return fmt.Errorf("plugin store resolved auth header value is invalid")
 		}
 	default:
@@ -399,15 +400,6 @@ func resolvedAuthConfigured(item ResolvedAuthConfig) bool {
 	default:
 		return false
 	}
-}
-
-func secretContainsCRLF(secret Secret) bool {
-	for _, value := range secret {
-		if value == '\r' || value == '\n' {
-			return true
-		}
-	}
-	return false
 }
 
 func pluginStoreURLMatchesAuthRule(requestURL string, matchURL string) bool {

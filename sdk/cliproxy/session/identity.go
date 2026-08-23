@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 	"unicode"
@@ -504,9 +505,9 @@ func hashRoot(root canonicalRoot) string {
 }
 
 func metadataWithValue(metadata map[string]any, key string, value any) map[string]any {
-	cloned := make(map[string]any, len(metadata)+1)
-	for existingKey, existingValue := range metadata {
-		cloned[existingKey] = existingValue
+	cloned := maps.Clone(metadata)
+	if cloned == nil {
+		cloned = make(map[string]any, 1) // preserve pre-existing non-nil result for nil input
 	}
 	cloned[key] = value
 	return cloned

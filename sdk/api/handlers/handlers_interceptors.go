@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -268,7 +269,7 @@ func diffHeaders(base, next http.Header) http.Header {
 	out := make(http.Header)
 	for key, values := range next {
 		canonicalKey := http.CanonicalHeaderKey(key)
-		if stringSlicesEqual(baseValues[canonicalKey], values) {
+		if slices.Equal(baseValues[canonicalKey], values) {
 			continue
 		}
 		out[canonicalKey] = append([]string(nil), values...)
@@ -277,18 +278,6 @@ func diffHeaders(base, next http.Header) http.Header {
 		return nil
 	}
 	return out
-}
-
-func stringSlicesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func (h *BaseAPIHandler) interceptorHost() PluginInterceptorHost {

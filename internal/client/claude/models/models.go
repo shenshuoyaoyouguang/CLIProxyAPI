@@ -2,6 +2,7 @@
 package models
 
 import (
+	"maps"
 	"sort"
 	"strings"
 )
@@ -76,9 +77,9 @@ func ResolveClaudeModelIDPrefix(id string) string {
 }
 
 func cloneModel(model map[string]any) map[string]any {
-	cloned := make(map[string]any, len(model))
-	for key, value := range model {
-		cloned[key] = value
+	cloned := maps.Clone(model)
+	if cloned == nil {
+		cloned = make(map[string]any) // preserve pre-existing empty-non-nil result for nil input
 	}
 	return cloned
 }
