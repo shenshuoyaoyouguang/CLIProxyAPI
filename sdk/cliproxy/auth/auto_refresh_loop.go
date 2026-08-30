@@ -1,8 +1,8 @@
 package auth
 
 import (
-	"container/heap"
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -15,9 +15,9 @@ type authAutoRefreshLoop struct {
 	interval    time.Duration
 	concurrency int
 
-	mu    sync.Mutex
-	queue refreshMinHeap
-	index map[string]*refreshHeapItem
+	mu sync.Mutex
+	// index maps auth ID to the next time the auth should be considered for refresh.
+	index map[string]time.Time
 	dirty map[string]struct{}
 
 	wakeCh chan struct{}
@@ -39,7 +39,7 @@ func newAuthAutoRefreshLoop(manager *Manager, interval time.Duration, concurrenc
 		manager:     manager,
 		interval:    interval,
 		concurrency: concurrency,
-		index:       make(map[string]*refreshHeapItem),
+		index:       make(map[string]time.Time),
 		dirty:       make(map[string]struct{}),
 		wakeCh:      make(chan struct{}, 1),
 		jobs:        make(chan string, jobBuffer),
@@ -91,12 +91,7 @@ func (l *authAutoRefreshLoop) worker(ctx context.Context) {
 }
 
 func (l *authAutoRefreshLoop) rebuild(now time.Time) {
-	type entry struct {
-		id   string
-		next time.Time
-	}
-
-	entries := make([]entry, 0)
+	index := make(map[string]time.Time)
 
 	l.manager.mu.RLock()
 	for id, auth := range l.manager.auths {
@@ -104,18 +99,12 @@ func (l *authAutoRefreshLoop) rebuild(now time.Time) {
 		if !ok {
 			continue
 		}
-		entries = append(entries, entry{id: id, next: next})
+		index[id] = next
 	}
 	l.manager.mu.RUnlock()
 
 	l.mu.Lock()
-	l.queue = l.queue[:0]
-	l.index = make(map[string]*refreshHeapItem, len(entries))
-	for _, e := range entries {
-		item := &refreshHeapItem{id: e.id, next: e.next}
-		heap.Push(&l.queue, item)
-		l.index[e.id] = item
-	}
+	l.index = index
 	l.mu.Unlock()
 }
 
@@ -176,13 +165,19 @@ func (l *authAutoRefreshLoop) resetTimer(timer *time.Timer, timerCh *<-chan time
 	*timerCh = timer.C
 }
 
+// peek returns the earliest scheduled refresh time, if any.
 func (l *authAutoRefreshLoop) peek() (time.Time, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if len(l.queue) == 0 {
-		return time.Time{}, false
+	var next time.Time
+	var found bool
+	for _, at := range l.index {
+		if !found || at.Before(next) {
+			next = at
+			found = true
+		}
 	}
-	return l.queue[0].next, true
+	return next, found
 }
 
 func (l *authAutoRefreshLoop) handleDue(ctx context.Context, now time.Time) {
@@ -198,24 +193,30 @@ func (l *authAutoRefreshLoop) handleDue(ctx context.Context, now time.Time) {
 	}
 }
 
+// popDue removes and returns every auth whose scheduled time has arrived,
+// ordered most-overdue first.
 func (l *authAutoRefreshLoop) popDue(now time.Time) []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	var due []string
-	for len(l.queue) > 0 {
-		item := l.queue[0]
-		if item == nil || item.next.After(now) {
-			break
-		}
-		popped := heap.Pop(&l.queue).(*refreshHeapItem)
-		if popped == nil {
-			continue
-		}
-		delete(l.index, popped.id)
-		due = append(due, popped.id)
+	type dueEntry struct {
+		id   string
+		next time.Time
 	}
-	return due
+	var due []dueEntry
+	for id, at := range l.index {
+		if !at.After(now) {
+			due = append(due, dueEntry{id: id, next: at})
+			delete(l.index, id)
+		}
+	}
+	slices.SortFunc(due, func(a, b dueEntry) int { return a.next.Compare(b.next) })
+
+	out := make([]string, 0, len(due))
+	for _, e := range due {
+		out = append(out, e.id)
+	}
+	return out
 }
 
 func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, authID string) {
@@ -311,14 +312,7 @@ func (l *authAutoRefreshLoop) upsert(authID string, next time.Time) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if item, ok := l.index[authID]; ok && item != nil {
-		item.next = next
-		heap.Fix(&l.queue, item.index)
-		return
-	}
-	item := &refreshHeapItem{id: authID, next: next}
-	heap.Push(&l.queue, item)
-	l.index[authID] = item
+	l.index[authID] = next
 }
 
 func (l *authAutoRefreshLoop) remove(authID string) {
@@ -327,11 +321,6 @@ func (l *authAutoRefreshLoop) remove(authID string) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	item, ok := l.index[authID]
-	if !ok || item == nil {
-		return
-	}
-	heap.Remove(&l.queue, item.index)
 	delete(l.index, authID)
 }
 
@@ -411,45 +400,4 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 		return dueAt, true
 	}
 	return now, true
-}
-
-type refreshHeapItem struct {
-	id    string
-	next  time.Time
-	index int
-}
-
-type refreshMinHeap []*refreshHeapItem
-
-func (h refreshMinHeap) Len() int { return len(h) }
-
-func (h refreshMinHeap) Less(i, j int) bool {
-	return h[i].next.Before(h[j].next)
-}
-
-func (h refreshMinHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].index = i
-	h[j].index = j
-}
-
-func (h *refreshMinHeap) Push(x any) {
-	item, ok := x.(*refreshHeapItem)
-	if !ok || item == nil {
-		return
-	}
-	item.index = len(*h)
-	*h = append(*h, item)
-}
-
-func (h *refreshMinHeap) Pop() any {
-	old := *h
-	n := len(old)
-	if n == 0 {
-		return (*refreshHeapItem)(nil)
-	}
-	item := old[n-1]
-	item.index = -1
-	*h = old[:n-1]
-	return item
 }

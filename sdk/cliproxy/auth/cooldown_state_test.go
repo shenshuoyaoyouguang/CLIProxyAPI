@@ -34,6 +34,12 @@ func (s *recordingCooldownStateStore) Save(_ context.Context, records []Cooldown
 	return nil
 }
 
+func (s *recordingCooldownStateStore) savedRecords() []CooldownStateRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneCooldownStateRecords(s.records)
+}
+
 func cloneCooldownStateRecords(records []CooldownStateRecord) []CooldownStateRecord {
 	if len(records) == 0 {
 		return nil
@@ -46,74 +52,17 @@ func cloneCooldownStateRecords(records []CooldownStateRecord) []CooldownStateRec
 	return cloned
 }
 
-func TestFileCooldownStateStore_StateRelativePath(t *testing.T) {
-	authDir := filepath.Join(t.TempDir(), "auths")
-	store := NewFileCooldownStateStoreWithAuthDir(authDir, authDir)
-
-	cases := []struct {
-		name   string
-		record CooldownStateRecord
-		want   string
-	}{
-		{
-			name: "absolute auth file under auth dir",
-			record: CooldownStateRecord{
-				AuthID:   "auth-1",
-				AuthFile: filepath.Join(authDir, "nested", "xai.json"),
-			},
-			want: filepath.Join("nested", "xai.cds"),
-		},
-		{
-			name: "relative auth file",
-			record: CooldownStateRecord{
-				AuthID:   "auth-2",
-				AuthFile: filepath.Join("team", "xai.json"),
-			},
-			want: filepath.Join("team", "xai.cds"),
-		},
-		{
-			name: "absolute auth file outside auth dir",
-			record: CooldownStateRecord{
-				AuthID:   "auth-3",
-				AuthFile: filepath.Join(t.TempDir(), "outside.json"),
-			},
-			want: "outside.cds",
-		},
-		{
-			name: "relative parent escape is rejected",
-			record: CooldownStateRecord{
-				AuthID:   "auth-4",
-				AuthFile: filepath.Join("..", "escape.json"),
-			},
-			want: "",
-		},
-		{
-			name: "auth id fallback",
-			record: CooldownStateRecord{
-				AuthID: "auth/id 5",
-			},
-			want: "auth_id_5.cds",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := store.stateRelativePath(tc.record); got != tc.want {
-				t.Fatalf("stateRelativePath() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestFileCooldownStateStore_SaveLoadAndCleanStale(t *testing.T) {
 	authDir := t.TempDir()
 	store := NewFileCooldownStateStoreWithAuthDir(authDir, authDir)
 	ctx := context.Background()
 
+	// A per-auth .cds file from the previous layout must be dropped on save.
 	stalePath := filepath.Join(authDir, "stale.cds")
 	if errWrite := os.WriteFile(stalePath, []byte("{}\n"), 0o600); errWrite != nil {
 		t.Fatalf("write stale file: %v", errWrite)
 	}
+	sharedPath := filepath.Join(authDir, "cooldown-state.cds")
 
 	nextRetry := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	updatedAt := time.Now().UTC().Truncate(time.Second)
@@ -138,8 +87,8 @@ func TestFileCooldownStateStore_SaveLoadAndCleanStale(t *testing.T) {
 	if errSave := store.Save(ctx, []CooldownStateRecord{record}); errSave != nil {
 		t.Fatalf("Save() returned error: %v", errSave)
 	}
-	if _, errStat := os.Stat(filepath.Join(authDir, "xai.cds")); errStat != nil {
-		t.Fatalf("expected xai.cds to exist: %v", errStat)
+	if _, errStat := os.Stat(sharedPath); errStat != nil {
+		t.Fatalf("expected cooldown-state.cds to exist: %v", errStat)
 	}
 	if _, errStat := os.Stat(stalePath); !errors.Is(errStat, os.ErrNotExist) {
 		t.Fatalf("expected stale.cds to be removed, stat error = %v", errStat)
@@ -162,8 +111,8 @@ func TestFileCooldownStateStore_SaveLoadAndCleanStale(t *testing.T) {
 	if errSave := store.Save(ctx, nil); errSave != nil {
 		t.Fatalf("Save(nil) returned error: %v", errSave)
 	}
-	if _, errStat := os.Stat(filepath.Join(authDir, "xai.cds")); !errors.Is(errStat, os.ErrNotExist) {
-		t.Fatalf("expected xai.cds to be removed, stat error = %v", errStat)
+	if _, errStat := os.Stat(sharedPath); !errors.Is(errStat, os.ErrNotExist) {
+		t.Fatalf("expected cooldown-state.cds to be removed, stat error = %v", errStat)
 	}
 }
 

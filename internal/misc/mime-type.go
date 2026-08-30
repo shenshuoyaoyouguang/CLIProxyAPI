@@ -22,4 +22,15 @@ var MimeTypes = map[string]string{
 	"mp4":  "video/mp4",
 	"txt":  "text/plain",
 	"json": "application/json",
+	// Long-tail extensions that system MIME tables resolve inconsistently
+	// (e.g. mime.TypeByExtension(".md") is empty on Windows) but that
+	// providers commonly accept.
+	"md":   "text/markdown",
+	"csv":  "text/csv",
+	"mov":  "video/quicktime",
+	"heic": "image/heic",
+	"heif": "image/heif",
+	"ts":   "video/mp2t",
+	"aac":  "audio/aac",
+	"flac": "audio/flac",
 }

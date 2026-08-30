@@ -27,6 +27,16 @@ const (
 	xaiToolSearchType          = "tool_search"
 	xaiWebSearchToolType       = "web_search"
 	xaiXSearchToolType         = "x_search"
+	xaiMaxTools                = 200
+	// xaiDispatcherParamTruncateLimit caps the inlined child-tool parameter
+	// schema text that a folded namespace dispatcher embeds in its description,
+	// so one oversized MCP tool schema cannot blow up the model prompt.
+	xaiDispatcherParamTruncateLimit  = 6000
+	xaiDispatcherParamTruncateSuffix = "… (truncated)"
+	// xaiDispatcherDescriptionTruncateLimit caps the full dispatcher description
+	// so a namespace with many child tools cannot inflate the prompt even when
+	// each child tool's schema individually fits under the per-tool cap.
+	xaiDispatcherDescriptionTruncateLimit = 32000
 	// Codex Desktop injects codex_app.automation_update with a large oneOf+$ref
 	// schema. xAI's free/build Responses path accepts the HTTP request but never
 	// emits SSE when that schema is present, so Desktop hangs on "thinking".
@@ -52,7 +62,7 @@ const (
 	xaiClientIdentifierValue      = "grok-shell"
 	xaiAuthenticateResponseHeader = "x-authenticateresponse"
 	xaiAuthenticateResponseValue  = "authenticate-response"
-	// xaiUsingAPIAttr enables the official API path for non-media HTTP chat.
+	// xaiUsingAPIAttr enables the official API path for HTTP chat and media.
 	xaiUsingAPIAttr = "using_api"
 )
 

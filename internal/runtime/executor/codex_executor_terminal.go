@@ -6,10 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 )
 
 const codexIncompleteStreamMessage = "stream error: stream disconnected before completion: stream closed before response.completed"
@@ -392,6 +391,11 @@ func isCodexHandshakeMetadataEvent(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+// observeCodexTokenEvent inspects a stream payload and marks TTFT on the first substantive token event.
+func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
+	helps.ObserveResponsesTokenEvent(reporter, payload)
 }
 
 // newCodexBootstrapOverloadErr reports a buffered overload rejection with its real status.
