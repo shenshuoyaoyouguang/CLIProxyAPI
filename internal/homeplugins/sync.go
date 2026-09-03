@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -21,12 +22,33 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// purgeMalformedArtifacts removes plugin-extension files whose names fail the
-// canonical discovery validators (legacy hand-dropped artifacts such as
+// malformedPurgeThreshold is the number of consecutive syncs a malformed
+// artifact must be observed before purge removes it. Earlier sightings are
+// only logged, giving operators a grace window before any deletion. The count
+// is in-process only, so a process restart resets it and postpones deletion
+// again — the safe direction: a wrong deletion is permanent, a postponed one
+// is merely noisy.
+const malformedPurgeThreshold = 3
+
+// malformedQuarantineSuffix is appended to malformed artifacts instead of
+// deleting them. Renaming keeps a recoverable copy for operators and, because
+// the suffixed name no longer ends in a plugin extension, is automatically
+// invisible to both discovery scanning and the next purge pass.
+const malformedQuarantineSuffix = ".quarantined"
+
+// malformedSeen tracks consecutive sync sightings of malformed artifact paths.
+// Paths absent from the latest scan are forgotten so the state tracks the disk.
+var malformedSeen sync.Map // path -> int (consecutive sightings)
+
+// purgeMalformedArtifacts quarantines plugin-extension files whose names fail
+// the canonical discovery validators (legacy hand-dropped artifacts such as
 // "_old.so"). Such files are invisible to pluginhost loading and can no longer
-// be managed through the API, so sync deletes them instead of letting them
-// accumulate. It must run only after the valid-file scan is complete; removal
-// failures are logged and never fail the sync.
+// be managed through the API, so sync moves them aside instead of letting them
+// accumulate. To avoid silently removing user files that merely look like
+// plugins, a file is only quarantined once it has been observed in
+// malformedPurgeThreshold consecutive syncs; earlier sightings are logged.
+// It must run only after the valid-file scan is complete; quarantine failures
+// are logged and never fail the sync.
 func purgeMalformedArtifacts(root string) {
 	platform := CurrentPlatform()
 	extension := discovery.Extension(platform.GOOS)
@@ -40,6 +62,7 @@ func purgeMalformedArtifacts(root string) {
 	for _, file := range valid {
 		validPaths[file.Path] = struct{}{}
 	}
+	seenThisRun := make(map[string]struct{})
 	for _, dir := range discovery.Dirs(root, platform.GOOS, platform.GOARCH) {
 		entries, errReadDir := os.ReadDir(dir)
 		if errReadDir != nil {
@@ -57,20 +80,66 @@ func purgeMalformedArtifacts(root string) {
 			if _, ok := validPaths[path]; ok {
 				continue
 			}
+			seenThisRun[path] = struct{}{}
 			reason := invalidArtifactReason(name, extension)
-			if errRemove := os.Remove(path); errRemove != nil {
-				log.Warnf("home plugins: remove malformed plugin artifact %s (%s): %v", path, reason, errRemove)
+			sightings := 1
+			if seen, okSeen := malformedSeen.Load(path); okSeen {
+				if count, okCount := seen.(int); okCount {
+					sightings = count + 1
+				}
+			}
+			malformedSeen.Store(path, sightings)
+			if sightings < malformedPurgeThreshold {
+				log.Warnf("home plugins: malformed plugin artifact %s (%s) seen %d/%d syncs; will remove after %d consecutive syncs",
+					path, reason, sightings, malformedPurgeThreshold, malformedPurgeThreshold)
 				continue
 			}
-			log.Warnf("home plugins: removed malformed plugin artifact %s (%s)", path, reason)
+			quarantinedPath, errQuarantine := quarantinePath(path)
+			if errQuarantine != nil {
+				log.Warnf("home plugins: quarantine malformed plugin artifact %s (%s): %v", path, reason, errQuarantine)
+				continue
+			}
+			if errRename := os.Rename(path, quarantinedPath); errRename != nil {
+				log.Warnf("home plugins: quarantine malformed plugin artifact %s (%s): %v", path, reason, errRename)
+				continue
+			}
+			malformedSeen.Delete(path)
+			log.Warnf("home plugins: quarantined malformed plugin artifact %s (%s) -> %s", path, reason, quarantinedPath)
 		}
 	}
+	// Forget paths that no longer exist so their sighting counts never go stale.
+	malformedSeen.Range(func(path any, _ any) bool {
+		if _, ok := seenThisRun[path.(string)]; !ok {
+			malformedSeen.Delete(path)
+		}
+		return true
+	})
+}
+
+// quarantinePath returns the destination for quarantining a malformed artifact.
+// It stays in the same directory (so the rename never crosses filesystems) and
+// appends a numeric suffix when the plain .quarantined name is already taken.
+func quarantinePath(path string) (string, error) {
+	candidate := path + malformedQuarantineSuffix
+	for i := 1; i < 1000; i++ {
+		if _, errStat := os.Stat(candidate); errStat != nil {
+			if errors.Is(errStat, os.ErrNotExist) {
+				return candidate, nil
+			}
+			return "", errStat
+		}
+		candidate = fmt.Sprintf("%s%s.%d", path, malformedQuarantineSuffix, i)
+	}
+	return "", fmt.Errorf("no free quarantine name for %s", path)
 }
 
 // invalidArtifactReason classifies why a filename failed discovery parsing,
 // mirroring FromPath's two failure modes without re-implementing its split.
+// The name is lowercased before splitting so mixed-case filenames (e.g.
+// Foo.DLL) yield the same stem the parser computes.
 func invalidArtifactReason(baseName string, extension string) string {
-	stem := baseName[:len(baseName)-len(extension)]
+	lowerName := strings.ToLower(baseName)
+	stem := lowerName[:len(lowerName)-len(extension)]
 	if index := strings.LastIndex(stem, "-v"); index > 0 && discovery.ValidID(stem[:index]) {
 		return "invalid version suffix"
 	}

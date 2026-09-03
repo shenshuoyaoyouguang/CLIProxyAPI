@@ -40,7 +40,19 @@ func TestPurgeMalformedArtifactsRemovesInvalidKeepsValid(t *testing.T) {
 		writePluginArtifact(t, filepath.Join(dir, validName), "valid")
 	}
 
+	// A single sync only warns; the files must survive the grace window.
 	purgeMalformedArtifacts(root)
+	for _, dir := range discoveryDirsForTest(root) {
+		for _, name := range malformedNames {
+			if _, errStat := os.Stat(filepath.Join(dir, name)); errStat != nil {
+				t.Errorf("malformed artifact %s removed before purge threshold", filepath.Join(dir, name))
+			}
+		}
+	}
+
+	for i := 1; i < malformedPurgeThreshold; i++ {
+		purgeMalformedArtifacts(root)
+	}
 
 	for _, dir := range discoveryDirsForTest(root) {
 		for _, name := range malformedNames {
@@ -53,7 +65,7 @@ func TestPurgeMalformedArtifactsRemovesInvalidKeepsValid(t *testing.T) {
 		}
 	}
 
-	// Idempotent: second run finds nothing to purge and does not fail.
+	// Idempotent: further runs find nothing to purge and do not fail.
 	purgeMalformedArtifacts(root)
 }
 
@@ -64,6 +76,8 @@ func TestPurgeMalformedArtifactReasons(t *testing.T) {
 		".hidden" + extension:     "invalid plugin id",
 		"sample-v1~2" + extension: "invalid version suffix",
 		"ok-v" + extension:        "invalid version suffix",
+		// Mixed-case names must produce the same reasons as lowercase ones.
+		"Foo.DLL": "invalid plugin id",
 	}
 	for name, want := range cases {
 		if got := invalidArtifactReason(name, extension); got != want {
@@ -82,15 +96,19 @@ func TestSyncPlatformPurgesMalformedArtifacts(t *testing.T) {
 		Home:    config.HomeConfig{Enabled: true},
 		Plugins: config.PluginsConfig{Enabled: true, Dir: root},
 	}
-	report, errSync := SyncPlatformWithReport(t.Context(), cfg, &fakePluginRuntime{}, CurrentPlatform())
-	if errSync != nil {
-		t.Fatalf("SyncPlatformWithReport() error = %v", errSync)
-	}
-	if !report.OK {
-		t.Fatalf("SyncPlatformWithReport() not OK: %s", report.Error)
+	// The artifact must survive the grace window: only consecutive syncs
+	// reaching the threshold remove it.
+	for i := 0; i < malformedPurgeThreshold; i++ {
+		report, errSync := SyncPlatformWithReport(t.Context(), cfg, &fakePluginRuntime{}, CurrentPlatform())
+		if errSync != nil {
+			t.Fatalf("SyncPlatformWithReport() error = %v", errSync)
+		}
+		if !report.OK {
+			t.Fatalf("SyncPlatformWithReport() not OK: %s", report.Error)
+		}
 	}
 	if _, errStat := os.Stat(stale); !os.IsNotExist(errStat) {
-		t.Errorf("stale artifact %s still present after sync", stale)
+		t.Errorf("stale artifact %s still present after %d syncs", stale, malformedPurgeThreshold)
 	}
 }
 

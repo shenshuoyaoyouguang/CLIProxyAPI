@@ -234,7 +234,9 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 	}
 	next, shouldSchedule := nextRefreshCheckAt(now, auth, l.interval)
 	shouldRefresh := manager.shouldRefresh(auth, now)
-	exec := manager.executors[auth.Provider]
+	// Use the same effective provider key as request execution so OpenAI-compat
+	// auths registered under namespaced keys still resolve for background refresh.
+	exec := manager.executors[executorKeyFromAuth(auth)]
 	manager.mu.RUnlock()
 
 	if !shouldSchedule {

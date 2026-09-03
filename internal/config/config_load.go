@@ -53,6 +53,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
 		if optional {
+			log.WithError(errValidate).Warn("config file exists but credential weight validation failed; using default config in optional/standby mode")
 			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 			cfgOptional.NormalizePluginsConfig()
 			return cfgOptional, nil

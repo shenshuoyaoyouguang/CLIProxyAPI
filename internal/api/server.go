@@ -129,6 +129,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
+	// Trust no proxies: the proxy must not sit behind an untrusted reverse
+	// proxy chain, so ClientIP() should always fall back to the TCP peer
+	// address. This prevents X-Forwarded-For spoofing from bypassing
+	// local-client checks (e.g. management API gating and IP ban accounting).
+	if err := engine.SetTrustedProxies(nil); err != nil {
+		log.Errorf("server: disable trusted proxies failed: %v", err)
+	}
 
 	// Add middleware
 	engine.Use(logging.GinLogrusLogger())

@@ -45,12 +45,12 @@ func ClaudeCodeExecutionScope(ctx context.Context, payload []byte, headers http.
 }
 
 func claudeCodeHeader(ctx context.Context, headers http.Header, name string) string {
-	if value := HeaderValueCaseInsensitive(headers, name); value != "" {
+	if value := strings.TrimSpace(HeaderValueCaseInsensitive(headers, name)); value != "" {
 		return value
 	}
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
-			return HeaderValueCaseInsensitive(ginCtx.Request.Header, name)
+			return strings.TrimSpace(HeaderValueCaseInsensitive(ginCtx.Request.Header, name))
 		}
 	}
 	return ""

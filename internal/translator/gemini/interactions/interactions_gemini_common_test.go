@@ -3,6 +3,7 @@ package interactions
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -669,6 +670,87 @@ func TestConvertGeminiRequestToInteractionsGenerationConfig(t *testing.T) {
 	}
 	if got := gjson.GetBytes(out, "generation_config.thinking_config.thinking_budget").Int(); got != 1024 {
 		t.Fatalf("thinking_budget = %d, want 1024", got)
+	}
+}
+
+func TestConvertInteractionsRequestToGeminiCleansToolParameters(t *testing.T) {
+	input := `{
+		"model":"gemini-3.5-flash",
+		"input":"hi",
+		"tools":[{
+			"name":"lookup",
+			"description":"Find data",
+			"parameters":{
+				"$schema":"http://json-schema.org/draft-07/schema#",
+				"type":"object",
+				"additionalProperties":true,
+				"properties":{
+					"q":{"anyOf":[{"type":"string"},{"type":"null"}]}
+				},
+				"required":["q"]
+			}
+		}]
+	}`
+	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(input), false)
+	params := gjson.GetBytes(out, "tools.0.functionDeclarations.0.parameters")
+	if !params.Exists() {
+		t.Fatalf("tools.0.functionDeclarations.0.parameters missing. Output: %s", string(out))
+	}
+	if strings.Contains(params.Raw, "$schema") {
+		t.Errorf("parameters still contains $schema: %s", params.Raw)
+	}
+	if strings.Contains(params.Raw, "additionalProperties") {
+		t.Errorf("parameters still contains additionalProperties: %s", params.Raw)
+	}
+	if strings.Contains(params.Raw, "anyOf") {
+		t.Errorf("parameters still contains union anyOf: %s", params.Raw)
+	}
+	if got := gjson.GetBytes(out, "tools.0.functionDeclarations.0.name").String(); got != "lookup" {
+		t.Fatalf("tool name = %q, want lookup", got)
+	}
+}
+
+func TestConvertInteractionsRequestToGeminiCleansFunctionDeclarationParameters(t *testing.T) {
+	input := `{
+		"model":"gemini-3.5-flash",
+		"input":"hi",
+		"tools":[{
+			"function_declarations":[{
+				"name":"lookup",
+				"description":"Find data",
+				"parameters":{
+					"$schema":"http://json-schema.org/draft-07/schema#",
+					"type":"object",
+					"additionalProperties":false,
+					"properties":{
+						"q":{"type":"string"}
+					},
+					"required":["q"]
+				}
+			},{
+				"name":"no_params"
+			}]
+		}]
+	}`
+	out := ConvertInteractionsRequestToGemini("gemini-3.5-flash", []byte(input), false)
+	params := gjson.GetBytes(out, "tools.0.functionDeclarations.0.parameters")
+	if !params.Exists() {
+		t.Fatalf("tools.0.functionDeclarations.0.parameters missing. Output: %s", string(out))
+	}
+	if strings.Contains(params.Raw, "$schema") {
+		t.Errorf("parameters still contains $schema: %s", params.Raw)
+	}
+	if strings.Contains(params.Raw, "additionalProperties") {
+		t.Errorf("parameters still contains additionalProperties: %s", params.Raw)
+	}
+	if got := gjson.GetBytes(out, "tools.0.functionDeclarations.0.name").String(); got != "lookup" {
+		t.Fatalf("tool name = %q, want lookup", got)
+	}
+	if got := gjson.GetBytes(out, "tools.0.functionDeclarations.1.name").String(); got != "no_params" {
+		t.Fatalf("second tool name = %q, want no_params", got)
+	}
+	if gjson.GetBytes(out, "tools.0.functionDeclarations.1.parameters").Exists() {
+		t.Fatalf("second declaration should not have parameters. Output: %s", string(out))
 	}
 }
 

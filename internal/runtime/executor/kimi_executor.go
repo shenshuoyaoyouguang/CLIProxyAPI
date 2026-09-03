@@ -328,7 +328,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			}
 		}()
 		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 1_048_576) // 1MB
+		scanner.Buffer(nil, 52_428_800) // 50MB, aligned with other executors
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var param any
 		var streamUsage helps.StreamUsageBuffer
@@ -346,20 +346,24 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				}
 			}
 		}
-		doneChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param, claudeInputTokens)
-		for i := range doneChunks {
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Payload: doneChunks[i]}:
-			case <-ctx.Done():
-				return
-			}
-		}
+		// Report a truncated stream as an error before emitting the terminal
+		// [DONE] block, so clients never see a clean termination followed by an
+		// error (e.g. a scanner line exceeding the buffer limit).
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
+			}
+			return
+		}
+		doneChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param, claudeInputTokens)
+		for i := range doneChunks {
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: doneChunks[i]}:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()

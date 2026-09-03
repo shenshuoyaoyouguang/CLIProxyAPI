@@ -63,6 +63,21 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		}
 	}
 
+	// The TCP listener is bound once at startup and is never rebuilt on hot
+	// reload. If the configured listen address changes, keep the in-memory
+	// address in sync for diagnostics while making the staleness explicit
+	// instead of silently serving on the old port forever. In Home mode the
+	// remote port cannot reach this path anyway (service_home.go pins
+	// merged.Port to the local value), so this guard is for local config
+	// reloads and management API edits.
+	if oldCfg != nil && s.server != nil && (oldCfg.Host != cfg.Host || oldCfg.Port != cfg.Port) {
+		oldAddr := s.server.Addr
+		newAddr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+		s.server.Addr = newAddr
+		log.Warnf("listen address changed from %s to %s: the TCP listener is bound at startup and is not rebuilt on hot reload; restart the process to listen on the new address (still serving on %s)",
+			oldAddr, newAddr, oldAddr)
+	}
+
 	if oldCfg == nil || oldCfg.LoggingToFile != cfg.LoggingToFile || oldCfg.LogsMaxTotalSizeMB != cfg.LogsMaxTotalSizeMB {
 		if err := logging.ConfigureLogOutput(cfg); err != nil {
 			log.Errorf("failed to reconfigure log output: %v", err)

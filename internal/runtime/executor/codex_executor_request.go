@@ -198,7 +198,7 @@ func applyCodexIdentityConfuseHeaders(headers http.Header, state *codexIdentityC
 	}
 
 	setCodexSessionHeaderCasePreserved(headers, "Session-Id", state.promptCacheKey)
-	if helps.HeaderValueCaseInsensitive(headers, "Conversation_id") != "" {
+	if strings.TrimSpace(helps.HeaderValueCaseInsensitive(headers, "Conversation_id")) != "" {
 		setHeaderCasePreserved(headers, "Conversation_id", state.promptCacheKey)
 	}
 	headers.Set("X-Client-Request-Id", state.promptCacheKey)

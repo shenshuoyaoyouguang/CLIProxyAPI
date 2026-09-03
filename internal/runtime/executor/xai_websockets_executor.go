@@ -769,7 +769,9 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					continue
 				}
 				eventType := gjson.GetBytes(payload, "type").String()
-				isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "error"
+				// Mirror the codex websocket terminal set so streams end on
+				// incomplete/failed instead of hanging until the idle timeout.
+				isTerminalEvent := eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" || eventType == "response.failed" || eventType == "error"
 				warmupCompletedPayload := []byte(nil)
 				switch eventType {
 				case "response.created":
@@ -856,7 +858,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					}
 					return
 				}
-				if eventType == "response.completed" || eventType == "response.done" {
+				if isTerminalEvent {
 					return
 				}
 			}
