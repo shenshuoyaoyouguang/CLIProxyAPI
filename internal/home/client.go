@@ -200,12 +200,13 @@ type Client struct {
 	// lets a Home upgrade take effect on the next reconnect instead of
 	// requiring a CPA restart. The probe costs one round trip that returns an
 	// error without performing any write.
-	casUnsupported    atomic.Bool
-	recoveryState     atomic.Uint32
-	instanceID        string
-	legacyMembership  bool
-	clusterNodes      []clusterNode
-	reconnectFailures int
+	casUnsupported       atomic.Bool
+	testOperationTimeout time.Duration
+	recoveryState        atomic.Uint32
+	instanceID           string
+	legacyMembership     bool
+	clusterNodes         []clusterNode
+	reconnectFailures    int
 }
 
 func New(homeCfg config.HomeConfig) *Client {
@@ -225,13 +226,14 @@ func (c *Client) NewLifetime() *Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	next := &Client{
-		homeCfg:           c.homeCfg,
-		seedHost:          c.seedHost,
-		seedPort:          c.seedPort,
-		clusterNodes:      append([]clusterNode(nil), c.clusterNodes...),
-		reconnectFailures: c.reconnectFailures,
-		instanceID:        c.instanceID,
-		legacyMembership:  c.legacyMembership,
+		homeCfg:              c.homeCfg,
+		seedHost:             c.seedHost,
+		seedPort:             c.seedPort,
+		clusterNodes:         append([]clusterNode(nil), c.clusterNodes...),
+		reconnectFailures:    c.reconnectFailures,
+		testOperationTimeout: c.testOperationTimeout,
+		instanceID:           c.instanceID,
+		legacyMembership:     c.legacyMembership,
 	}
 	next.recoveryState.Store(c.recoveryState.Load())
 	return next
@@ -517,12 +519,30 @@ func (c *Client) redisOptionsLocked(addr string) (*redis.Options, error) {
 	if errTLS != nil {
 		return nil, errTLS
 	}
+	dialTimeout := homeRedisOperationTimeout
+	readTimeout := homeRedisOperationTimeout
+	writeTimeout := homeRedisOperationTimeout
+	if c.testOperationTimeout > 0 {
+		dialTimeout = c.testOperationTimeout
+		readTimeout = c.testOperationTimeout
+		writeTimeout = c.testOperationTimeout
+	} else if c.cmdOptions != nil {
+		if c.cmdOptions.DialTimeout > 0 {
+			dialTimeout = c.cmdOptions.DialTimeout
+		}
+		if c.cmdOptions.ReadTimeout > 0 {
+			readTimeout = c.cmdOptions.ReadTimeout
+		}
+		if c.cmdOptions.WriteTimeout > 0 {
+			writeTimeout = c.cmdOptions.WriteTimeout
+		}
+	}
 	options := &redis.Options{
 		Addr:                  addr,
 		TLSConfig:             tlsConfig,
-		DialTimeout:           homeRedisOperationTimeout,
-		ReadTimeout:           homeRedisOperationTimeout,
-		WriteTimeout:          homeRedisOperationTimeout,
+		DialTimeout:           dialTimeout,
+		ReadTimeout:           readTimeout,
+		WriteTimeout:          writeTimeout,
 		MaxRetries:            -1,
 		DialerRetries:         1,
 		ContextTimeoutEnabled: true,
@@ -562,9 +582,9 @@ func (c *Client) trackedRedisDialer(dialer func(context.Context, string, string)
 	}
 }
 
-func (c *homeDispatchConn) Close() error {
-	if c == nil || c.Conn == nil {
-		return net.ErrClosed
+func (c *homeDispatchConn) untrack() {
+	if c == nil {
+		return
 	}
 	c.once.Do(func() {
 		if c.client != nil {
@@ -573,7 +593,21 @@ func (c *homeDispatchConn) Close() error {
 			c.client.mu.Unlock()
 		}
 	})
+}
+
+func (c *homeDispatchConn) Close() error {
+	if c == nil || c.Conn == nil {
+		return net.ErrClosed
+	}
+	c.untrack()
 	return c.Conn.Close()
+}
+
+func (c *homeDispatchConn) NetConn() net.Conn {
+	if c == nil {
+		return nil
+	}
+	return c.Conn
 }
 
 func cloneRedisOptions(options *redis.Options) *redis.Options {
@@ -1222,7 +1256,7 @@ func queryToLowerMap(query url.Values) map[string]string {
 	return out
 }
 
-func newAuthDispatchRequest(requestedModel string, sessionID string, headers http.Header, count int, credentialPolicy string, excludedAuthIDs *[]string, pinnedAuthID string) authDispatchRequest {
+func newAuthDispatchRequest(requestedModel string, sessionID string, parentSessionID string, headers http.Header, count int, credentialPolicy string, excludedAuthIDs *[]string, pinnedAuthID string) authDispatchRequest {
 	if count <= 0 {
 		count = 1
 	}
@@ -1241,6 +1275,7 @@ func newAuthDispatchRequest(requestedModel string, sessionID string, headers htt
 		Count:               count,
 		ConcurrencyProtocol: 1,
 		SessionID:           strings.TrimSpace(sessionID),
+		ParentSessionID:     strings.TrimSpace(parentSessionID),
 		Headers:             headersToLowerMap(headers),
 		CredentialPolicy:    strings.TrimSpace(credentialPolicy),
 		ExcludedAuthIDs:     excludedAuthIDsCopy,
@@ -1248,8 +1283,8 @@ func newAuthDispatchRequest(requestedModel string, sessionID string, headers htt
 	}
 }
 
-func newAuthDispatchRequestWithRetryRound(requestedModel string, sessionID string, headers http.Header, count int, credentialPolicy string, retryRound int, excludedAuthIDs *[]string, pinnedAuthID string) authDispatchRequest {
-	req := newAuthDispatchRequest(requestedModel, sessionID, headers, count, credentialPolicy, excludedAuthIDs, pinnedAuthID)
+func newAuthDispatchRequestWithRetryRound(requestedModel string, sessionID string, parentSessionID string, headers http.Header, count int, credentialPolicy string, retryRound int, excludedAuthIDs *[]string, pinnedAuthID string) authDispatchRequest {
+	req := newAuthDispatchRequest(requestedModel, sessionID, parentSessionID, headers, count, credentialPolicy, excludedAuthIDs, pinnedAuthID)
 	if retryRound < 0 {
 		retryRound = 0
 	}
@@ -1290,12 +1325,22 @@ func (c *Client) RPopAuthWithPolicyAndRetryRoundConstraints(ctx context.Context,
 	return c.rPopAuth(ctx, RPopAuthParams{RequestedModel: requestedModel, SessionID: sessionID, Headers: headers, Count: count, CredentialPolicy: credentialPolicy, RetryRound: &retryRound, ExcludedAuthIDs: &excludedAuthIDs, PinnedAuthID: pinnedAuthID})
 }
 
+// RPopAuthWithSessionHierarchy requests a Home credential with both session ID and parent session ID for hierarchical soft affinity.
+func (c *Client) RPopAuthWithSessionHierarchy(ctx context.Context, requestedModel string, sessionID string, parentSessionID string, headers http.Header, count int, credentialPolicy string, retryRound *int, excludedAuthIDs []string, pinnedAuthID string) ([]byte, error) {
+	var excludedPtr *[]string
+	if len(excludedAuthIDs) > 0 {
+		excludedPtr = &excludedAuthIDs
+	}
+	return c.rPopAuth(ctx, RPopAuthParams{RequestedModel: requestedModel, SessionID: sessionID, ParentSessionID: parentSessionID, Headers: headers, Count: count, CredentialPolicy: credentialPolicy, RetryRound: retryRound, ExcludedAuthIDs: excludedPtr, PinnedAuthID: pinnedAuthID})
+}
+
 // RPopAuthParams carries the optional constraints for an RPopAuth dispatch.
 // The exported RPopAuth* convenience methods preserve the sdk/cliproxy/auth
 // interface contracts and delegate to the params-struct form below.
 type RPopAuthParams struct {
 	RequestedModel   string
 	SessionID        string
+	ParentSessionID  string
 	Headers          http.Header
 	Count            int
 	CredentialPolicy string
@@ -1320,9 +1365,9 @@ func (c *Client) rPopAuth(ctx context.Context, params RPopAuthParams) ([]byte, e
 	}
 	var req authDispatchRequest
 	if params.RetryRound == nil {
-		req = newAuthDispatchRequest(requestedModel, params.SessionID, params.Headers, params.Count, params.CredentialPolicy, params.ExcludedAuthIDs, params.PinnedAuthID)
+		req = newAuthDispatchRequest(requestedModel, params.SessionID, params.ParentSessionID, params.Headers, params.Count, params.CredentialPolicy, params.ExcludedAuthIDs, params.PinnedAuthID)
 	} else {
-		req = newAuthDispatchRequestWithRetryRound(requestedModel, params.SessionID, params.Headers, params.Count, params.CredentialPolicy, *params.RetryRound, params.ExcludedAuthIDs, params.PinnedAuthID)
+		req = newAuthDispatchRequestWithRetryRound(requestedModel, params.SessionID, params.ParentSessionID, params.Headers, params.Count, params.CredentialPolicy, *params.RetryRound, params.ExcludedAuthIDs, params.PinnedAuthID)
 	}
 	keyBytes, errMarshal := json.Marshal(&req)
 	if errMarshal != nil {
@@ -1659,11 +1704,44 @@ func newPluginSyncCancelableConn(ctx context.Context, conn net.Conn) net.Conn {
 			// deadline and leaves the read blocked until the operation timeout.
 			// Closing interrupts in-flight reads regardless of ordering; safe
 			// because this dedicated client runs a single command.
-			_ = conn.Close()
+			_ = closeUnderlyingTransport(conn)
 		case <-wrapped.done:
 		}
 	}()
 	return wrapped
+}
+
+func closeUnderlyingTransport(conn net.Conn) error {
+	if conn == nil {
+		return net.ErrClosed
+	}
+	current := conn
+	for {
+		if dispatchConn, ok := current.(*homeDispatchConn); ok {
+			dispatchConn.untrack()
+			if next := dispatchConn.NetConn(); next != nil && next != current {
+				current = next
+				continue
+			}
+		}
+		if tlsConn, ok := current.(*tls.Conn); ok {
+			if netConn := tlsConn.NetConn(); netConn != nil && netConn != current {
+				current = netConn
+				continue
+			}
+		}
+		type unwrapper interface {
+			NetConn() net.Conn
+		}
+		if u, ok := current.(unwrapper); ok {
+			if next := u.NetConn(); next != nil && next != current {
+				current = next
+				continue
+			}
+		}
+		break
+	}
+	return current.Close()
 }
 
 func (c *pluginSyncCancelableConn) Close() error {
@@ -1746,13 +1824,19 @@ func (c *Client) subscriptionParameters() ([]string, time.Duration) {
 	cfg := c.lifecycle.WithDefaults()
 	instanceID := c.instanceID
 	legacyMembership := c.legacyMembership
+	testTimeout := c.testOperationTimeout
 	c.mu.Unlock()
+
+	timeout := cfg.CPAHeartbeatTimeout
+	if testTimeout > 0 && cfg.LifecycleConfigRevision == 0 {
+		timeout = testTimeout
+	}
 
 	args := []string{redisChannelConfig}
 	if cfg.LifecycleConfigRevision > 0 {
 		args = append(args, strconv.FormatInt(cfg.LifecycleConfigRevision, 10))
 		if legacyMembership {
-			return args, cfg.CPAHeartbeatTimeout
+			return args, timeout
 		}
 		state := recoveryState(c.recoveryState.Load())
 		if state == recoveryStateTakeoverEligible || state == recoveryStateSwitchingTakeover {
@@ -1760,7 +1844,7 @@ func (c *Client) subscriptionParameters() ([]string, time.Duration) {
 		}
 		args = append(args, instanceID)
 	}
-	return args, cfg.CPAHeartbeatTimeout
+	return args, timeout
 }
 
 func (c *Client) markMembershipTakeoverEligible() {
