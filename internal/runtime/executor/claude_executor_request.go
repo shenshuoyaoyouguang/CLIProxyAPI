@@ -1701,9 +1701,6 @@ type claudeMCPAliasResolver struct {
 	servers map[string]struct{}
 }
 
-// claudeMCPAliasRestoreError marks a tool name that cannot be safely forwarded,
-// such as injected markup under a known virtual server. It is request-scoped so
-// the failure never puts the credential into cooldown.
 type claudeMCPAliasRestoreError struct {
 	error
 }
@@ -1801,12 +1798,6 @@ func (resolver claudeMCPAliasResolver) resolve(name string) (string, bool, error
 	if _, known := resolver.servers[server]; !known {
 		return "", false, nil
 	}
-	if !helps.IsClaudeMCPToolName(name) {
-		// A name under a known virtual server that is not even a valid MCP tool
-		// name carries injected markup rather than model drift. Fail closed so
-		// the poisoned tool_use is never forwarded to the client.
-		return "", false, claudeMCPAliasRestoreError{fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: name is not a valid MCP tool name", name)}
-	}
 
 	canonicalServerPrefix := "mcp__" + server + "__"
 	normalizedName := name
@@ -1835,8 +1826,7 @@ func (resolver claudeMCPAliasResolver) resolve(name string) (string, bool, error
 		return matchedOriginal, true, nil
 	}
 	if matchCount > 1 {
-		log.Warnf("claude oauth mcp alias: forwarding drifted tool name %q: matched multiple declared aliases", name)
-		return "", false, nil
+		return "", false, claudeMCPAliasRestoreError{fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: matched multiple declared aliases", name)}
 	}
 
 	parts, validAlias := parseClaudeMCPAlias(normalizedName)
@@ -1891,50 +1881,10 @@ func (resolver claudeMCPAliasResolver) resolve(name string) (string, bool, error
 		return matchedOriginal, true, nil
 	}
 	if matchCount > 1 {
-		log.Warnf("claude oauth mcp alias: forwarding drifted tool name %q: semantic suffix matches multiple declared tools", name)
-		return "", false, nil
+		return "", false, claudeMCPAliasRestoreError{fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: semantic suffix matches multiple declared tools", name)}
 	}
 
-	// Drifted names can mix the virtual namespace with real MCP names that were
-	// passed through untouched, for example after tool search exposes both at
-	// once. The remainder after the virtual server prefix has two readings: it
-	// can be the full real name itself, or the tail of a longer declared name.
-	// Recover only when exactly one passthrough name matches across both
-	// readings; otherwise leave the drift unrecovered so a wrong tool is never
-	// called silently.
-	if recovered, count := resolver.recoverIdentitySuffix(suffix); count == 1 {
-		log.Debugf("claude oauth mcp alias: recovered drifted tool name %q as %q via passthrough suffix", name, recovered)
-		return recovered, true, nil
-	}
-
-	log.Warnf("claude oauth mcp alias: forwarding drifted tool name %q: no unique request-local match", name)
-	return "", false, nil
-}
-
-// recoverIdentitySuffix matches the remainder of a drifted virtual-server name
-// against recorded passthrough MCP tools. The remainder is read as a full
-// passthrough name by itself and as the tail of a longer passthrough name after
-// a "__" boundary; count is 1 only when both readings agree on a single tool,
-// so nested names on other real servers stay unrecovered.
-func (resolver claudeMCPAliasResolver) recoverIdentitySuffix(suffix string) (string, int) {
-	if suffix == "" {
-		return "", 0
-	}
-	recovered := ""
-	count := 0
-	if original, ok := resolver.exact[suffix]; ok && original == suffix {
-		recovered, count = suffix, 1
-	}
-	for alias, original := range resolver.exact {
-		if alias != original {
-			continue
-		}
-		if strings.HasSuffix(alias, "__"+suffix) {
-			recovered = alias
-			count++
-		}
-	}
-	return recovered, count
+	return "", false, claudeMCPAliasRestoreError{fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: no unique request-local match", name)}
 }
 
 // reverseRemapOAuthToolNames reverses the tool name mapping for non-stream responses

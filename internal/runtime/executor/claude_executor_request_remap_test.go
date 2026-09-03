@@ -300,7 +300,7 @@ func TestReverseRemapOAuthToolNamesWithBIP39Aliases(t *testing.T) {
 	}
 }
 
-func TestReverseRemapOAuthToolNamesPassesThroughUnrecoverableDriftedAliases(t *testing.T) {
+func TestReverseRemapOAuthToolNamesRejectsUnsafeMangledAliases(t *testing.T) {
 	body := []byte(`{"tools":[{"name":"tool.name"},{"name":"tool/name"}]}`)
 	remapped, reverseMap := remapOAuthToolNamesWithOptions(body, claudeMCPAliasOptions{secret: "ambiguous-alias-caller"})
 	firstAlias := gjson.GetBytes(remapped, "tools.0.name").String()
@@ -322,181 +322,48 @@ func TestReverseRemapOAuthToolNamesPassesThroughUnrecoverableDriftedAliases(t *t
 		unknownToolID = "bbbbbbbbbbbb"
 	}
 	tests := []struct {
-		name  string
-		alias string
+		name      string
+		alias     string
+		wantError string
 	}{
 		{
-			name:  "ambiguous semantic suffix",
-			alias: "mcp__" + firstParts.server + "__" + unknownToolID + "_" + firstParts.semantic,
+			name:      "ambiguous semantic suffix",
+			alias:     "mcp__" + firstParts.server + "__" + unknownToolID + "_" + firstParts.semantic,
+			wantError: "semantic suffix matches multiple declared tools",
 		},
 		{
-			name:  "ambiguous semantic suffix with malformed tool ID",
-			alias: "mcp__" + firstParts.server + "__" + unknownToolID[:len(unknownToolID)-1] + "_" + firstParts.semantic,
+			name:      "ambiguous semantic suffix with malformed tool ID",
+			alias:     "mcp__" + firstParts.server + "__" + unknownToolID[:len(unknownToolID)-1] + "_" + firstParts.semantic,
+			wantError: "semantic suffix matches multiple declared tools",
 		},
 		{
-			name:  "unrecoverable semantic suffix",
-			alias: "mcp__" + firstParts.server + "__" + unknownToolID + "_missing_tool",
+			name:      "unrecoverable semantic suffix",
+			alias:     "mcp__" + firstParts.server + "__" + unknownToolID + "_missing_tool",
+			wantError: "no unique request-local match",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			response := []byte(fmt.Sprintf(`{"content":[{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}]}`, test.alias))
-			restored, errReverse := reverseRemapOAuthToolNames(response, reverseMap)
-			if errReverse != nil {
-				t.Fatalf("reverseRemapOAuthToolNames() error = %v, want passthrough", errReverse)
+			_, errReverse := reverseRemapOAuthToolNames(response, reverseMap)
+			if errReverse == nil || !strings.Contains(errReverse.Error(), test.wantError) {
+				t.Fatalf("reverseRemapOAuthToolNames() error = %v, want %q", errReverse, test.wantError)
 			}
-			if got := gjson.GetBytes(restored, "content.0.name").String(); got != test.alias {
-				t.Fatalf("drifted tool name = %q, want unchanged %q", got, test.alias)
-			}
-
-			line := []byte(fmt.Sprintf(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}}`, test.alias))
-			restoredLine, errStream := reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
-			if errStream != nil {
-				t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %v, want passthrough", errStream)
-			}
-			if got := gjson.GetBytes(helps.JSONPayload(restoredLine), "content_block.name").String(); got != test.alias {
-				t.Fatalf("stream drifted tool name = %q, want unchanged %q", got, test.alias)
-			}
-		})
-	}
-}
-
-func TestReverseRemapOAuthToolNamesRecoversDriftedRealMCPName(t *testing.T) {
-	body := []byte(`{"tools":[{"name":"Bash"},{"name":"mcp__inventory__inventory_lookup_by_id"}]}`)
-	remapped, reverseMap := remapOAuthToolNamesWithOptions(body, claudeMCPAliasOptions{secret: "mixed-namespace-caller"})
-	bashAlias := gjson.GetBytes(remapped, "tools.0.name").String()
-	parts, ok := parseClaudeMCPAlias(bashAlias)
-	if !ok {
-		t.Fatalf("parseClaudeMCPAlias(%q) failed", bashAlias)
-	}
-	realName := "mcp__inventory__inventory_lookup_by_id"
-
-	tests := []struct {
-		name  string
-		alias string
-	}{
-		{
-			name:  "virtual prefix plus whole real name",
-			alias: "mcp__" + parts.server + "__inventory__inventory_lookup_by_id",
-		},
-		{
-			name:  "virtual prefix plus tool part only",
-			alias: "mcp__" + parts.server + "__inventory_lookup_by_id",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			response := []byte(fmt.Sprintf(`{"content":[{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}]}`, test.alias))
-			restored, errReverse := reverseRemapOAuthToolNames(response, reverseMap)
-			if errReverse != nil {
-				t.Fatalf("reverseRemapOAuthToolNames() error = %v", errReverse)
-			}
-			if got := gjson.GetBytes(restored, "content.0.name").String(); got != realName {
-				t.Fatalf("drifted tool name = %q, want recovered %q", got, realName)
+			var requestErr cliproxyexecutor.RequestScopedError
+			if !errors.As(errReverse, &requestErr) || !requestErr.IsRequestScoped() {
+				t.Fatalf("reverseRemapOAuthToolNames() error = %T %v, want request-scoped", errReverse, errReverse)
 			}
 
 			line := []byte(fmt.Sprintf(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}}`, test.alias))
-			restoredLine, errStream := reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
-			if errStream != nil {
-				t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %v", errStream)
+			_, errStream := reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
+			if errStream == nil || !strings.Contains(errStream.Error(), test.wantError) {
+				t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %v, want %q", errStream, test.wantError)
 			}
-			if got := gjson.GetBytes(helps.JSONPayload(restoredLine), "content_block.name").String(); got != realName {
-				t.Fatalf("stream drifted tool name = %q, want recovered %q", got, realName)
+			requestErr = nil
+			if !errors.As(errStream, &requestErr) || !requestErr.IsRequestScoped() {
+				t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %T %v, want request-scoped", errStream, errStream)
 			}
 		})
-	}
-}
-
-func TestReverseRemapOAuthToolNamesLeavesAmbiguousRealMCPDriftUnchanged(t *testing.T) {
-	body := []byte(`{"tools":[{"name":"Bash"},{"name":"mcp__inventory__lookup_by_id"},{"name":"mcp__supplier__lookup_by_id"}]}`)
-	remapped, reverseMap := remapOAuthToolNamesWithOptions(body, claudeMCPAliasOptions{secret: "ambiguous-identity-caller"})
-	bashAlias := gjson.GetBytes(remapped, "tools.0.name").String()
-	parts, ok := parseClaudeMCPAlias(bashAlias)
-	if !ok {
-		t.Fatalf("parseClaudeMCPAlias(%q) failed", bashAlias)
-	}
-
-	drifted := "mcp__" + parts.server + "__lookup_by_id"
-	response := []byte(fmt.Sprintf(`{"content":[{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}]}`, drifted))
-	restored, errReverse := reverseRemapOAuthToolNames(response, reverseMap)
-	if errReverse != nil {
-		t.Fatalf("reverseRemapOAuthToolNames() error = %v", errReverse)
-	}
-	if got := gjson.GetBytes(restored, "content.0.name").String(); got != drifted {
-		t.Fatalf("ambiguous drifted tool name = %q, want unchanged %q", got, drifted)
-	}
-
-	line := []byte(fmt.Sprintf(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}}`, drifted))
-	restoredLine, errStream := reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
-	if errStream != nil {
-		t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %v", errStream)
-	}
-	if got := gjson.GetBytes(helps.JSONPayload(restoredLine), "content_block.name").String(); got != drifted {
-		t.Fatalf("stream ambiguous drifted tool name = %q, want unchanged %q", got, drifted)
-	}
-}
-
-func TestReverseRemapOAuthToolNamesRecoversVirtualPrefixedFullName(t *testing.T) {
-	body := []byte(`{"tools":[{"name":"Bash"},{"name":"mcp__server__tool"}]}`)
-	remapped, reverseMap := remapOAuthToolNamesWithOptions(body, claudeMCPAliasOptions{secret: "prefixed-fullname-caller"})
-	bashAlias := gjson.GetBytes(remapped, "tools.0.name").String()
-	parts, ok := parseClaudeMCPAlias(bashAlias)
-	if !ok {
-		t.Fatalf("parseClaudeMCPAlias(%q) failed", bashAlias)
-	}
-	realName := "mcp__server__tool"
-
-	drifted := "mcp__" + parts.server + "__" + realName
-	response := []byte(fmt.Sprintf(`{"content":[{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}]}`, drifted))
-	restored, errReverse := reverseRemapOAuthToolNames(response, reverseMap)
-	if errReverse != nil {
-		t.Fatalf("reverseRemapOAuthToolNames() error = %v", errReverse)
-	}
-	if got := gjson.GetBytes(restored, "content.0.name").String(); got != realName {
-		t.Fatalf("drifted tool name = %q, want recovered %q", got, realName)
-	}
-
-	line := []byte(fmt.Sprintf(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}}`, drifted))
-	restoredLine, errStream := reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
-	if errStream != nil {
-		t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %v", errStream)
-	}
-	if got := gjson.GetBytes(helps.JSONPayload(restoredLine), "content_block.name").String(); got != realName {
-		t.Fatalf("stream drifted tool name = %q, want recovered %q", got, realName)
-	}
-}
-
-func TestReverseRemapOAuthToolNamesKeepsNestedRealMCPDriftUnchanged(t *testing.T) {
-	body := []byte(`{"tools":[{"name":"Bash"},{"name":"mcp__server__tool"},{"name":"mcp__mcp__server__tool"}]}`)
-	remapped, reverseMap := remapOAuthToolNamesWithOptions(body, claudeMCPAliasOptions{secret: "nested-identity-caller"})
-	bashAlias := gjson.GetBytes(remapped, "tools.0.name").String()
-	parts, ok := parseClaudeMCPAlias(bashAlias)
-	if !ok {
-		t.Fatalf("parseClaudeMCPAlias(%q) failed", bashAlias)
-	}
-
-	// The drift can be read as the virtual prefix in front of the full real
-	// name mcp__server__tool, or as the longer declared name
-	// mcp__mcp__server__tool with one mcp__ dropped. Both readings are
-	// declared, so the name must stay unrecovered instead of silently calling
-	// a possibly wrong tool.
-	drifted := "mcp__" + parts.server + "__mcp__server__tool"
-	response := []byte(fmt.Sprintf(`{"content":[{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}]}`, drifted))
-	restored, errReverse := reverseRemapOAuthToolNames(response, reverseMap)
-	if errReverse != nil {
-		t.Fatalf("reverseRemapOAuthToolNames() error = %v", errReverse)
-	}
-	if got := gjson.GetBytes(restored, "content.0.name").String(); got != drifted {
-		t.Fatalf("ambiguous drifted tool name = %q, want unchanged %q", got, drifted)
-	}
-
-	line := []byte(fmt.Sprintf(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":%q,"input":{}}}`, drifted))
-	restoredLine, errStream := reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)
-	if errStream != nil {
-		t.Fatalf("reverseRemapOAuthToolNamesFromStreamLine() error = %v", errStream)
-	}
-	if got := gjson.GetBytes(helps.JSONPayload(restoredLine), "content_block.name").String(); got != drifted {
-		t.Fatalf("stream ambiguous drifted tool name = %q, want unchanged %q", got, drifted)
 	}
 }
 
