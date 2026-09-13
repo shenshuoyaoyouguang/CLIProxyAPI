@@ -19,6 +19,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	openaiclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -116,20 +117,21 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	}
 	originalPayload := originalPayloadSource
 	isCompat := helps.APIKeyModelIsCompat(req)
-	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, opts.Stream, isCompat)
-	translated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, opts.Stream, isCompat)
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	toolResultMode := openaiclaude.ToolResultImageInline
+	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
+		toolResultMode = openaiclaude.ToolResultImageOmit
+	}
+	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, opts.Stream, isCompat, toolResultMode)
+	translated := helps.TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, opts.Stream, isCompat, toolResultMode)
 
 	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return resp, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
-	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
-		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
-	}
 	if opts.Alt != "responses/compact" {
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
 		if err != nil {
@@ -331,20 +333,21 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	}
 	originalPayload := originalPayloadSource
 	isCompat := helps.APIKeyModelIsCompat(req)
-	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true, isCompat)
-	translated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true, isCompat)
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	toolResultMode := openaiclaude.ToolResultImageInline
+	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
+		toolResultMode = openaiclaude.ToolResultImageOmit
+	}
+	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true, isCompat, toolResultMode)
+	translated := helps.TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true, isCompat, toolResultMode)
 
 	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
-	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
-		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
-	}
 	if opts.Alt != "responses/compact" {
 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
 		if err != nil {

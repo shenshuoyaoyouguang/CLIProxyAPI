@@ -16,20 +16,47 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// ToolResultImageMode controls how images inside Claude tool_result content are
+// translated into OpenAI tool messages.
+type ToolResultImageMode int
+
+const (
+	// ToolResultImageRelay keeps the existing behavior: tool-result images are
+	// pulled out of the tool message and replayed as a separate user message.
+	ToolResultImageRelay ToolResultImageMode = iota
+	// ToolResultImageOmit drops tool-result images and appends an omission notice
+	// to the tool message text. Used when the upstream model excludes image input.
+	ToolResultImageOmit
+	// ToolResultImageInline keeps tool-result images inline in the tool message
+	// content as an array of text and image_url parts.
+	ToolResultImageInline
+)
+
+// OpenAIToolResultImageOmittedText is the notice appended to a tool message text
+// when an image part is omitted because the upstream model does not accept images.
+const OpenAIToolResultImageOmittedText = "[image omitted: unsupported by upstream]"
+
 // ConvertClaudeRequestToOpenAI parses and transforms an Anthropic API request into OpenAI Chat Completions API format.
 // It extracts the model name, system instruction, message contents, and tool declarations
 // from the raw JSON request and returns them in the format expected by the OpenAI API.
 func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) []byte {
-	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, false)
+	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, false, ToolResultImageRelay)
 }
 
 // ConvertClaudeRequestToOpenAIWithCompat preserves assistant thinking text
 // for configured compatibility endpoints.
 func ConvertClaudeRequestToOpenAIWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
-	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, true)
+	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, true, ToolResultImageRelay)
 }
 
-func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool, preserveThinkingBlocks bool) []byte {
+// ConvertClaudeRequestToOpenAIWithToolResultImages behaves like
+// ConvertClaudeRequestToOpenAIWithCompat but applies mode to images inside Claude
+// tool_result content (see ToolResultImageMode).
+func ConvertClaudeRequestToOpenAIWithToolResultImages(modelName string, inputRawJSON []byte, stream bool, mode ToolResultImageMode) []byte {
+	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, true, mode)
+}
+
+func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool, preserveThinkingBlocks bool, mode ToolResultImageMode) []byte {
 	rawJSON := inputRawJSON
 	// Base OpenAI Chat Completions API template
 	out := []byte(`{"model":"","messages":[]}`)
@@ -232,9 +259,13 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						// Collect tool_result to emit after the main message (ensures tool results follow tool_calls)
 						toolResultJSON := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 						toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "tool_call_id", part.Get("tool_use_id").String())
-						toolResultContent, toolResultImages := convertClaudeToolResultContent(part.Get("content"))
-						toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "content", toolResultContent)
-						relayedToolImages = append(relayedToolImages, toolResultImages...)
+						if mode == ToolResultImageInline {
+							toolResultJSON, _ = sjson.SetRawBytes(toolResultJSON, "content", convertClaudeToolResultContentInline(part.Get("content")))
+						} else {
+							toolResultContent, toolResultImages := convertClaudeToolResultContent(part.Get("content"), mode)
+							toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "content", toolResultContent)
+							relayedToolImages = append(relayedToolImages, toolResultImages...)
+						}
 						toolResults = append(toolResults, toolResultJSON)
 					}
 					return true
@@ -526,7 +557,7 @@ const toolResultImagePlaceholder = "[Tool returned image content; the images fol
 // toolResultImageRelayNotice labels the user message that carries relayed tool images.
 const toolResultImageRelayNotice = "Images returned by the preceding tool call(s):"
 
-func convertClaudeToolResultContent(content gjson.Result) (string, [][]byte) {
+func convertClaudeToolResultContent(content gjson.Result, mode ToolResultImageMode) (string, [][]byte) {
 	if !content.Exists() {
 		return "", nil
 	}
@@ -545,7 +576,9 @@ func convertClaudeToolResultContent(content gjson.Result) (string, [][]byte) {
 			case item.IsObject() && item.Get("type").String() == "text":
 				parts = append(parts, item.Get("text").String())
 			case item.IsObject() && item.Get("type").String() == "image":
-				if contentItem, ok := convertClaudeContentPart(item); ok {
+				if mode == ToolResultImageOmit {
+					parts = append(parts, OpenAIToolResultImageOmittedText)
+				} else if contentItem, ok := convertClaudeContentPart(item); ok {
 					images = append(images, []byte(contentItem))
 				} else {
 					parts = append(parts, item.Raw)
@@ -570,6 +603,9 @@ func convertClaudeToolResultContent(content gjson.Result) (string, [][]byte) {
 
 	if content.IsObject() {
 		if content.Get("type").String() == "image" {
+			if mode == ToolResultImageOmit {
+				return OpenAIToolResultImageOmittedText, nil
+			}
 			if contentItem, ok := convertClaudeContentPart(content); ok {
 				return toolResultImagePlaceholder, [][]byte{[]byte(contentItem)}
 			}
@@ -581,4 +617,65 @@ func convertClaudeToolResultContent(content gjson.Result) (string, [][]byte) {
 	}
 
 	return content.Raw, nil
+}
+
+// convertClaudeToolResultContentInline converts a Claude tool_result content into
+// an OpenAI tool message content array, keeping text and image parts inline as
+// OpenAI content parts.
+func convertClaudeToolResultContentInline(content gjson.Result) []byte {
+	if !content.Exists() || content.Type == gjson.Null {
+		return []byte(`""`)
+	}
+
+	parts := make([][]byte, 0, 4)
+
+	appendText := func(text string) {
+		if text == "" {
+			return
+		}
+		textContent := []byte(`{"type":"text","text":""}`)
+		textContent, _ = sjson.SetBytes(textContent, "text", text)
+		parts = append(parts, textContent)
+	}
+
+	appendPart := func(item gjson.Result) {
+		if item.Type == gjson.String {
+			appendText(item.String())
+			return
+		}
+		if !item.IsObject() {
+			parts = append(parts, []byte(item.Raw))
+			return
+		}
+		switch item.Get("type").String() {
+		case "text":
+			appendText(item.Get("text").String())
+		case "image":
+			if contentItem, ok := convertClaudeContentPart(item); ok {
+				parts = append(parts, []byte(contentItem))
+			} else {
+				parts = append(parts, []byte(item.Raw))
+			}
+		default:
+			if text := item.Get("text"); text.Type == gjson.String {
+				appendText(text.String())
+			} else {
+				parts = append(parts, []byte(item.Raw))
+			}
+		}
+	}
+
+	if content.IsArray() {
+		content.ForEach(func(_, item gjson.Result) bool {
+			appendPart(item)
+			return true
+		})
+	} else {
+		appendPart(content)
+	}
+
+	if len(parts) == 0 {
+		return []byte(`""`)
+	}
+	return translatorcommon.JoinRawArray(parts)
 }

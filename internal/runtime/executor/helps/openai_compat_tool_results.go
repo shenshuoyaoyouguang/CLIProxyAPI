@@ -6,11 +6,14 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	openaiclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/claude"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-const openAIToolResultImageOmittedText = "[image omitted: unsupported by upstream]"
+// openAIToolResultImageOmittedText aliases the shared translator constant so the
+// omission notice has a single source of truth across the translator and executor.
+const openAIToolResultImageOmittedText = openaiclaude.OpenAIToolResultImageOmittedText
 
 // ShouldNormalizeOpenAIToolResultsForModel reports whether the selected model
 // explicitly excludes image input through its input-modalities configuration.

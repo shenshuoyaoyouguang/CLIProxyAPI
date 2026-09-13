@@ -75,7 +75,21 @@ func sameByteSlice(a, b []byte) bool {
 // TranslateRequestWithAPIKeyModelCompatibility applies compatibility-aware
 // request translators when a configured API-key model enables compatibility mode.
 func TranslateRequestWithAPIKeyModelCompatibility(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool) []byte {
+	return TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, headers, cfg, from, to, model, payload, stream, isCompat, openaiclaude.ToolResultImageRelay)
+}
+
+// TranslateRequestWithAPIKeyModelCompatibilityToolResultImages is like
+// TranslateRequestWithAPIKeyModelCompatibility but applies mode to images inside
+// Claude tool_result content during Claude->OpenAI translation. When plugin
+// translator hooks are installed, mode is ignored and the registry path is used
+// to preserve plugin normalization.
+func TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, payload []byte, stream, isCompat bool, mode openaiclaude.ToolResultImageMode) []byte {
 	if !isCompat {
+		if from == sdktranslator.FormatClaude && to == sdktranslator.FormatOpenAI && mode != openaiclaude.ToolResultImageRelay && !sdktranslator.HasPluginHooks() {
+			summaryConfig := thinking.ExtractSummaryConfig(payload, from.String())
+			translated := openaiclaude.ConvertClaudeRequestToOpenAIWithToolResultImages(model, payload, stream, mode)
+			return thinking.ApplySummaryConfigForModel(translated, to.String(), model, summaryConfig)
+		}
 		return TranslateRequestWithCodexMultiAgentV2(ctx, headers, cfg, from, to, model, payload, stream)
 	}
 	if from == sdktranslator.FormatOpenAIResponse {
@@ -94,7 +108,11 @@ func TranslateRequestWithAPIKeyModelCompatibility(ctx context.Context, headers h
 	case from == sdktranslator.FormatClaude && to == sdktranslator.FormatInteractions:
 		translated = interactionsclaude.ConvertClaudeRequestToInteractionsWithCompat(model, payload, stream)
 	case from == sdktranslator.FormatClaude && to == sdktranslator.FormatOpenAI:
-		translated = openaiclaude.ConvertClaudeRequestToOpenAIWithCompat(model, payload, stream)
+		if mode == openaiclaude.ToolResultImageRelay || sdktranslator.HasPluginHooks() {
+			translated = openaiclaude.ConvertClaudeRequestToOpenAIWithCompat(model, payload, stream)
+		} else {
+			translated = openaiclaude.ConvertClaudeRequestToOpenAIWithToolResultImages(model, payload, stream, mode)
+		}
 	case from == sdktranslator.FormatOpenAI && to == sdktranslator.FormatClaude:
 		translated = openaichatclaude.ConvertOpenAIRequestToClaudeWithCompat(model, payload, stream)
 	case from == sdktranslator.FormatOpenAIResponse && to == sdktranslator.FormatClaude:
