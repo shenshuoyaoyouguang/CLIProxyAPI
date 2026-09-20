@@ -71,4 +71,3 @@ func normalizeOpenAICompatibilityModelName(model string) string {
 	}
 	return strings.TrimSpace(thinking.ParseSuffix(model).ModelName)
 }
-
