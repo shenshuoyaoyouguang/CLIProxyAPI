@@ -768,6 +768,57 @@ func TestConvertClaudeRequestToOpenAI_ToolResultTextAndImageContent(t *testing.T
 	}
 }
 
+func TestConvertClaudeRequestToOpenAIWithToolResultImagesModes(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-3-opus",
+		"messages": [
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "call_1", "name": "inspect", "input": {}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": [{"type": "text", "text": "tool ok"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AA=="}}]}]}
+		]
+	}`)
+
+	tests := []struct {
+		name        string
+		mode        ToolResultImageMode
+		wantArray   bool
+		wantContent string
+	}{
+		{name: "inline", mode: ToolResultImageInline, wantArray: true},
+		{name: "omit", mode: ToolResultImageOmit, wantContent: "tool ok\n\n" + OpenAIToolResultImageOmittedText},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ConvertClaudeRequestToOpenAIWithToolResultImages("test-model", inputJSON, false, tt.mode)
+			messages := gjson.ParseBytes(result).Get("messages").Array()
+			if len(messages) != 2 {
+				t.Fatalf("messages = %d, want 2; body=%s", len(messages), result)
+			}
+
+			content := messages[1].Get("content")
+			if tt.wantArray {
+				if !content.IsArray() {
+					t.Fatalf("tool content = %s, want array", content.Raw)
+				}
+				if got := content.Get("0.type").String(); got != "text" || content.Get("0.text").String() != "tool ok" {
+					t.Fatalf("text part = %s, want tool ok", content.Get("0").Raw)
+				}
+				if got := content.Get("1.type").String(); got != "image_url" {
+					t.Fatalf("image part type = %q, want image_url", got)
+				}
+				if got := content.Get("1.image_url.url").String(); got != "data:image/png;base64,AA==" {
+					t.Fatalf("image part url = %q, want base64 data URL", got)
+				}
+				return
+			}
+
+			if content.Type != gjson.String || content.String() != tt.wantContent {
+				t.Fatalf("tool content = %s, want %q", content.Raw, tt.wantContent)
+			}
+		})
+	}
+}
+
 func TestConvertClaudeRequestToOpenAI_ToolResultURLImageOnly(t *testing.T) {
 	inputJSON := `{
 		"model": "claude-3-opus",

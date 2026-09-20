@@ -118,10 +118,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	originalPayload := originalPayloadSource
 	isCompat := helps.APIKeyModelIsCompat(req)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	toolResultMode := openaiclaude.ToolResultImageInline
-	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
-		toolResultMode = openaiclaude.ToolResultImageOmit
-	}
+	toolResultMode := e.toolResultImageMode(auth, baseModel, requestedModel)
 	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, opts.Stream, isCompat, toolResultMode)
 	translated := helps.TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, opts.Stream, isCompat, toolResultMode)
 
@@ -334,10 +331,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	originalPayload := originalPayloadSource
 	isCompat := helps.APIKeyModelIsCompat(req)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	toolResultMode := openaiclaude.ToolResultImageInline
-	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
-		toolResultMode = openaiclaude.ToolResultImageOmit
-	}
+	toolResultMode := e.toolResultImageMode(auth, baseModel, requestedModel)
 	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true, isCompat, toolResultMode)
 	translated := helps.TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true, isCompat, toolResultMode)
 
@@ -699,7 +693,9 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("openai")
 	isCompat := helps.APIKeyModelIsCompat(req)
-	translated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false, isCompat)
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	toolResultMode := e.toolResultImageMode(auth, baseModel, requestedModel)
+	translated := helps.TranslateRequestWithAPIKeyModelCompatibilityToolResultImages(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false, isCompat, toolResultMode)
 
 	modelForCounting := baseModel
 
@@ -970,6 +966,13 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 		}
 	}
 	return nil
+}
+
+func (e *OpenAICompatExecutor) toolResultImageMode(auth *cliproxyauth.Auth, baseModel, requestedModel string) openaiclaude.ToolResultImageMode {
+	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
+		return openaiclaude.ToolResultImageOmit
+	}
+	return openaiclaude.ToolResultImageInline
 }
 
 func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {
